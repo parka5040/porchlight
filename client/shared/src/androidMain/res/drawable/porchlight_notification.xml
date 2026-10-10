@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Transparent glass and a cut-out flame preserve lantern detail when the launcher applies one tint. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp" android:viewportWidth="512" android:viewportHeight="512">
+    <group android:translateX="0" android:translateY="0">
+        <path android:fillColor="#FFFFFFFF" android:pathData="M177,66 H335 Q344,66 344,75 V83 Q344,92 335,92 H177 Q168,92 168,83 V75 Q168,66 177,66 Z M252,92 H260 V104 H252 Z" />
+        <path android:fillColor="#00000000" android:strokeColor="#FFFFFFFF" android:strokeWidth="8" android:pathData="M269,116 A13,13 0,1 1,243 116 A13,13 0,1 1,269 116 Z" />
+        <path android:fillColor="#FFFFFFFF" android:pathData="M248,126 H264 V142 H248 Z M222,140 H290 L320,176 H192 Z M188,172 H324 Q332,172 332,180 V184 Q332,192 324,192 H188 Q180,192 180,184 V180 Q180,172 188,172 Z" />
+        <path android:fillColor="#FFFFFFFF" android:pathData="M190,186 H206 V358 H190 Z M306,186 H322 V358 H306 Z M188,350 H324 Q332,350 332,358 V362 Q332,370 324,370 H188 Q180,370 180,362 V358 Q180,350 188,350 Z M200,370 H312 L298,394 H214 Z M240,328 H272 V346 H240 Z" />
+        <path android:fillColor="#FFFFFFFF" android:fillType="evenOdd" android:pathData="M256,212 C275,240 290,258 290,282 C290,304 274,318 256,318 C238,318 222,304 222,282 C222,258 237,240 256,212 Z M256,252 C266,270 272,280 272,292 C272,304 264,308 256,308 C248,308 240,304 240,292 C240,280 246,270 256,252 Z" />
+    </group>
+</vector>

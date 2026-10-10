@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE porchlight.sessions SET revoked_at=now() WHERE revoked_at IS NULL AND ($2::uuid IS NULL OR id<>$2) AND device_id IN (SELECT d.id FROM porchlight.devices d JOIN porchlight.household_members m ON m.id=d.member_id WHERE m.user_id=$1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9d67e8a77e26712d49e0fa46e4ab22876dda2fe21c8cdf6134eea14de4c86c5f"
+}

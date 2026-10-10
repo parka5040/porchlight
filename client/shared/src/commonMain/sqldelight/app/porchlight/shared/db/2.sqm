@@ -1,0 +1,11 @@
+-- Disposable client cache v3: scope list/entry projections by occurrence (C2b recreates on version mismatch).
+ALTER TABLE CacheList RENAME TO OldCacheList;
+DROP INDEX cache_list_item;
+CREATE TABLE CacheList (id TEXT NOT NULL, occurrence_id TEXT NOT NULL DEFAULT '', item_id TEXT, expires_at INTEGER, payload TEXT NOT NULL, PRIMARY KEY (id, occurrence_id));
+CREATE INDEX cache_list_item ON CacheList(item_id);
+DROP TABLE OldCacheList;
+ALTER TABLE CacheEntry RENAME TO OldCacheEntry;
+DROP INDEX cache_entry_item;
+CREATE TABLE CacheEntry (id TEXT NOT NULL, occurrence_id TEXT NOT NULL DEFAULT '', item_id TEXT, expires_at INTEGER, payload TEXT NOT NULL, PRIMARY KEY (id, occurrence_id));
+CREATE INDEX cache_entry_item ON CacheEntry(item_id);
+DROP TABLE OldCacheEntry;

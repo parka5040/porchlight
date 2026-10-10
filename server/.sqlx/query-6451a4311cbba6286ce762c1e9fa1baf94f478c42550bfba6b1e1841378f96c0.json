@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO porchlight.install_state (id, household_id, ca_fingerprint, initialized_at)\n           VALUES (true, $1, $2, $3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bytea",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6451a4311cbba6286ce762c1e9fa1baf94f478c42550bfba6b1e1841378f96c0"
+}

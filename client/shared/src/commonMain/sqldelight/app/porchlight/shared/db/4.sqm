@@ -1,0 +1,12 @@
+CREATE TABLE CacheNotification (
+ id TEXT NOT NULL PRIMARY KEY,
+ item_id TEXT,
+ expires_at INTEGER,
+ payload TEXT NOT NULL
+);
+CREATE TABLE CacheNotificationPrefs (
+ id TEXT NOT NULL PRIMARY KEY,
+ item_id TEXT,
+ expires_at INTEGER,
+ payload TEXT NOT NULL
+);

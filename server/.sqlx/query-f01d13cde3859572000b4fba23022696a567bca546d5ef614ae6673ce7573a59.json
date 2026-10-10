@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT fingerprint_sha256 FROM porchlight.device_certificates WHERE device_id=$1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "fingerprint_sha256",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "device_certificates",
+            "name": "fingerprint_sha256"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f01d13cde3859572000b4fba23022696a567bca546d5ef614ae6673ce7573a59"
+}

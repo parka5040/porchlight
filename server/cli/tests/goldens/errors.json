@@ -1,0 +1,62 @@
+{
+  "clap": {
+    "detail": "Invalid command arguments; see --help",
+    "status": null,
+    "title": "CLI request failed",
+    "type": "urn:porchlight:problem:client-error"
+  },
+  "conflicting-recurrence": {
+    "detail": "--rrule and --every are mutually exclusive",
+    "status": null,
+    "title": "CLI request failed",
+    "type": "urn:porchlight:problem:client-error"
+  },
+  "invalid-date": {
+    "detail": "Date must be YYYY-MM-DD",
+    "status": null,
+    "title": "CLI request failed",
+    "type": "urn:porchlight:problem:client-error"
+  },
+  "invalid-interval": {
+    "detail": "Interval: positive number followed by m, h, d, w, mo or y",
+    "status": null,
+    "title": "CLI request failed",
+    "type": "urn:porchlight:problem:client-error"
+  },
+  "local-missing-socket": {
+    "detail": "Could not connect to agent socket",
+    "status": null,
+    "title": "CLI request failed",
+    "type": "urn:porchlight:problem:client-error"
+  },
+  "local-no-zone": {
+    "detail": "Local fixed times require --tz",
+    "status": null,
+    "title": "CLI request failed",
+    "type": "urn:porchlight:problem:client-error"
+  },
+  "missing-title": {
+    "detail": "items add requires --title",
+    "status": null,
+    "title": "CLI request failed",
+    "type": "urn:porchlight:problem:client-error"
+  },
+  "purge-nonterminal": {
+    "detail": "Purge requires --yes when no terminal is available",
+    "status": null,
+    "title": "CLI request failed",
+    "type": "urn:porchlight:problem:client-error"
+  },
+  "start-without-end": {
+    "detail": "Appointments with --start require --end",
+    "status": null,
+    "title": "CLI request failed",
+    "type": "urn:porchlight:problem:client-error"
+  },
+  "usage-missing-token": {
+    "detail": "--token-file or PORCHLIGHT_TOKEN is required",
+    "status": null,
+    "title": "CLI request failed",
+    "type": "urn:porchlight:problem:client-error"
+  }
+}

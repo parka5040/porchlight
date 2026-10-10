@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE porchlight.password_resets SET used_at=now() WHERE id=$1 AND used_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "308d8a5ee14de175a860bdd3b18f3fc041defc9e179066129e59d86ad0e8c338"
+}

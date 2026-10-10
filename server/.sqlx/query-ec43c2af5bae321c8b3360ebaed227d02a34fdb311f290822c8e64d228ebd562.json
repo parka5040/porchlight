@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT request_hash,response_status AS status,response_sealed AS sealed FROM porchlight.idempotency_keys WHERE scope_kind=$1 AND scope_id=$2 AND idem_key=$3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "request_hash",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "idempotency_keys",
+            "name": "request_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "status",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "idempotency_keys",
+            "name": "response_status"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "sealed",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "idempotency_keys",
+            "name": "response_sealed"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "ec43c2af5bae321c8b3360ebaed227d02a34fdb311f290822c8e64d228ebd562"
+}

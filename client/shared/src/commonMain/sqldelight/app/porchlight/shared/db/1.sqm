@@ -1,0 +1,8 @@
+CREATE TABLE CacheList (id TEXT NOT NULL PRIMARY KEY, item_id TEXT, expires_at INTEGER, payload TEXT NOT NULL);
+CREATE INDEX cache_list_item ON CacheList(item_id);
+CREATE TABLE CacheEntry (id TEXT NOT NULL PRIMARY KEY, item_id TEXT, expires_at INTEGER, payload TEXT NOT NULL);
+CREATE INDEX cache_entry_item ON CacheEntry(item_id);
+CREATE TABLE CacheComment (id TEXT NOT NULL PRIMARY KEY, item_id TEXT, expires_at INTEGER, payload TEXT NOT NULL);
+CREATE INDEX cache_comment_item ON CacheComment(item_id);
+CREATE TABLE CacheAttachment (id TEXT NOT NULL PRIMARY KEY, item_id TEXT, expires_at INTEGER, payload TEXT NOT NULL);
+CREATE INDEX cache_attachment_item ON CacheAttachment(item_id);

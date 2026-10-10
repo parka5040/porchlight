@@ -1,0 +1,18 @@
+{
+  "connection": {
+    "client_addr": "192.0.2.10:12345",
+    "transport": "lan"
+  },
+  "device": {
+    "id": "01999999-0000-7000-8000-000000000004",
+    "label": "Phone",
+    "platform": "android"
+  },
+  "display_name": "Alex",
+  "household_id": "01999999-0000-7000-8000-000000000003",
+  "member_id": "01999999-0000-7000-8000-000000000001",
+  "role": "user",
+  "session_expires_at": "2027-04-01T00:00:00Z",
+  "user_id": "01999999-0000-7000-8000-000000000002",
+  "username": "alex"
+}

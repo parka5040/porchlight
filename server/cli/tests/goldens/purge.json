@@ -1,0 +1,80 @@
+{
+  "deleted-before": {
+    "counts": {
+      "attachments": 0,
+      "blob_references": 0,
+      "comments": 0,
+      "ics_uid_map": 0,
+      "item_assignees": 1,
+      "item_derivation": 1,
+      "item_occurrences": 1,
+      "item_reminders": 0,
+      "item_revisions": 3,
+      "item_viewers": 0,
+      "items": 1,
+      "list_entries": 0,
+      "list_entry_checks": 0,
+      "list_entry_revisions": 0,
+      "list_revisions": 0,
+      "list_viewers": 0,
+      "lists": 0,
+      "member_agenda": 0,
+      "notification_event_delivery": 0,
+      "notification_events": 0,
+      "notification_sources": 0,
+      "notifications": 0,
+      "schedule_suggestions": 0,
+      "scheduled_reminders": 0,
+      "task_events": 3
+    },
+    "id": "<uuid:15>",
+    "item_ids": [
+      "<uuid:10>"
+    ]
+  },
+  "item": {
+    "counts": {
+      "attachments": 0,
+      "blob_references": 0,
+      "comments": 0,
+      "ics_uid_map": 0,
+      "item_assignees": 1,
+      "item_derivation": 1,
+      "item_occurrences": 1,
+      "item_reminders": 0,
+      "item_revisions": 14,
+      "item_viewers": 0,
+      "items": 1,
+      "list_entries": 0,
+      "list_entry_checks": 0,
+      "list_entry_revisions": 0,
+      "list_revisions": 0,
+      "list_viewers": 0,
+      "lists": 0,
+      "member_agenda": 0,
+      "notification_event_delivery": 0,
+      "notification_events": 0,
+      "notification_sources": 0,
+      "notifications": 0,
+      "schedule_suggestions": 0,
+      "scheduled_reminders": 0,
+      "task_events": 12
+    },
+    "id": "<uuid:14>",
+    "item_ids": [
+      "<uuid:5>"
+    ]
+  },
+  "refuse-live": {
+    "detail": null,
+    "errors": [
+      {
+        "field": "item_ids",
+        "message": "Invalid value"
+      }
+    ],
+    "status": 422,
+    "title": "Validation failed",
+    "type": "urn:porchlight:problem:validation-failed"
+  }
+}

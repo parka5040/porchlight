@@ -1,0 +1,314 @@
+CREATE TABLE CacheNotification (
+ id TEXT NOT NULL PRIMARY KEY,
+ item_id TEXT,
+ expires_at INTEGER,
+ payload TEXT NOT NULL
+);
+CREATE TABLE CacheNotificationPrefs (
+ id TEXT NOT NULL PRIMARY KEY,
+ item_id TEXT,
+ expires_at INTEGER,
+ payload TEXT NOT NULL
+);
+
+CREATE TABLE SyncState (
+ singleton INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
+ cursor INTEGER NOT NULL,
+ last_full_sync INTEGER NOT NULL
+);
+CREATE TABLE Staging (
+ kind TEXT NOT NULL,
+ id TEXT NOT NULL,
+ item_id TEXT,
+ expires_at INTEGER,
+ payload TEXT NOT NULL,
+ PRIMARY KEY(kind,id)
+);
+
+CREATE TABLE CacheMember (
+ id TEXT NOT NULL PRIMARY KEY,
+ item_id TEXT,
+ expires_at INTEGER,
+ payload TEXT NOT NULL
+);
+CREATE INDEX cache_member_item ON CacheMember(item_id);
+
+CREATE TABLE CacheItem (
+ id TEXT NOT NULL PRIMARY KEY,
+ item_id TEXT,
+ expires_at INTEGER,
+ payload TEXT NOT NULL
+);
+CREATE INDEX cache_item_item ON CacheItem(item_id);
+
+CREATE TABLE CacheOccurrence (
+ id TEXT NOT NULL PRIMARY KEY,
+ item_id TEXT,
+ expires_at INTEGER,
+ payload TEXT NOT NULL
+);
+CREATE INDEX cache_occurrence_item ON CacheOccurrence(item_id);
+
+CREATE TABLE CacheAgenda (
+ id TEXT NOT NULL PRIMARY KEY,
+ item_id TEXT,
+ expires_at INTEGER,
+ payload TEXT NOT NULL
+);
+CREATE INDEX cache_agenda_item ON CacheAgenda(item_id);
+
+CREATE TABLE CacheBoard (
+ id TEXT NOT NULL PRIMARY KEY,
+ item_id TEXT,
+ expires_at INTEGER,
+ payload TEXT NOT NULL
+);
+CREATE INDEX cache_board_item ON CacheBoard(item_id);
+
+CREATE TABLE CacheSettings (
+ id TEXT NOT NULL PRIMARY KEY,
+ item_id TEXT,
+ expires_at INTEGER,
+ payload TEXT NOT NULL
+);
+CREATE INDEX cache_settings_item ON CacheSettings(item_id);
+
+CREATE TABLE CacheReminder (
+ id TEXT NOT NULL PRIMARY KEY,
+ item_id TEXT,
+ expires_at INTEGER,
+ payload TEXT NOT NULL
+);
+CREATE INDEX cache_reminder_item ON CacheReminder(item_id);
+
+CREATE TABLE CacheWrite (
+ id TEXT NOT NULL PRIMARY KEY,
+ item_id TEXT,
+ expires_at INTEGER,
+ payload TEXT NOT NULL
+);
+CREATE INDEX cache_write_item ON CacheWrite(item_id);
+
+allMembers:
+SELECT * FROM CacheMember ORDER BY id;
+putMember:
+INSERT OR REPLACE INTO CacheMember VALUES (?,?,?,?);
+clearMembers:
+DELETE FROM CacheMember;
+promoteMembers:
+INSERT INTO CacheMember SELECT id,item_id,expires_at,payload FROM Staging WHERE kind = 'Member';
+
+getItem:
+SELECT * FROM CacheItem WHERE id = ?;
+
+allItems:
+SELECT * FROM CacheItem ORDER BY id;
+putItem:
+INSERT OR REPLACE INTO CacheItem VALUES (?,?,?,?);
+clearItems:
+DELETE FROM CacheItem;
+evictItem:
+DELETE FROM CacheItem WHERE item_id = ?;
+promoteItems:
+INSERT INTO CacheItem SELECT id,item_id,expires_at,payload FROM Staging WHERE kind = 'Item';
+
+getOccurrence:
+SELECT * FROM CacheOccurrence WHERE id = ?;
+
+allOccurrences:
+SELECT * FROM CacheOccurrence ORDER BY id;
+putOccurrence:
+INSERT OR REPLACE INTO CacheOccurrence VALUES (?,?,?,?);
+clearOccurrences:
+DELETE FROM CacheOccurrence;
+evictOccurrence:
+DELETE FROM CacheOccurrence WHERE item_id = ?;
+deleteOccurrence:
+DELETE FROM CacheOccurrence WHERE id = ?;
+cleanOccurrences:
+DELETE FROM CacheOccurrence WHERE expires_at < ?;
+promoteOccurrences:
+INSERT INTO CacheOccurrence SELECT id,item_id,expires_at,payload FROM Staging WHERE kind = 'Occurrence';
+
+-- Agenda rows are keyed member_id:occurrence_id; projections are replaced in place, never staged empty.
+allAgendas:
+SELECT * FROM CacheAgenda ORDER BY id;
+putAgenda:
+INSERT OR REPLACE INTO CacheAgenda VALUES (?,?,?,?);
+clearAgendas:
+DELETE FROM CacheAgenda;
+evictAgenda:
+DELETE FROM CacheAgenda WHERE item_id = ?;
+deleteAgenda:
+DELETE FROM CacheAgenda WHERE id = ?;
+evictOrphanAgendas:
+DELETE FROM CacheAgenda WHERE item_id NOT IN (SELECT id FROM CacheItem);
+cleanAgendas:
+DELETE FROM CacheAgenda WHERE expires_at < ?;
+
+allBoards:
+SELECT * FROM CacheBoard ORDER BY id;
+putBoard:
+INSERT OR REPLACE INTO CacheBoard VALUES (?,?,?,?);
+clearBoards:
+DELETE FROM CacheBoard;
+evictBoard:
+DELETE FROM CacheBoard WHERE item_id = ?;
+evictOrphanBoards:
+DELETE FROM CacheBoard WHERE item_id NOT IN (SELECT id FROM CacheItem);
+
+allSettingss:
+SELECT * FROM CacheSettings ORDER BY id;
+putSettings:
+INSERT OR REPLACE INTO CacheSettings VALUES (?,?,?,?);
+clearSettingss:
+DELETE FROM CacheSettings;
+promoteSettingss:
+INSERT INTO CacheSettings SELECT id,item_id,expires_at,payload FROM Staging WHERE kind = 'Settings';
+
+allReminders:
+SELECT * FROM CacheReminder ORDER BY id;
+clearReminders:
+DELETE FROM CacheReminder;
+deleteReminder:
+DELETE FROM CacheReminder WHERE id = ?;
+evictReminder:
+DELETE FROM CacheReminder WHERE item_id = ?;
+cleanReminders:
+DELETE FROM CacheReminder WHERE expires_at < ?;
+promoteReminders:
+INSERT INTO CacheReminder SELECT id,item_id,expires_at,payload FROM Staging WHERE kind = 'Reminder';
+
+allWrites:
+SELECT * FROM CacheWrite ORDER BY id;
+putWrite:
+INSERT OR REPLACE INTO CacheWrite VALUES (?,?,?,?);
+clearWrites:
+DELETE FROM CacheWrite;
+evictWrite:
+DELETE FROM CacheWrite WHERE item_id = ?;
+
+stage:
+INSERT INTO Staging VALUES (?,?,?,?,?);
+clearStaging:
+DELETE FROM Staging;
+getSync:
+SELECT * FROM SyncState WHERE singleton = 1;
+putSync:
+INSERT OR REPLACE INTO SyncState VALUES (1,?,?);
+clearSync:
+DELETE FROM SyncState;
+
+advanceCursor:
+UPDATE SyncState SET cursor = MAX(cursor, ?) WHERE singleton = 1;
+
+allNotifications:
+SELECT * FROM CacheNotification ORDER BY id;
+putNotification:
+INSERT OR REPLACE INTO CacheNotification VALUES (?,?,?,?);
+clearNotifications:
+DELETE FROM CacheNotification;
+promoteNotifications:
+INSERT INTO CacheNotification SELECT id,item_id,expires_at,payload FROM Staging WHERE kind = 'Notification';
+
+allNotificationPrefss:
+SELECT * FROM CacheNotificationPrefs ORDER BY id;
+putNotificationPrefs:
+INSERT OR REPLACE INTO CacheNotificationPrefs VALUES (?,?,?,?);
+clearNotificationPrefss:
+DELETE FROM CacheNotificationPrefs;
+promoteNotificationPrefss:
+INSERT INTO CacheNotificationPrefs SELECT id,item_id,expires_at,payload FROM Staging WHERE kind = 'NotificationPrefs';
+
+evictNotifications:
+DELETE FROM CacheNotification WHERE item_id = ?;
+
+CREATE TABLE CachePlanning (
+ kind TEXT NOT NULL,
+ id TEXT NOT NULL,
+ item_id TEXT,
+ payload TEXT NOT NULL,
+ PRIMARY KEY(kind,id)
+);
+allPlanning:
+SELECT * FROM CachePlanning ORDER BY kind,id;
+putPlanning:
+INSERT OR REPLACE INTO CachePlanning VALUES (?,?,?,?);
+clearPlanning:
+DELETE FROM CachePlanning;
+evictPlanning:
+DELETE FROM CachePlanning WHERE item_id = ?;
+removePlanning:
+DELETE FROM CachePlanning WHERE kind = ? AND id = ?;
+
+-- c5: metadata only; attachment bytes remain in app-private platform storage.
+CREATE TABLE CacheList (id TEXT NOT NULL, occurrence_id TEXT NOT NULL DEFAULT '', item_id TEXT, expires_at INTEGER, payload TEXT NOT NULL, PRIMARY KEY (id, occurrence_id));
+CREATE INDEX cache_list_item ON CacheList(item_id);
+-- INSERT OR REPLACE moves a refreshed scope to the end: oldest scopes are evicted first.
+allLists:
+SELECT * FROM CacheList ORDER BY rowid;
+putList:
+INSERT OR REPLACE INTO CacheList VALUES (?, ?, ?, ?, ?);
+clearLists:
+DELETE FROM CacheList;
+evictList:
+DELETE FROM CacheList WHERE item_id = ?;
+deleteList:
+DELETE FROM CacheList WHERE id = ?;
+deleteListScope:
+DELETE FROM CacheList WHERE id = ? AND occurrence_id = ?;
+promoteLists:
+INSERT INTO CacheList SELECT id, '', item_id, expires_at, payload FROM Staging WHERE kind = 'List';
+
+-- c5: metadata only; attachment bytes remain in app-private platform storage.
+CREATE TABLE CacheEntry (id TEXT NOT NULL, occurrence_id TEXT NOT NULL DEFAULT '', item_id TEXT, expires_at INTEGER, payload TEXT NOT NULL, PRIMARY KEY (id, occurrence_id));
+CREATE INDEX cache_entry_item ON CacheEntry(item_id);
+allEntrys:
+SELECT * FROM CacheEntry;
+putEntry:
+INSERT OR REPLACE INTO CacheEntry VALUES (?, ?, ?, ?, ?);
+clearEntrys:
+DELETE FROM CacheEntry;
+evictEntry:
+DELETE FROM CacheEntry WHERE item_id = ?;
+deleteEntry:
+DELETE FROM CacheEntry WHERE id = ?;
+evictEntryScope:
+DELETE FROM CacheEntry WHERE item_id = ? AND occurrence_id = ?;
+promoteEntrys:
+INSERT INTO CacheEntry SELECT id, '', item_id, expires_at, payload FROM Staging WHERE kind = 'Entry';
+
+-- c5: metadata only; attachment bytes remain in app-private platform storage.
+CREATE TABLE CacheComment (id TEXT NOT NULL PRIMARY KEY, item_id TEXT, expires_at INTEGER, payload TEXT NOT NULL);
+CREATE INDEX cache_comment_item ON CacheComment(item_id);
+allComments:
+SELECT * FROM CacheComment;
+putComment:
+INSERT OR REPLACE INTO CacheComment VALUES (?, ?, ?, ?);
+clearComments:
+DELETE FROM CacheComment;
+evictComment:
+DELETE FROM CacheComment WHERE item_id = ?;
+deleteComment:
+DELETE FROM CacheComment WHERE id = ?;
+promoteComments:
+INSERT INTO CacheComment SELECT id, item_id, expires_at, payload FROM Staging WHERE kind = 'Comment';
+
+-- c5: metadata only; attachment bytes remain in app-private platform storage.
+CREATE TABLE CacheAttachment (id TEXT NOT NULL PRIMARY KEY, item_id TEXT, expires_at INTEGER, payload TEXT NOT NULL);
+CREATE INDEX cache_attachment_item ON CacheAttachment(item_id);
+allAttachments:
+SELECT * FROM CacheAttachment;
+putAttachment:
+INSERT OR REPLACE INTO CacheAttachment VALUES (?, ?, ?, ?);
+clearAttachments:
+DELETE FROM CacheAttachment;
+evictAttachment:
+DELETE FROM CacheAttachment WHERE item_id = ?;
+deleteAttachment:
+DELETE FROM CacheAttachment WHERE id = ?;
+promoteAttachments:
+INSERT INTO CacheAttachment SELECT id, item_id, expires_at, payload FROM Staging WHERE kind = 'Attachment';
+
+evictEntriesByItem:
+DELETE FROM CacheEntry WHERE item_id IN (SELECT id FROM CacheList WHERE item_id = ?);

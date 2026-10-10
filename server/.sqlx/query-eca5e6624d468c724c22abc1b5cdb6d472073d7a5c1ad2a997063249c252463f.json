@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE porchlight.enrollment_tokens SET used_at=now() WHERE id=$1 AND used_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "eca5e6624d468c724c22abc1b5cdb6d472073d7a5c1ad2a997063249c252463f"
+}

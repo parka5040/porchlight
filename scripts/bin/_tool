@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Run a tool from the porchlight-tools image with the current directory mounted at the same path.
+# Invoked through the age/minisign symlinks in this directory.
+set -euo pipefail
+tool=$(basename "$0")
+root=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)
+image=porchlight-tools:local
+docker image inspect "$image" >/dev/null 2>&1 || docker build -q -t "$image" "$root/deploy/tools" >/dev/null
+tty=(); [[ -t 0 && -t 1 ]] && tty=(-t)
+exec docker run --rm -i "${tty[@]}" -u "$(id -u):$(id -g)" -v "$PWD:$PWD" -w "$PWD" "$image" "$tool" "$@"

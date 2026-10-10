@@ -1,0 +1,39 @@
+# Opt-in override, persisted by install.sh funnel in the stack .env.
+# Raw TCP + PROXY v2 only: household TLS still terminates in the API.
+services:
+  tailscale:
+    profiles: [funnel]
+    image: "tailscale/tailscale@sha256:${TAILSCALE_IMAGE_SHA256:?provide verified Tailscale image digest}"
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      api: {condition: service_healthy}
+    environment:
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_SOCKET: /var/run/tailscale/tailscaled.sock
+      TS_USERSPACE: "true"
+      TS_AUTH_ONCE: "true"
+      TS_SERVE_CONFIG: /config/serve.json
+      TS_HOSTNAME: "${TS_HOSTNAME:?provide neutral Tailscale hostname}"
+      TS_EXTRA_ARGS: "--advertise-tags=tag:porchlight"
+      TS_AUTHKEY: "${TS_AUTHKEY_SPEC:-}"
+    volumes:
+      - type: bind
+        source: ${PORCHLIGHT_ROOT:-/var/lib/porchlight}/tailscale/state
+        target: /var/lib/tailscale
+        bind: {create_host_path: false}
+      # authkey exists inside this directory only during login. Never bind an optional file.
+      # Docker must not create root-owned bind sources; funnel prepares them as the installer user.
+      # Directory mounting makes atomic serve.json replacements visible to containerboot's watcher.
+      - type: bind
+        source: ${PORCHLIGHT_ROOT:-/var/lib/porchlight}/tailscale
+        target: /config
+        read_only: true
+        bind: {create_host_path: false}
+    networks:
+      ingress: {ipv4_address: "${FUNNEL_IP:-172.29.251.10}"}
+    healthcheck:
+      test: ["CMD", "tailscale", "status", "--peers=false"]
+      interval: 5s
+      timeout: 5s
+      retries: 24

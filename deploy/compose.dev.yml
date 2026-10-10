@@ -1,0 +1,149 @@
+# Laptop stack. Use scripts/dev-stack.sh; -p and the overrides also isolate the M2 gate.
+name: porchlight-dev
+
+services:
+  postgres:
+    command: ["postgres", "-c", "max_connections=1000"]
+    image: postgres:18.6@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run scripts/dev-env.sh}
+      PORCHLIGHT_MIGRATOR_PASSWORD: ${PORCHLIGHT_MIGRATOR_PASSWORD:?run scripts/dev-env.sh}
+      PORCHLIGHT_APP_PASSWORD: ${PORCHLIGHT_APP_PASSWORD:?run scripts/dev-env.sh}
+      PORCHLIGHT_AGENT_PASSWORD: ${PORCHLIGHT_AGENT_PASSWORD:?run scripts/dev-env.sh}
+      PORCHLIGHT_BACKUP_PASSWORD: ${PORCHLIGHT_BACKUP_PASSWORD:?run scripts/dev-env.sh}
+    volumes:
+      - pgdata:/var/lib/postgresql
+      - ./postgres/initdb:/docker-entrypoint-initdb.d:ro
+      - ./postgres/bootstrap-roles.sql:/porchlight/bootstrap-roles.sql:ro
+      # Native tools (including sandbox CI) use the unix socket, not container TCP.
+      - ${PORCHLIGHT_VAR:-../var}/pgsock:/var/run/postgresql
+    ports:
+      - "127.0.0.1:${PG_PORT:-5432}:5432"
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d porchlight"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # One-shot; the migrator credential never reaches the long-running api.
+  migrate:
+    image: porchlight-api:dev
+    pull_policy: never
+    command: ["migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORCHLIGHT_MIGRATOR_URL: postgres://porchlight_migrator:${PORCHLIGHT_MIGRATOR_PASSWORD:?run scripts/dev-env.sh}@postgres:5432/porchlight
+    networks: [backend]
+    restart: "no"
+
+  # Init is deliberately explicit (dev-stack.sh / m2-demo.sh), between migrate and api.
+  # Serve itself refuses missing PKI or a CA that does not match install_state.
+  api:
+    build:
+      context: ../server
+      dockerfile: ../deploy/Dockerfile
+    image: porchlight-api:dev
+    user: "${PORCHLIGHT_UID:-1000}:${PORCHLIGHT_GID:-1000}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      PORCHLIGHT_DATABASE_URL: postgres://porchlight_app:${PORCHLIGHT_APP_PASSWORD:?run scripts/dev-env.sh}@postgres:5432/porchlight
+      PORCHLIGHT_DATA_DIR: /data
+      PORCHLIGHT_AGENT_SOCKET: /run/porchlight/agent.sock
+      PORCHLIGHT_LAN_ADDR: 0.0.0.0:8443
+      PORCHLIGHT_ENROLL_ADDR: 0.0.0.0:8444
+      PORCHLIGHT_FUNNEL_ADDR: 0.0.0.0:9443
+      PORCHLIGHT_FUNNEL_PEERS: ${SIDECAR_IP:-172.31.251.10}/32
+      # Host published-port traffic commonly arrives from one of the Docker gateways.
+      # Dev convenience ONLY: production must use the actual LAN CIDR alone.
+      # dev-stack.sh supplies the runtime LAN CIDR/endpoints; direct Compose stays local/emulator-only.
+      PORCHLIGHT_ENROLL_CIDRS: ${ENROLL_CIDRS:-${BACKEND_GATEWAY:-172.31.250.1}/32,${INGRESS_GATEWAY:-172.31.251.1}/32}
+      PORCHLIGHT_ENROLL_HOST: ${ENROLL_HOST:-localhost}
+      PORCHLIGHT_ENDPOINTS: ${PORCHLIGHT_ENDPOINTS:-https://localhost:8443,https://10.0.2.2:8443}
+    volumes:
+      - ${PORCHLIGHT_VAR:-../var}/server:/data
+      - ${PORCHLIGHT_VAR:-../var}/backups:/backups:ro
+      - ${PORCHLIGHT_VAR:-../var}/run:/run/porchlight
+    ports:
+      - "${LAN_PORT:-8443}:8443"
+      - "${ENROLL_PORT:-8444}:8444"
+    networks: [backend, ingress]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/porchlight", "healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # O1: opt-in for the dev stack; nightly production scheduler is in compose.yml.
+  backup:
+    profiles: [backups]
+    build:
+      context: .
+      dockerfile: backup/Dockerfile
+    image: porchlight-backup:dev
+    user: "${PORCHLIGHT_UID:-1000}:${PORCHLIGHT_GID:-1000}"
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      api: {condition: service_healthy}
+    environment:
+      PORCHLIGHT_BACKUP_PASSWORD: ${PORCHLIGHT_BACKUP_PASSWORD:?run scripts/dev-env.sh}
+      PORCHLIGHT_VERSION: ${PORCHLIGHT_VERSION:?source scripts/env.sh for repository VERSION}
+      TMPDIR: /work
+      PORCHLIGHT_DUMP_TMPDIR: /dumpwork
+    tmpfs: ["/work:mode=1777,size=512m"]
+    volumes:
+      - ${PORCHLIGHT_VAR:-../var}/backup-work:/dumpwork
+      - ${PORCHLIGHT_VAR:-../var}/server:/data:ro
+      - ${PORCHLIGHT_VAR:-../var}/backups:/backups
+      - ${PORCHLIGHT_VAR:-../var}/dev.env:/stack/.env:ro
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "/bin/bash", "/opt/porchlight/backup/backup.sh", "health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+  sidecar:
+    image: haproxy:3.2-alpine@sha256:5d97434a423c2533cfeb42874d45cf6d69a840b60334582dfbfd5008e94c80be
+    user: haproxy
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    ports:
+      - "127.0.0.1:${SIDECAR_PORT:-9445}:9443"
+    networks:
+      ingress:
+        ipv4_address: ${SIDECAR_IP:-172.31.251.10}
+    healthcheck:
+      test: ["CMD-SHELL", "haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg >/dev/null && nc -z 127.0.0.1 9443"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  pgdata:
+
+networks:
+  backend:
+    ipam:
+      config:
+        - subnet: ${BACKEND_SUBNET:-172.31.250.0/24}
+          gateway: ${BACKEND_GATEWAY:-172.31.250.1}
+  ingress:
+    ipam:
+      config:
+        - subnet: ${INGRESS_SUBNET:-172.31.251.0/24}
+          gateway: ${INGRESS_GATEWAY:-172.31.251.1}

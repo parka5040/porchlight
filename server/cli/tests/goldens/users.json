@@ -1,0 +1,67 @@
+{
+  "add": {
+    "color": "#FE8019",
+    "created_at": "<timestamp>",
+    "deleted_at": null,
+    "display_name": "Kid",
+    "id": "<uuid:1>",
+    "role": "dependent",
+    "tzid": "America/New_York",
+    "user_id": null,
+    "username": null,
+    "version": 1
+  },
+  "edit": {
+    "color": "#FE8019",
+    "created_at": "<timestamp>",
+    "deleted_at": null,
+    "display_name": "Child",
+    "id": "<uuid:1>",
+    "role": "dependent",
+    "tzid": "America/New_York",
+    "user_id": null,
+    "username": null,
+    "version": 2
+  },
+  "list": {
+    "items": [
+      {
+        "color": "#FABD2F",
+        "created_at": "<timestamp>",
+        "deleted_at": null,
+        "display_name": "Admin",
+        "id": "<uuid:2>",
+        "role": "super_admin",
+        "tzid": "America/New_York",
+        "user_id": "<uuid:3>",
+        "username": "admin",
+        "version": 1
+      },
+      {
+        "color": "#FE8019",
+        "created_at": "<timestamp>",
+        "deleted_at": null,
+        "display_name": "Child",
+        "id": "<uuid:1>",
+        "role": "dependent",
+        "tzid": "America/New_York",
+        "user_id": null,
+        "username": null,
+        "version": 2
+      }
+    ],
+    "next_cursor": null
+  },
+  "rm": {
+    "color": "#FE8019",
+    "created_at": "<timestamp>",
+    "deleted_at": "<timestamp>",
+    "display_name": "Child",
+    "id": "<uuid:1>",
+    "role": "dependent",
+    "tzid": "America/New_York",
+    "user_id": null,
+    "username": null,
+    "version": 3
+  }
+}

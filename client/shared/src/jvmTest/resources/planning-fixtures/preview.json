@@ -1,0 +1,22 @@
+{
+  "cancelled_skipped": 2,
+  "conflicts": [],
+  "created": 1,
+  "deleted": 0,
+  "invalid_skipped": 0,
+  "item_ids": [],
+  "preview": true,
+  "removal_suppressed": false,
+  "removed": 0,
+  "skipped": 2,
+  "source_id": null,
+  "unchanged": 0,
+  "updated": 0,
+  "warnings": [
+    {
+      "code": "UnsupportedOverrideDetails",
+      "message": "Retained occurrence uses the master title, notes and location; only exception timing/status is imported",
+      "uid": "team-7@google.com"
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <provider android:name="app.porchlight.android.CalendarFixtureProvider" android:authorities="${applicationId}.calendar-fixture" android:exported="false" />
+        <activity android:name="app.porchlight.android.ShellFixtureActivity" android:exported="false" />
+    </application>
+</manifest>

@@ -1,0 +1,7 @@
+<resources>
+    <style name="PorchlightTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#282828</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>

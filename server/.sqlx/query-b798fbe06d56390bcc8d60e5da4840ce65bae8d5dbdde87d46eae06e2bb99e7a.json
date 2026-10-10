@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO porchlight.api_tokens\n               (household_id, owner_member_id, name, token_hash, scopes, expires_at)\n           VALUES ($1, $2, 'bootstrap', $3, ARRAY['read','write','admin'], $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Bytea",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b798fbe06d56390bcc8d60e5da4840ce65bae8d5dbdde87d46eae06e2bb99e7a"
+}

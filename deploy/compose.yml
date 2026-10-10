@@ -1,0 +1,106 @@
+# Production/laptop release stack. No Funnel service runs without its explicit profile.
+name: porchlight
+services:
+  postgres:
+    image: postgres:18.6@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?missing stack .env}
+      PORCHLIGHT_MIGRATOR_PASSWORD: ${PORCHLIGHT_MIGRATOR_PASSWORD:?missing stack .env}
+      PORCHLIGHT_APP_PASSWORD: ${PORCHLIGHT_APP_PASSWORD:?missing stack .env}
+      PORCHLIGHT_AGENT_PASSWORD: ${PORCHLIGHT_AGENT_PASSWORD:?missing stack .env}
+      PORCHLIGHT_BACKUP_PASSWORD: ${PORCHLIGHT_BACKUP_PASSWORD:?missing stack .env}
+    volumes:
+      - ${PORCHLIGHT_ROOT:-/var/lib/porchlight}/pgdata:/var/lib/postgresql
+      - ./postgres/initdb:/docker-entrypoint-initdb.d:ro
+      - ./postgres/bootstrap-roles.sql:/porchlight/bootstrap-roles.sql:ro
+    ports: ["127.0.0.1:${PG_PORT:-5432}:5432"]
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d porchlight"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  migrate:
+    image: porchlight-api:${PORCHLIGHT_VERSION:?missing release version}
+    pull_policy: never
+    restart: "no" # one-shot: never loop successful migrations
+    command: ["migrate"]
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      PORCHLIGHT_MIGRATOR_URL: postgres://porchlight_migrator:${PORCHLIGHT_MIGRATOR_PASSWORD:?missing credential}@postgres:5432/porchlight
+    networks: [backend]
+  api:
+    image: porchlight-api:${PORCHLIGHT_VERSION:?missing release version}
+    pull_policy: never
+    user: "${PORCHLIGHT_UID:-1000}:${PORCHLIGHT_GID:-1000}"
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+    environment:
+      PORCHLIGHT_DATABASE_URL: postgres://porchlight_app:${PORCHLIGHT_APP_PASSWORD:?missing credential}@postgres:5432/porchlight
+      PORCHLIGHT_DATA_DIR: /data
+      PORCHLIGHT_AGENT_SOCKET: /run/porchlight/agent.sock
+      PORCHLIGHT_LAN_ADDR: 0.0.0.0:8443
+      PORCHLIGHT_ENROLL_ADDR: 0.0.0.0:8444
+      PORCHLIGHT_FUNNEL_ADDR: 0.0.0.0:9443
+      PORCHLIGHT_FUNNEL_PEERS: ${FUNNEL_IP:-172.29.251.10}/32
+      PORCHLIGHT_ENROLL_CIDRS: ${ENROLL_CIDRS:?set actual LAN CIDR}
+      PORCHLIGHT_ENROLL_HOST: ${ENROLL_HOST:-porchlight.lan}
+      PORCHLIGHT_ENDPOINTS: ${PORCHLIGHT_ENDPOINTS:-https://porchlight.lan:8443}
+      PORCHLIGHT_MIN_CLIENT_VERSION: ${PORCHLIGHT_MIN_CLIENT_VERSION:-0.1.0}
+      PORCHLIGHT_RELEASE_REPO: ${PORCHLIGHT_RELEASE_REPO:-}
+      PORCHLIGHT_RELEASE_PUBLIC_KEY: ${PORCHLIGHT_RELEASE_PUBLIC_KEY:-}
+      PORCHLIGHT_UPGRADE_COMMAND: ${PORCHLIGHT_UPGRADE_COMMAND:-}
+      PORCHLIGHT_RELEASE_DIR: /release
+    volumes:
+      - ${PORCHLIGHT_ROOT:-/var/lib/porchlight}/data:/data
+      - ${PORCHLIGHT_ROOT:-/var/lib/porchlight}/backups:/backups:ro
+      - ${PORCHLIGHT_ROOT:-/var/lib/porchlight}/releases/${PORCHLIGHT_VERSION:?missing release version}:/release:ro
+      - ${PORCHLIGHT_RUN_DIR:-/run/porchlight}:/run/porchlight
+    ports: ["${LAN_BIND:-0.0.0.0}:${LAN_PORT:-8443}:8443", "${LAN_BIND:-0.0.0.0}:${ENROLL_PORT:-8444}:8444"]
+    networks: [backend, ingress]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/porchlight", "healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+  backup:
+    image: porchlight-backup:${PORCHLIGHT_VERSION:?missing release version}
+    pull_policy: never
+    user: "${PORCHLIGHT_UID:-1000}:${PORCHLIGHT_GID:-1000}"
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      api: {condition: service_healthy}
+    environment:
+      PORCHLIGHT_BACKUP_PASSWORD: ${PORCHLIGHT_BACKUP_PASSWORD:?missing credential}
+      PORCHLIGHT_VERSION: ${PORCHLIGHT_VERSION:?missing release version}
+      PORCHLIGHT_DATA_DIR: /data
+      PORCHLIGHT_BACKUP_DIR: /backups
+      PORCHLIGHT_ENV_FILE: /stack/.env
+      TMPDIR: /work
+      PORCHLIGHT_DUMP_TMPDIR: /dumpwork
+    tmpfs: ["/work:mode=1777,size=512m"]
+    volumes:
+      - ${PORCHLIGHT_ROOT:-/var/lib/porchlight}/backup-work:/dumpwork
+      - ${PORCHLIGHT_ROOT:-/var/lib/porchlight}/data:/data:ro
+      - ${PORCHLIGHT_ROOT:-/var/lib/porchlight}/backups:/backups
+      - ${PORCHLIGHT_ROOT:-/var/lib/porchlight}/.env:/stack/.env:ro
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "/bin/bash", "/opt/porchlight/backup/backup.sh", "health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+networks:
+  backend:
+    ipam:
+      config: [{subnet: "${BACKEND_SUBNET:-172.29.250.0/24}"}]
+  ingress:
+    ipam:
+      config: [{subnet: "${INGRESS_SUBNET:-172.29.251.0/24}"}]

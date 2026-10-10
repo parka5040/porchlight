@@ -1,0 +1,2 @@
+plugins { id 'groovy' }
+// Gradle's own Groovy/JSON runtime; no external dependencies or repositories.

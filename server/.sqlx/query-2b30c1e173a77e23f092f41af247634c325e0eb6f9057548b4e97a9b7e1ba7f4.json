@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO porchlight.household_members\n               (id, household_id, user_id, role, display_name, color, tzid)\n           VALUES ($1, $2, $3, 'super_admin', $4, '#FABD2F', $5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2b30c1e173a77e23f092f41af247634c325e0eb6f9057548b4e97a9b7e1ba7f4"
+}

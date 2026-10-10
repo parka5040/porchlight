@@ -1,0 +1,59 @@
+# Tracks the same "not source" set as scripts/snapshot-excludes.txt; keep the two in step.
+
+# Claude Code local state (NEVER commit)
+.claude/
+CLAUDE.md
+
+# Owner's working history: plans, ledgers and gate logs describe the real machines; local only
+/docs/plans/
+/docs/operations/gates/
+
+# Runtime state and secrets: dev databases, PKI, sockets, release keys, PATs, enrollment URIs, logs, tree copies
+/var/
+
+# Signed release output (scripts/release.sh); published as GitHub Release assets, never committed
+/dist/
+
+# Build output and caches
+target/
+build/
+.gradle/
+.kotlin/
+local.properties
+node_modules/
+__pycache__/
+*.py[cod]
+
+# Machine profile (.env.example documents it) and secret file types: they belong under var/ or in .env
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.p12
+*.pfx
+*.key
+*-key.pem
+*.age
+*.jks
+*.keystore
+*.pat
+*.pass
+*.password
+*.token
+secrets/
+
+# Snapshot manifest and tree-copy merge conflict markers (scripts/snapshot.sh, scripts/wt.sh)
+/.snapshot-manifest.sha256
+*.wt-conflict
+
+# IDE / editor
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

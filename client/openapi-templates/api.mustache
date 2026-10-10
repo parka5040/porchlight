@@ -1,0 +1,30 @@
+// Generated from docs/openapi.json. Do not edit generated sources.
+@file:Suppress("UNUSED_PARAMETER", "UNNECESSARY_SAFE_CALL")
+package {{package}}
+
+{{#imports}}import {{import}}
+{{/imports}}
+import app.porchlight.shared.data.GeneratedCall
+import app.porchlight.shared.transport.WireJson
+import io.ktor.http.encodeURLPathPart
+import kotlinx.serialization.json.*
+
+class {{classname}}(private val call: GeneratedCall) {
+{{#operations}}{{#operation}}
+    suspend fun {{operationId}}({{#allParams}}{{paramName}}: {{{dataType}}}{{^required}}? = null{{/required}}{{^-last}}, {{/-last}}{{/allParams}}): {{#returnType}}{{{returnType}}}{{/returnType}}{{^returnType}}Unit{{/returnType}} {
+        var path = "{{{path}}}"
+{{#pathParams}}        path = path.replace("{ {{baseName}} }".replace(" ", ""), {{paramName}}{{^isString}}.toString(){{/isString}}.encodeURLPathPart())
+{{/pathParams}}
+        val query = buildMap<String, String> {
+{{#queryParams}}            {{#required}}put("{{baseName}}", {{paramName}}{{^isString}}.toString(){{/isString}}){{/required}}{{^required}}{{paramName}}?.let { put("{{baseName}}", it{{^isString}}.toString(){{/isString}}) }{{/required}}
+{{/queryParams}}        }
+        val headers = buildMap<String, String> {
+{{#headerParams}}            {{#required}}put("{{baseName}}", {{paramName}}{{^isString}}.toString(){{/isString}}){{/required}}{{^required}}{{paramName}}?.let { put("{{baseName}}", it{{^isString}}.toString(){{/isString}}) }{{/required}}
+{{/headerParams}}        }
+        val body: JsonObject? = {{#bodyParam}}WireJson.encodeToJsonElement({{paramName}}).let { if (it is JsonNull) null else it.jsonObject }{{/bodyParam}}{{^bodyParam}}null{{/bodyParam}}
+        val response = call.request("{{httpMethod}}", path, query, headers, body{{#returnType}}, representation = true{{/returnType}})
+{{#returnType}}        return call.decode<{{{returnType}}}>(response)
+{{/returnType}}{{^returnType}}        return Unit
+{{/returnType}}    }
+{{/operation}}{{/operations}}
+}

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE porchlight.password_resets SET failed_attempts=failed_attempts+1 WHERE id=$1 AND used_at IS NULL RETURNING failed_attempts",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "failed_attempts",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "password_resets",
+            "name": "failed_attempts"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "bcd3b1a936c94b7fab19ba5fe678bcba1299d82aaf2b1c736946e41835310745"
+}

@@ -1,0 +1,268 @@
+{
+  "attachments": [
+    {
+      "comment_id": null,
+      "content_type": "text/plain",
+      "created_at": "2026-10-06T12:00:00Z",
+      "deleted_at": null,
+      "has_thumbnail": false,
+      "id": "01999999-0000-7000-8000-000000000009",
+      "item_id": "01999999-0000-7000-8000-000000000003",
+      "original_name": "notes.txt",
+      "size": 19,
+      "uploader_id": "01999999-0000-7000-8000-000000000002",
+      "uploader_token_id": null,
+      "version": 1
+    }
+  ],
+  "availability": [
+    {
+      "conflicts": [],
+      "member_id": "01999999-0000-7000-8000-000000000002",
+      "version": 0,
+      "windows": []
+    }
+  ],
+  "comments": [
+    {
+      "author_id": "01999999-0000-7000-8000-000000000002",
+      "author_token_id": null,
+      "body": "Recorded comment",
+      "created_at": "2026-10-06T12:00:00Z",
+      "deleted_at": null,
+      "edited_at": null,
+      "id": "01999999-0000-7000-8000-000000000010",
+      "item_id": "01999999-0000-7000-8000-000000000003",
+      "mentions": [],
+      "version": 1
+    }
+  ],
+  "cursor": 15,
+  "ics_sources": [],
+  "items": [
+    {
+      "address": null,
+      "all_day": false,
+      "assignees": [
+        "01999999-0000-7000-8000-000000000002"
+      ],
+      "buffer_after_min": 0,
+      "buffer_before_min": 0,
+      "capabilities": [
+        "view",
+        "comment",
+        "change_status",
+        "complete",
+        "snooze",
+        "edit",
+        "edit_reminders",
+        "reassign",
+        "change_visibility",
+        "delete"
+      ],
+      "completion_interval": null,
+      "created_at": "2026-10-06T12:00:00Z",
+      "deleted_at": null,
+      "due_at": "2026-10-06T13:00:00+00:00",
+      "due_date": null,
+      "ends_at": null,
+      "est_minutes": null,
+      "household_id": "01999999-0000-7000-8000-000000000001",
+      "ics_source_id": null,
+      "id": "01999999-0000-7000-8000-000000000003",
+      "kind": "deadline",
+      "local_due": null,
+      "local_end": null,
+      "local_start": null,
+      "missed_policy": "carry_over",
+      "nominal_local_anchor": null,
+      "nominal_wall_duration": null,
+      "notes": "",
+      "owner_id": "01999999-0000-7000-8000-000000000002",
+      "pending_derivation": false,
+      "priority": 0,
+      "recurrence_mode": null,
+      "reminders": [
+        {
+          "created_at": "2026-10-06T12:00:00Z",
+          "household_id": "01999999-0000-7000-8000-000000000001",
+          "id": "01999999-0000-7000-8000-000000000005",
+          "item_id": "01999999-0000-7000-8000-000000000003",
+          "offset_minutes": 15
+        }
+      ],
+      "rrule": null,
+      "series_id": null,
+      "source": null,
+      "split_from_item_id": null,
+      "split_from_seq": null,
+      "starts_at": null,
+      "subject_member_id": null,
+      "time_mode": "fixed",
+      "title": "Recorded task",
+      "tzid": "UTC",
+      "updated_at": "2026-10-06T12:00:00Z",
+      "version": 3,
+      "viewers": [],
+      "visibility": "household"
+    }
+  ],
+  "lists": [
+    {
+      "capabilities": [
+        "view",
+        "check",
+        "manage",
+        "edit",
+        "reassign",
+        "delete",
+        "change_visibility"
+      ],
+      "created_at": "2026-10-06T12:00:00Z",
+      "deleted_at": null,
+      "entries": [
+        {
+          "archived_at": null,
+          "checked_at": null,
+          "checked_by": null,
+          "created_at": "2026-10-06T12:00:00Z",
+          "household_id": "01999999-0000-7000-8000-000000000001",
+          "id": "01999999-0000-7000-8000-000000000006",
+          "label": "Oat milk",
+          "list_id": "01999999-0000-7000-8000-000000000007",
+          "notes": "",
+          "occurrence_id": null,
+          "position": "80",
+          "qty": null,
+          "unit": "",
+          "updated_at": "2026-10-06T12:00:00Z",
+          "url": null,
+          "version": 1
+        }
+      ],
+      "got_it": [
+        {
+          "archived_at": null,
+          "checked_at": "2026-10-06T12:00:00Z",
+          "checked_by": "01999999-0000-7000-8000-000000000002",
+          "created_at": "2026-10-06T12:00:00Z",
+          "household_id": "01999999-0000-7000-8000-000000000001",
+          "id": "01999999-0000-7000-8000-000000000008",
+          "label": "Bread",
+          "list_id": "01999999-0000-7000-8000-000000000007",
+          "notes": "",
+          "occurrence_id": null,
+          "position": "8180",
+          "qty": null,
+          "unit": "",
+          "updated_at": "2026-10-06T12:00:00Z",
+          "url": null,
+          "version": 2
+        }
+      ],
+      "household_id": "01999999-0000-7000-8000-000000000001",
+      "id": "01999999-0000-7000-8000-000000000007",
+      "item_id": null,
+      "mode": "persistent",
+      "name": "Groceries",
+      "occurrence_id": null,
+      "owner_id": "01999999-0000-7000-8000-000000000002",
+      "updated_at": "2026-10-06T12:00:00Z",
+      "version": 1,
+      "viewers": [],
+      "visibility": "household"
+    }
+  ],
+  "member_settings": {
+    "member_id": "01999999-0000-7000-8000-000000000002",
+    "settings": {
+      "pinned_list_id": null,
+      "scope": "mine",
+      "this_week_days": 7,
+      "today_sections": [
+        "overdue",
+        "today",
+        "this_week",
+        "needs_owner"
+      ]
+    },
+    "version": 1
+  },
+  "members": [
+    {
+      "color": "#ABCDEF",
+      "display_name": "Alex",
+      "household_id": "01999999-0000-7000-8000-000000000001",
+      "id": "01999999-0000-7000-8000-000000000002",
+      "initials": "A",
+      "pending_derivation": false,
+      "role": "super_admin",
+      "tz_authority_device_id": null,
+      "tz_source": "manual",
+      "tzid": "UTC",
+      "version": 2
+    }
+  ],
+  "notification_prefs": {
+    "member_id": "01999999-0000-7000-8000-000000000002",
+    "prefs": {
+      "activity": true,
+      "assignments": true,
+      "connection": true,
+      "default_appointment_offsets": [],
+      "default_deadline_offsets": [],
+      "default_todo_offsets": [],
+      "dependents": true,
+      "digest": true,
+      "quiet_end": null,
+      "quiet_start": null,
+      "reminders": true
+    },
+    "version": 1
+  },
+  "notifications": [],
+  "occurrences": [
+    {
+      "board_moved": false,
+      "board_position": "80",
+      "closed_at": null,
+      "completed_at": null,
+      "completed_by": null,
+      "created_at": "2026-10-06T12:00:00Z",
+      "disposition": "open",
+      "due_at": "2026-10-06T13:00:00+00:00",
+      "due_date": null,
+      "ends_at": null,
+      "household_id": "01999999-0000-7000-8000-000000000001",
+      "id": "01999999-0000-7000-8000-000000000004",
+      "is_detached": false,
+      "item_id": "01999999-0000-7000-8000-000000000003",
+      "local_due": "2026-10-06T13:00:00",
+      "local_end": null,
+      "local_start": null,
+      "override_due_date": null,
+      "override_local_due": null,
+      "override_local_end": null,
+      "override_local_start": null,
+      "seq": 0,
+      "skipped_at": null,
+      "starts_at": null,
+      "status": "todo",
+      "updated_at": "2026-10-06T12:00:00Z",
+      "version": 1
+    }
+  ],
+  "scheduled_reminders": [
+    {
+      "derived_at": "2026-10-06T12:00:00Z",
+      "fire_at": "2026-10-06T12:45:00+00:00",
+      "household_id": "01999999-0000-7000-8000-000000000001",
+      "id": "01999999-0000-7000-8000-000000000011",
+      "item_id": "01999999-0000-7000-8000-000000000003",
+      "member_id": "01999999-0000-7000-8000-000000000002",
+      "occurrence_id": "01999999-0000-7000-8000-000000000004",
+      "reminder_id": "01999999-0000-7000-8000-000000000005"
+    }
+  ],
+  "suggestions": []
+}

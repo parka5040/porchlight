@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Porchlight mobile lists</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Literata:opsz,wght@7..72,500;7..72,600&amp;family=Source+Sans+3:wght@400;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#fabd2f}a:hover{color:#fbf1c7}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; box-sizing: border-box; position: relative; overflow: hidden; display: flex; flex-direction: column; background: #282828; color: #ebdbb2; font-family: 'Source Sans 3', 'Segoe UI', sans-serif">
+<header style="padding: 56px 20px 12px; display: flex; flex-direction: column; gap: 14px">
+<h1 style="margin: 0; font-family: 'Literata', Georgia, serif; font-size: 28px; font-weight: 600; color: #fbf1c7">Lists</h1>
+<div style="display: flex; gap: 8px">
+<button aria-pressed="true" style="min-height: 40px; padding: 0 16px; border-radius: 20px; border: 0; background: #fabd2f; color: #1d2021; font: 700 14px 'Source Sans 3', sans-serif">Groceries</button>
+<button aria-pressed="false" style="min-height: 40px; padding: 0 16px; border-radius: 20px; border: 1px solid #504945; background: transparent; color: #d5c4a1; font: 600 14px 'Source Sans 3', sans-serif">Hardware</button>
+<button aria-pressed="false" style="min-height: 40px; padding: 0 16px; border-radius: 20px; border: 1px solid #504945; background: transparent; color: #d5c4a1; font: 600 14px 'Source Sans 3', sans-serif">Meds reorder</button>
+</div>
+</header>
+
+<main style="flex: 1; min-height: 0; overflow: hidden; padding: 4px 16px 0; display: flex; flex-direction: column; gap: 16px">
+<div style="display: flex; gap: 8px">
+<label style="flex: 1; display: flex">
+<span style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap">Add to Groceries</span>
+<input type="text" placeholder="Add to Groceries" style="flex: 1; min-height: 48px; box-sizing: border-box; padding: 0 14px; border-radius: 12px; border: 1px solid #504945; background: #1d2021; color: #ebdbb2; font: 400 16px 'Source Sans 3', sans-serif">
+</label>
+<button aria-label="Add item" style="width: 48px; height: 48px; border-radius: 12px; border: 0; background: #3c3836; color: #fabd2f; display: grid; place-items: center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></button>
+</div>
+
+<section style="background: #32302f; border-radius: 14px; overflow: hidden">
+<sc-for list="{{open}}" as="it" hint-placeholder-count="6">
+<div style="display: flex; align-items: center; gap: 6px; padding: 0 16px 0 6px; min-height: 54px; border-bottom: 1px solid #3c3836">
+<button aria-label="Check off {{it.label}}" style="width: 44px; height: 44px; flex: none; border: 0; padding: 0; background: transparent; display: grid; place-items: center"><span style="width: 22px; height: 22px; border-radius: 7px; border: 2px solid #bdae93; box-sizing: border-box"></span></button>
+<span style="flex: 1; font-size: 16px">{{it.label}}</span>
+<span style="font-size: 14px; color: #bdae93">{{it.qty}}</span>
+</div>
+</sc-for>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 6px">
+<button aria-expanded="true" style="display: flex; align-items: center; justify-content: space-between; min-height: 44px; padding: 0 4px; border: 0; background: transparent; color: #d5c4a1; font: 700 14px 'Source Sans 3', sans-serif"><span>Got it · 3</span><span style="color: #fabd2f; font-weight: 600">Clear</span></button>
+<div style="background: #32302f; border-radius: 14px; overflow: hidden">
+<sc-for list="{{done}}" as="it" hint-placeholder-count="3">
+<div style="display: flex; align-items: center; gap: 6px; padding: 0 16px 0 6px; min-height: 48px; border-bottom: 1px solid #3c3836">
+<button aria-label="Uncheck {{it.label}}" style="width: 44px; height: 44px; flex: none; border: 0; padding: 0; background: transparent; display: grid; place-items: center"><span style="width: 22px; height: 22px; border-radius: 7px; background: #b8bb26; display: grid; place-items: center"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1d2021" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7"></path></svg></span></button>
+<span style="flex: 1; font-size: 15px; color: #bdae93; text-decoration: line-through">{{it.label}}</span>
+<span style="font-size: 13px; color: #bdae93">{{it.who}}</span>
+</div>
+</sc-for>
+</div>
+</section>
+</main>
+
+<nav aria-label="Main" style="display: flex; background: #1d2021; border-top: 1px solid #3c3836; padding: 6px 4px 22px">
+<a href="MobileToday.dc.html" style="flex: 1; min-height: 52px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; color: #bdae93; text-decoration: none; font-size: 11px; font-weight: 600"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg>Today</a>
+<a href="#" style="flex: 1; min-height: 52px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; color: #bdae93; text-decoration: none; font-size: 11px; font-weight: 600"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="5" height="16" rx="1.5"></rect><rect x="10" y="4" width="5" height="11" rx="1.5"></rect><rect x="17" y="4" width="4" height="7" rx="1.5"></rect></svg>Board</a>
+<a href="#" style="flex: 1; min-height: 52px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; color: #bdae93; text-decoration: none; font-size: 11px; font-weight: 600"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"></rect><path d="M3 10h18M8 3v4M16 3v4"></path></svg>Calendar</a>
+<a href="MobileLists.dc.html" aria-current="page" style="flex: 1; min-height: 52px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; color: #fabd2f; text-decoration: none; font-size: 11px; font-weight: 700"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M9 6h12M9 12h12M9 18h12M4 6h.01M4 12h.01M4 18h.01"></path></svg>Lists</a>
+<a href="MobileInbox.dc.html" style="flex: 1; min-height: 52px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; color: #bdae93; text-decoration: none; font-size: 11px; font-weight: 600"><span style="position: relative; display: flex"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 16v-5a6 6 0 0 1 12 0v5l2 2H4z"></path><path d="M10 20a2 2 0 0 0 4 0"></path></svg><span style="position: absolute; top: -4px; right: -9px; min-width: 16px; height: 16px; border-radius: 8px; background: #fabd2f; color: #1d2021; font-size: 10px; font-weight: 700; display: grid; place-items: center">3</span></span>Inbox</a>
+</nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+renderVals() {
+return {
+open: [
+{ label: 'Oat milk', qty: '×2' },
+{ label: 'Eggs', qty: '1 dozen' },
+{ label: 'Chicken thighs', qty: '2 lb' },
+{ label: 'Spinach', qty: '' },
+{ label: 'Coffee beans', qty: '' },
+{ label: 'Dish soap', qty: '' }
+],
+done: [
+{ label: 'Bread', who: 'Jordan' },
+{ label: 'Apples', who: 'Jordan' },
+{ label: 'Yogurt', who: 'Alex' }
+]
+};
+}
+}
+</script>
+</body>
+</html>

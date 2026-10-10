@@ -1,0 +1,10 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+DTSTAMP:20261005T123456Z
+UID:folded
+DTSTART:20261005T120000Z
+SUMMARY:A long neighborhood gathering with tea and cake and board
+ games for the whole family
+END:VEVENT
+END:VCALENDAR

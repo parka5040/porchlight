@@ -1,0 +1,29 @@
+# Paths never copied into snapshots: build output, caches, runtime state and secrets.
+# Runtime state (dev databases, PKI, sockets) lives under var/ by convention.
+# Reserved name: written fresh by snapshot.sh.
+/.snapshot-manifest.sha256
+/.git/
+/var/
+/dist/
+target/
+build/
+.gradle/
+.kotlin/
+.idea/
+*.iml
+local.properties
+node_modules/
++ .env.example
++ .env.*.example
+.env
+.env.*
+*.p12
+*.pfx
+*.key
+*-key.pem
+*.age
+*.minisign.key
+*.jks
+*.keystore
+secrets/
+__pycache__/

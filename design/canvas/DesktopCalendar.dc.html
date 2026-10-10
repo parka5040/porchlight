@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Porchlight desktop calendar</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Literata:opsz,wght@7..72,500;7..72,600&amp;family=Source+Sans+3:wght@400;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#282828}
+a{color:#fabd2f}a:hover{color:#fbf1c7}
+</style>
+</helmet>
+<div style="min-height: 100vh; display: flex; flex-wrap: wrap; background: #282828; color: #ebdbb2; font-family: 'Source Sans 3', 'Segoe UI', sans-serif">
+
+<aside style="flex: 1 1 232px; background: #1d2021; display: flex; flex-direction: column; gap: 28px; padding: 24px 16px; box-sizing: border-box">
+<div style="display: flex; align-items: center; gap: 10px; padding: 0 8px">
+<img src="/_blob/bc952ff6a9be99ac8309bf89b348944c" alt="" style="width: 36px; height: 36px; border-radius: 9px">
+<span style="font-family: 'Literata', Georgia, serif; font-size: 21px; font-weight: 600; color: #fbf1c7">Porchlight</span>
+</div>
+<nav aria-label="Main" style="display: flex; flex-direction: column; gap: 2px">
+<a href="#" style="display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 12px; border-radius: 10px; color: #bdae93; text-decoration: none; font-size: 15px; font-weight: 600"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg>Today</a>
+<a href="Main.dc.html" style="display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 12px; border-radius: 10px; color: #bdae93; text-decoration: none; font-size: 15px; font-weight: 600"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="5" height="16" rx="1.5"></rect><rect x="10" y="4" width="5" height="11" rx="1.5"></rect><rect x="17" y="4" width="4" height="7" rx="1.5"></rect></svg>Board</a>
+<a href="DesktopCalendar.dc.html" aria-current="page" style="display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 12px; border-radius: 10px; background: #32302f; color: #fabd2f; text-decoration: none; font-size: 15px; font-weight: 600"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"></rect><path d="M3 10h18M8 3v4M16 3v4"></path></svg>Calendar</a>
+<a href="#" style="display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 12px; border-radius: 10px; color: #bdae93; text-decoration: none; font-size: 15px; font-weight: 600"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6h12M9 12h12M9 18h12M4 6h.01M4 12h.01M4 18h.01"></path></svg>Lists</a>
+<a href="#" style="display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 12px; border-radius: 10px; color: #bdae93; text-decoration: none; font-size: 15px; font-weight: 600"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 16v-5a6 6 0 0 1 12 0v5l2 2H4z"></path><path d="M10 20a2 2 0 0 0 4 0"></path></svg>Inbox<span style="margin-left: auto; background: #fabd2f; color: #1d2021; font-size: 12px; font-weight: 700; border-radius: 999px; padding: 1px 8px">3</span></a>
+</nav>
+<section style="display: flex; flex-direction: column; gap: 6px">
+<h2 style="margin: 0 0 4px; padding: 0 12px; font-size: 13px; font-weight: 600; color: #bdae93">Show calendars</h2>
+<label style="display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 12px; font-size: 15px"><input type="checkbox" checked style="width: 18px; height: 18px; accent-color: #fabd2f; margin: 0">Sam</label>
+<label style="display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 12px; font-size: 15px"><input type="checkbox" checked style="width: 18px; height: 18px; accent-color: #8ec07c; margin: 0">Alex</label>
+<label style="display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 12px; font-size: 15px"><input type="checkbox" checked style="width: 18px; height: 18px; accent-color: #d3869b; margin: 0">Jordan</label>
+<label style="display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 12px; font-size: 15px"><input type="checkbox" checked style="width: 18px; height: 18px; accent-color: #fe8019; margin: 0">Riley</label>
+<label style="display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 12px; font-size: 15px"><input type="checkbox" checked style="width: 18px; height: 18px; accent-color: #83a598; margin: 0">Theo</label>
+<label style="display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 12px; font-size: 15px"><input type="checkbox" checked style="width: 18px; height: 18px; accent-color: #a89984; margin: 0">Work calendar (imported)</label>
+</section>
+<div style="margin-top: auto; display: flex; align-items: center; gap: 10px; padding: 0 12px; min-height: 36px; font-size: 13px; color: #bdae93"><span style="width: 8px; height: 8px; border-radius: 50%; background: #b8bb26"></span>Connected to home</div>
+</aside>
+
+<main style="flex: 999 1 560px; min-width: 0; padding: 28px 32px 40px; box-sizing: border-box; display: flex; flex-direction: column; gap: 20px">
+<header style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px">
+<div style="display: flex; align-items: center; flex-wrap: wrap; gap: 12px">
+<h1 style="margin: 0; font-family: 'Literata', Georgia, serif; font-size: 32px; font-weight: 600; color: #fbf1c7">October 4 – 10</h1>
+<div style="display: flex; gap: 4px">
+<button aria-label="Previous week" style="width: 40px; height: 40px; border-radius: 10px; border: 1px solid #504945; background: transparent; color: #ebdbb2; display: grid; place-items: center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"></path></svg></button>
+<button aria-label="Next week" style="width: 40px; height: 40px; border-radius: 10px; border: 1px solid #504945; background: transparent; color: #ebdbb2; display: grid; place-items: center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l7 7-7 7"></path></svg></button>
+<button style="min-height: 40px; padding: 0 14px; border-radius: 10px; border: 1px solid #504945; background: transparent; color: #ebdbb2; font: 600 14px 'Source Sans 3', sans-serif">Today</button>
+</div>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center">
+<div style="display: flex; gap: 4px; background: #32302f; border-radius: 12px; padding: 4px">
+<button aria-pressed="false" style="min-height: 36px; padding: 0 14px; border: 0; border-radius: 9px; background: transparent; color: #bdae93; font: 600 14px 'Source Sans 3', sans-serif">Day</button>
+<button aria-pressed="true" style="min-height: 36px; padding: 0 14px; border: 0; border-radius: 9px; background: #504945; color: #fbf1c7; font: 600 14px 'Source Sans 3', sans-serif">Week</button>
+<button aria-pressed="false" style="min-height: 36px; padding: 0 14px; border: 0; border-radius: 9px; background: transparent; color: #bdae93; font: 600 14px 'Source Sans 3', sans-serif">Month</button>
+</div>
+<button style="display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 18px; border: 0; border-radius: 12px; background: #fabd2f; color: #1d2021; font: 700 15px 'Source Sans 3', sans-serif"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>New item</button>
+</div>
+</header>
+
+<div style="display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start">
+<div style="flex: 999 1 640px; min-width: 0; overflow-x: auto; background: #32302f; border-radius: 16px">
+<div style="min-width: 760px; padding: 8px 12px 16px 0">
+<div style="display: grid; grid-template-columns: 60px repeat(7, minmax(0, 1fr)); align-items: end; padding-bottom: 8px; border-bottom: 1px solid #504945">
+<span></span>
+<div style="display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 0"><span style="font-size: 13px; color: #fabd2f; font-weight: 700">Sun</span><span style="width: 32px; height: 32px; border-radius: 50%; background: #fabd2f; color: #1d2021; display: grid; place-items: center; font-size: 15px; font-weight: 700">4</span></div>
+<div style="display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 0"><span style="font-size: 13px; color: #bdae93; font-weight: 600">Mon</span><span style="height: 32px; display: grid; place-items: center; font-size: 15px; font-weight: 600">5</span></div>
+<div style="display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 0"><span style="font-size: 13px; color: #bdae93; font-weight: 600">Tue</span><span style="height: 32px; display: grid; place-items: center; font-size: 15px; font-weight: 600">6</span></div>
+<div style="display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 0"><span style="font-size: 13px; color: #bdae93; font-weight: 600">Wed</span><span style="height: 32px; display: grid; place-items: center; font-size: 15px; font-weight: 600">7</span></div>
+<div style="display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 0"><span style="font-size: 13px; color: #bdae93; font-weight: 600">Thu</span><span style="height: 32px; display: grid; place-items: center; font-size: 15px; font-weight: 600">8</span></div>
+<div style="display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 0"><span style="font-size: 13px; color: #bdae93; font-weight: 600">Fri</span><span style="height: 32px; display: grid; place-items: center; font-size: 15px; font-weight: 600">9</span></div>
+<div style="display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 0"><span style="font-size: 13px; color: #bdae93; font-weight: 600">Sat</span><span style="height: 32px; display: grid; place-items: center; font-size: 15px; font-weight: 600">10</span></div>
+</div>
+<div style="display: grid; grid-template-columns: 60px repeat(7, minmax(0, 1fr)); gap: 0; align-items: center; min-height: 40px; border-bottom: 1px solid #504945">
+<span style="font-size: 12px; color: #bdae93; text-align: right; padding-right: 10px">All day</span>
+<span style="grid-column: 5; margin: 6px 4px; padding: 4px 8px; border-radius: 7px; border: 1px solid #8ec07c; font-size: 12px; font-weight: 600">Pay water bill</span>
+<span style="grid-column: 7; margin: 6px 4px; padding: 4px 8px; border-radius: 7px; border: 1px solid #d3869b; font-size: 12px; font-weight: 600">Reorder meds</span>
+</div>
+<div style="display: grid; grid-template-columns: 60px repeat(7, minmax(0, 1fr)); padding-top: 10px">
+<div style="display: flex; flex-direction: column">
+<sc-for list="{{hours}}" as="h" hint-placeholder-count="13"><span style="height: 52px; font-size: 12px; color: #bdae93; text-align: right; padding-right: 10px; transform: translateY(-8px)">{{h}}</span></sc-for>
+</div>
+<sc-for list="{{days}}" as="d" hint-placeholder-count="7">
+<div style="position: relative; height: 676px; border-left: 1px solid #3c3836; background-image: repeating-linear-gradient(to bottom, #45403d 0, #45403d 1px, transparent 1px, transparent 52px); background-color: {{d.bg}}">
+<sc-for list="{{d.events}}" as="e" hint-placeholder-count="1">
+<div style="position: absolute; top: {{e.top}}px; height: {{e.h}}px; left: {{e.left}}; right: {{e.right}}; box-sizing: border-box; border-radius: 8px; background: {{e.bg}}; border: {{e.border}}; padding: 5px 7px; overflow: hidden; display: flex; flex-direction: column; gap: 1px">
+<span style="font-size: 12.5px; font-weight: 700; line-height: 1.25; color: #fbf1c7">{{e.title}}</span>
+<sc-if value="{{e.roomy}}" hint-placeholder-val="{{ true }}"><span style="font-size: 12px; line-height: 1.3; color: #d5c4a1">{{e.sub}}</span></sc-if>
+</div>
+</sc-for>
+</div>
+</sc-for>
+</div>
+</div>
+</div>
+
+<aside aria-label="Planning" style="flex: 1 1 320px; min-width: 0; display: flex; flex-direction: column; gap: 16px">
+<section style="background: #32302f; border-radius: 16px; padding: 20px; display: flex; flex-direction: column; gap: 14px">
+<h2 style="margin: 0; font-family: 'Literata', Georgia, serif; font-size: 20px; font-weight: 600; color: #fbf1c7">Needs an owner</h2>
+<div style="display: flex; flex-direction: column; gap: 10px; padding: 14px; border-radius: 12px; border: 2px dashed #fe8019">
+<div style="display: flex; flex-direction: column; gap: 2px"><span style="font-size: 15px; font-weight: 700">Dentist for Riley</span><span style="font-size: 13px; color: #bdae93">Thu 3:30–4:30 PM · leave by 3:10</span></div>
+<div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px"><span style="font-size: 13px; color: #b8bb26; font-weight: 600">Alex is free</span><button style="min-height: 36px; padding: 0 14px; border-radius: 9px; border: 0; background: #fe8019; color: #1d2021; font: 700 13px 'Source Sans 3', sans-serif">Assign Alex</button></div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 10px; padding: 14px; border-radius: 12px; border: 2px dashed #fe8019">
+<div style="display: flex; flex-direction: column; gap: 2px"><span style="font-size: 15px; font-weight: 700">Swim lesson for Theo</span><span style="font-size: 13px; color: #bdae93">Sat 9:00–9:45 AM</span></div>
+<div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px"><span style="font-size: 13px; color: #b8bb26; font-weight: 600">Jordan is free</span><button style="min-height: 36px; padding: 0 14px; border-radius: 9px; border: 0; background: #fe8019; color: #1d2021; font: 700 13px 'Source Sans 3', sans-serif">Assign Jordan</button></div>
+</div>
+</section>
+<section style="background: #32302f; border-radius: 16px; padding: 20px; display: flex; flex-direction: column; gap: 12px">
+<h2 style="margin: 0; font-family: 'Literata', Georgia, serif; font-size: 20px; font-weight: 600; color: #fbf1c7">Conflicts</h2>
+<div style="display: flex; gap: 10px; align-items: flex-start">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fd8d7f" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; margin-top: 2px"><path d="M12 3l9.5 17h-19z"></path><path d="M12 10v4M12 17.5v.5"></path></svg>
+<div style="display: flex; flex-direction: column; gap: 8px"><span style="font-size: 14px; line-height: 1.45">Soccer pickup for Theo overlaps Sam's Quarterly review on Tue at 3:45 PM.</span><button style="align-self: flex-start; min-height: 36px; padding: 0 14px; border-radius: 9px; border: 1px solid #504945; background: transparent; color: #ebdbb2; font: 600 13px 'Source Sans 3', sans-serif">Reassign</button></div>
+</div>
+</section>
+<section style="background: #32302f; border-radius: 16px; padding: 20px; display: flex; flex-direction: column; gap: 14px">
+<div style="display: flex; flex-direction: column; gap: 2px"><h2 style="margin: 0; font-family: 'Literata', Georgia, serif; font-size: 20px; font-weight: 600; color: #fbf1c7">Suggested times</h2><span style="font-size: 13px; color: #bdae93">From availability and deadlines</span></div>
+<div style="display: flex; flex-direction: column; gap: 8px; padding-bottom: 14px; border-bottom: 1px solid #504945">
+<span style="font-size: 15px; font-weight: 700">Repaint the porch railing</span>
+<span style="font-size: 13px; color: #bdae93">Sat 1:00–4:00 PM · Sam</span>
+<div style="display: flex; gap: 8px"><button style="min-height: 36px; padding: 0 14px; border-radius: 9px; border: 0; background: #fabd2f; color: #1d2021; font: 700 13px 'Source Sans 3', sans-serif">Accept</button><button style="min-height: 36px; padding: 0 14px; border-radius: 9px; border: 1px solid #504945; background: transparent; color: #ebdbb2; font: 600 13px 'Source Sans 3', sans-serif">Dismiss</button></div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<span style="font-size: 15px; font-weight: 700">Research summer camps</span>
+<span style="font-size: 13px; color: #bdae93">Tue 7:30–8:30 PM · Jordan</span>
+<div style="display: flex; gap: 8px"><button style="min-height: 36px; padding: 0 14px; border-radius: 9px; border: 0; background: #fabd2f; color: #1d2021; font: 700 13px 'Source Sans 3', sans-serif">Accept</button><button style="min-height: 36px; padding: 0 14px; border-radius: 9px; border: 1px solid #504945; background: transparent; color: #ebdbb2; font: 600 13px 'Source Sans 3', sans-serif">Dismiss</button></div>
+</div>
+</section>
+</aside>
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic {
+renderVals() {
+const K = {
+sam: ['rgba(250,189,47,0.16)', '1px solid #fabd2f'],
+alex: ['rgba(142,192,124,0.16)', '1px solid #8ec07c'],
+jordan: ['rgba(211,134,155,0.18)', '1px solid #d3869b'],
+house: ['rgba(213,196,161,0.12)', '1px solid #d5c4a1'],
+busy: ['rgba(168,153,132,0.10)', '1px dashed #a89984'],
+conflict: ['rgba(251,73,52,0.18)', '2px solid #fd8d7f'],
+owner: ['rgba(254,128,25,0.12)', '2px dashed #fe8019'],
+suggest: ['transparent', '1px dashed #fabd2f'],
+buffer: ['rgba(254,128,25,0.05)', '1px dotted #7c6f64']
+};
+const ev = (title, sub, start, end, kind, left, right) => ({
+title, sub,
+top: Math.round((start - 8) * 52) + 1,
+h: Math.round((end - start) * 52) - 2,
+roomy: end - start >= 0.75,
+bg: K[kind][0], border: K[kind][1],
+left: left || '4px', right: right || '4px'
+});
+const days = [
+[ev('Weekly planning', '6:00 PM · Everyone', 18, 18.75, 'house')],
+[ev('Soccer practice', '4:30 PM · Theo with Jordan', 16.5, 18, 'jordan')],
+[ev('Quarterly review', '2:00 PM · Sam · work, imported', 14, 16, 'busy', '4px', '50%'), ev('Soccer pickup', '3:45 PM · Theo with Sam', 15.75, 16.25, 'conflict', '50%', '4px'), ev('Trash and recycling', '8:00 PM · Sam', 20, 20.5, 'sam')],
+[ev('Book club', '7:00 PM · Alex', 19, 21, 'alex')],
+[ev('Travel', '20 min', 15.17, 15.5, 'buffer'), ev('Dentist · needs an owner', '3:30 PM · Riley', 15.5, 16.5, 'owner'), ev('Soccer practice', '4:30 PM · Theo with Jordan', 16.5, 18, 'jordan')],
+[ev('Date night', '7:00 PM · Sam and Alex', 19, 21, 'sam')],
+[ev('Swim lesson · needs an owner', '9:00 AM · Theo', 9, 9.75, 'owner'), ev('Groceries', '10:00 AM · Jordan', 10, 11, 'jordan'), ev('Repaint porch railing', 'Suggested · 1:00 PM · Sam', 13, 16, 'suggest')]
+].map((events, i) => ({ events, bg: i === 0 ? 'rgba(250,189,47,0.04)' : 'transparent' }));
+return {
+hours: ['8 AM', '9 AM', '10 AM', '11 AM', '12 PM', '1 PM', '2 PM', '3 PM', '4 PM', '5 PM', '6 PM', '7 PM', '8 PM'],
+days
+};
+}
+}
+</script>
+</body>
+</html>

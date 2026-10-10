@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE porchlight.sessions SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c782af7e931f750e02f453dd491eed09609228b9e78fc975dfbeb63800f5f81e"
+}

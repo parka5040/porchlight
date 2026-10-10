@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT ca_fingerprint FROM porchlight.install_state WHERE id = true",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "ca_fingerprint",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "install_state",
+            "name": "ca_fingerprint"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "436b15006c4623aad6e165e2076da67a0d548b3f39e488f54ab35703831fc18f"
+}

@@ -1,0 +1,36 @@
+{
+  "list-filter": {
+    "devices": [
+      {
+        "certificate_expires_at": "<timestamp>",
+        "created_at": "<timestamp>",
+        "current": false,
+        "id": "<uuid:13>",
+        "label": "Test device",
+        "last_seen_at": null,
+        "member_id": "<uuid:2>",
+        "platform": "desktop",
+        "revoked_at": null,
+        "username": "admin"
+      }
+    ],
+    "items": [
+      {
+        "certificate_expires_at": "<timestamp>",
+        "created_at": "<timestamp>",
+        "current": false,
+        "id": "<uuid:13>",
+        "label": "Test device",
+        "last_seen_at": null,
+        "member_id": "<uuid:2>",
+        "platform": "desktop",
+        "revoked_at": null,
+        "username": "admin"
+      }
+    ],
+    "next_cursor": null
+  },
+  "revoke": {
+    "revoked_at": "<timestamp>"
+  }
+}

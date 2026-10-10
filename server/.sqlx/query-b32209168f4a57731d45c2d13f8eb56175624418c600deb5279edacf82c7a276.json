@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE porchlight.idempotency_keys SET response_status=$2,response_sealed=$3 WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b32209168f4a57731d45c2d13f8eb56175624418c600deb5279edacf82c7a276"
+}

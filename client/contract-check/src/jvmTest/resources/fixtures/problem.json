@@ -1,0 +1,7 @@
+{
+  "type": "urn:porchlight:problem:upgrade-required",
+  "title": "Upgrade required",
+  "status": 426,
+  "min_client_version": "0.2.0",
+  "detail": null
+}

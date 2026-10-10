@@ -1,0 +1,33 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO porchlight.idempotency_keys(household_id,scope_kind,scope_id,idem_key,request_hash,expires_at) VALUES ($1,$2,$3,$4,$5,now()+$6::float8*interval '1 second') ON CONFLICT(scope_kind,scope_id,idem_key) DO NOTHING RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "idempotency_keys",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Text",
+        "Bytea",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1c5f15d1edd9039bb23d4b0f7a7eb2300f9d164270ebdcf376170ee475f98c28"
+}

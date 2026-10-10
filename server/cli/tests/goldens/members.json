@@ -1,0 +1,46 @@
+{
+  "list": {
+    "items": [
+      {
+        "color": "#FABD2F",
+        "display_name": "Admin",
+        "household_id": "<uuid:4>",
+        "id": "<uuid:2>",
+        "initials": "A",
+        "pending_derivation": false,
+        "role": "super_admin",
+        "tz_authority_device_id": null,
+        "tz_source": "device",
+        "tzid": "America/New_York",
+        "version": 1
+      },
+      {
+        "color": "#FE8019",
+        "display_name": "Child",
+        "household_id": "<uuid:4>",
+        "id": "<uuid:1>",
+        "initials": "C",
+        "pending_derivation": false,
+        "role": "dependent",
+        "tz_authority_device_id": null,
+        "tz_source": "device",
+        "tzid": "America/New_York",
+        "version": 2
+      }
+    ],
+    "next_cursor": null
+  },
+  "set-tz": {
+    "color": "#FABD2F",
+    "display_name": "Admin",
+    "household_id": "<uuid:4>",
+    "id": "<uuid:2>",
+    "initials": "A",
+    "pending_derivation": false,
+    "role": "super_admin",
+    "tz_authority_device_id": null,
+    "tz_source": "manual",
+    "tzid": "UTC",
+    "version": 2
+  }
+}

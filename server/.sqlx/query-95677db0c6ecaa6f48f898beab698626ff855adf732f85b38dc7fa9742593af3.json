@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT (EXISTS (SELECT 1 FROM porchlight.install_state)\n                    OR EXISTS (SELECT 1 FROM porchlight.households)) AS \"already!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "already!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "95677db0c6ecaa6f48f898beab698626ff855adf732f85b38dc7fa9742593af3"
+}

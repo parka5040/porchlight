@@ -1,0 +1,8 @@
+<resources>
+    <!-- Match the Daylight canvas before Compose's follow-system palette is drawn. -->
+    <style name="PorchlightTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#FBF1C7</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+</resources>

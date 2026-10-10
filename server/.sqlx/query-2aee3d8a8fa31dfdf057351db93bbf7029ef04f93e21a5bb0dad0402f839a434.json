@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE porchlight.api_tokens SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2aee3d8a8fa31dfdf057351db93bbf7029ef04f93e21a5bb0dad0402f839a434"
+}

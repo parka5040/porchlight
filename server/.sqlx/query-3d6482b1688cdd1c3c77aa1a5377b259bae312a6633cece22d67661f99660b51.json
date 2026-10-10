@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE porchlight.api_tokens SET last_used_at=now() WHERE id=$1 AND revoked_at IS NULL AND expires_at>now() AND (last_used_at IS NULL OR last_used_at<=now()-interval '1 hour')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3d6482b1688cdd1c3c77aa1a5377b259bae312a6633cece22d67661f99660b51"
+}

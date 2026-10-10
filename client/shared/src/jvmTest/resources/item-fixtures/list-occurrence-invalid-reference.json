@@ -1,0 +1,13 @@
+{
+  "detail": null,
+  "errors": [
+    {
+      "code": "invalid-reference",
+      "field": "occurrence_id",
+      "message": "Invalid reference"
+    }
+  ],
+  "status": 422,
+  "title": "Validation failed",
+  "type": "urn:porchlight:problem:validation-failed"
+}

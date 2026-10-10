@@ -1,0 +1,2 @@
+# Release APK signer certificate SHA-256 (apksigner verify --print-certs), one line per signer. Public; see docs/operations/keys.md.
+edd9278f73d0eefb12ff693e9e753f144c58f9016416239ac0b617fd85b3d07d

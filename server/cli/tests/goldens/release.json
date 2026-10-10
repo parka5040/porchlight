@@ -1,0 +1,11 @@
+{
+  "status": {
+    "checked_at": null,
+    "client_release": null,
+    "last_error": null,
+    "latest": null,
+    "running": "<running-version>",
+    "update_available": false,
+    "upgrade_command": null
+  }
+}

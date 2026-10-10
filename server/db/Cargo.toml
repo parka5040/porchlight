@@ -1,0 +1,31 @@
+[package]
+name = "porchlight-db"
+description = "Porchlight persistence: migrations, SQL triggers and functions, queries."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+porchlight-core.workspace = true
+sqlx.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+chrono-tz.workspace = true
+tracing.workspace = true
+# Detached BEGIN (tx::begin) needs a runtime handle; the task-local test hooks use it too.
+tokio.workspace = true
+
+[features]
+testing = []
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["time"] }
+porchlight-db = { workspace = true, features = ["testing"] }
+
+[lints]
+workspace = true

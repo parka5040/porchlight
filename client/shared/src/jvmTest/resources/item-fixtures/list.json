@@ -1,0 +1,64 @@
+{
+  "capabilities": [
+    "view",
+    "check",
+    "manage",
+    "edit",
+    "reassign",
+    "delete",
+    "change_visibility"
+  ],
+  "created_at": "2026-10-06T12:00:00Z",
+  "deleted_at": null,
+  "entries": [
+    {
+      "archived_at": null,
+      "checked_at": null,
+      "checked_by": null,
+      "created_at": "2026-10-06T12:00:00Z",
+      "household_id": "01999999-0000-7000-8000-000000000001",
+      "id": "01999999-0000-7000-8000-000000000006",
+      "label": "Oat milk",
+      "list_id": "01999999-0000-7000-8000-000000000007",
+      "notes": "",
+      "occurrence_id": null,
+      "position": "80",
+      "qty": null,
+      "unit": "",
+      "updated_at": "2026-10-06T12:00:00Z",
+      "url": null,
+      "version": 1
+    }
+  ],
+  "got_it": [
+    {
+      "archived_at": null,
+      "checked_at": "2026-10-06T12:00:00Z",
+      "checked_by": "01999999-0000-7000-8000-000000000002",
+      "created_at": "2026-10-06T12:00:00Z",
+      "household_id": "01999999-0000-7000-8000-000000000001",
+      "id": "01999999-0000-7000-8000-000000000008",
+      "label": "Bread",
+      "list_id": "01999999-0000-7000-8000-000000000007",
+      "notes": "",
+      "occurrence_id": null,
+      "position": "8180",
+      "qty": null,
+      "unit": "",
+      "updated_at": "2026-10-06T12:00:00Z",
+      "url": null,
+      "version": 2
+    }
+  ],
+  "household_id": "01999999-0000-7000-8000-000000000001",
+  "id": "01999999-0000-7000-8000-000000000007",
+  "item_id": null,
+  "mode": "persistent",
+  "name": "Groceries",
+  "occurrence_id": null,
+  "owner_id": "01999999-0000-7000-8000-000000000002",
+  "updated_at": "2026-10-06T12:00:00Z",
+  "version": 1,
+  "viewers": [],
+  "visibility": "household"
+}

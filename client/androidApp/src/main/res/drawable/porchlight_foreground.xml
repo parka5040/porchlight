@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hand-converted lantern geometry from design/icon/porchlight-icon.svg.
+     A 128-unit inset keeps the beam and lantern inside the adaptive-icon safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="768" android:viewportHeight="768">
+    <group android:translateX="128" android:translateY="128">
+        <path android:fillColor="#665C54" android:pathData="M177,66 H335 Q344,66 344,75 V83 Q344,92 335,92 H177 Q168,92 168,83 V75 Q168,66 177,66 Z" />
+        <path android:fillColor="#504945" android:pathData="M184,77 H248 V81 H184 Z M270,77 H328 V81 H270 Z" />
+        <path android:fillColor="#A89984" android:pathData="M252,92 H260 V104 H252 Z" />
+        <path android:strokeColor="#A89984" android:strokeWidth="8" android:fillColor="#00000000" android:pathData="M269,116 A13,13 0,1 1,243 116 A13,13 0,1 1,269 116 Z" />
+        <path android:fillColor="#7C6F64" android:pathData="M248,126 H264 Q268,126 268,130 V138 Q268,142 264,142 H248 Q244,142 244,138 V130 Q244,126 248,126 Z" />
+        <path android:fillColor="#504945" android:pathData="M222,140 H290 L320,176 H192 Z" />
+        <path android:fillColor="#665C54" android:fillAlpha="0.55" android:pathData="M222,140 H256 V176 H192 Z" />
+        <path android:fillColor="#7C6F64" android:pathData="M188,172 H324 Q332,172 332,180 V184 Q332,192 324,192 H188 Q180,192 180,184 V180 Q180,172 188,172 Z" />
+        <path android:fillColor="#D79921" android:pathData="M214,190 H298 Q312,190 312,204 V340 Q312,354 298,354 H214 Q200,354 200,340 V204 Q200,190 214,190 Z" />
+        <path android:fillColor="#FBF1C7" android:fillAlpha="0.35" android:pathData="M217,204 Q221,204 221,208 V318 Q221,322 217,322 Q213,322 213,318 V208 Q213,204 217,204 Z" />
+        <path android:fillColor="#EBDBB2" android:pathData="M245,312 H267 Q272,312 272,317 V341 Q272,346 267,346 H245 Q240,346 240,341 V317 Q240,312 245,312 Z" />
+        <path android:fillColor="#FE8019" android:pathData="M256,212 C275,240 290,258 290,282 C290,304 274,318 256,318 C238,318 222,304 222,282 C222,258 237,240 256,212 Z" />
+        <path android:fillColor="#FABD2F" android:pathData="M256,236 C268,254 279,268 279,286 C279,302 269,312 256,312 C243,312 233,302 233,286 C233,268 244,254 256,236 Z" />
+        <path android:fillColor="#FBF1C7" android:pathData="M256,262 C263,273 268,281 268,292 C268,302 263,308 256,308 C249,308 244,302 244,292 C244,281 249,273 256,262 Z" />
+        <path android:fillColor="#504945" android:pathData="M196,186 H200 Q206,186 206,192 V352 Q206,358 200,358 H196 Q190,358 190,352 V192 Q190,186 196,186 Z M312,186 H316 Q322,186 322,192 V352 Q322,358 316,358 H312 Q306,358 306,352 V192 Q306,186 312,186 Z" />
+        <path android:fillColor="#7C6F64" android:pathData="M188,350 H324 Q332,350 332,358 V362 Q332,370 324,370 H188 Q180,370 180,362 V358 Q180,350 188,350 Z" />
+        <path android:fillColor="#504945" android:pathData="M200,370 H312 L298,394 H214 Z" />
+        <path android:fillColor="#FABD2F" android:fillAlpha="0.8" android:pathData="M145,248 A5,5 0,1 1,135 248 A5,5 0,1 1,145 248 Z M382,210 A4,4 0,1 1,374 210 A4,4 0,1 1,382 210 Z M163,352 A3,3 0,1 1,157 352 A3,3 0,1 1,163 352 Z" />
+        <path android:fillColor="#B8BB26" android:fillAlpha="0.7" android:pathData="M371.5,330 A3.5,3.5 0,1 1,364.5 330 A3.5,3.5 0,1 1,371.5 330 Z" />
+    </group>
+</vector>
