@@ -23,12 +23,7 @@ class StagedExportSink(private val spool: File, private val household: Boolean,
     }
     override suspend fun finish(checkGate: () -> Unit) = withContext(Dispatchers.IO) {
         output?.close(); output = null
-        if (household) validateHouseholdArchive(spool) else {
-            // Member JSON is intentionally a single document; cap malformed/oversized documents rather than OOM.
-            require(spool.length() <= 64L * 1024 * 1024) { "Member export too large" }
-            val json = WireJson.parseToJsonElement(spool.readText()).jsonObject
-            require(json["format_version"]?.jsonPrimitive?.int == 1 && json["tables"] is JsonObject && json["appointments_ics"] is JsonPrimitive)
-        }
+        if (household) validateHouseholdArchive(spool) else validateMemberExport(spool, checkGate)
         checkGate()
         val target = destination()
         publishing = true

@@ -27,8 +27,8 @@ def private(path):
         raise ValueError('runtime path outside var')
     return resolved
 
-def read_sse_until(reply, event, entity_id=None, forbid_notifications=False):
-    """Read past eager heartbeats/unrelated frames, with one bounded deadline."""
+def read_sse_until(reply, event, entity_id=None, forbid_notifications=()):
+    """Read past unrelated frames; forbid_notifications contains fixture notification IDs."""
     deadline = time.monotonic() + 15
     fields = {}
     while time.monotonic() < deadline:
@@ -42,11 +42,11 @@ def read_sse_until(reply, event, entity_id=None, forbid_notifications=False):
             continue
         if not line:
             kind = fields.get('event', '')
-            if forbid_notifications and kind.startswith('notification.'):
-                raise ValueError('recipient isolation failed')
-            if kind == event:
+            if kind == event or (forbid_notifications and kind.startswith('notification.')):
                 data = json.loads(fields.get('data', '{}'))
-                if entity_id is None or data.get('entity_id') == entity_id:
+                if kind.startswith('notification.') and data.get('entity_id') in forbid_notifications:
+                    raise ValueError('recipient isolation failed')
+                if kind == event and (entity_id is None or data.get('entity_id') == entity_id):
                     return data
             fields = {}
         elif ':' in line:
@@ -154,12 +154,12 @@ def run(config):
         read_sse_until(second_stream, 'notification.dismissed', n['id'])
         if any(row['id'] == n['id'] for row in api('GET', '/v1/notifications?unread=true', caller=second)['items']):
             raise ValueError('second device did not clear read notification')
-        def privacy_barrier():
+        def privacy_barrier(notification_ids):
             fence = str(uuid.uuid4())
             items.append(fence)
             sql(f"BEGIN; SET LOCAL application_name='agent:m5-demo'; INSERT INTO porchlight.items(id,household_id,owner_id,title,kind,visibility) VALUES ('{fence}','{household}','{recipient}','M5 stream barrier','todo','household'); COMMIT;")
-            read_sse_until(other_stream, 'item.changed', fence, forbid_notifications=True)
-        privacy_barrier()
+            read_sse_until(other_stream, 'item.changed', fence, forbid_notifications=notification_ids)
+        privacy_barrier({n['id']})
         print('PASS: member-private mark-read dismissal on both recipient devices, absent on other member', flush=True)
         # Quiet interval ends at the next local minute, allowing a bounded real-clock release proof.
         local = dt.datetime.now(dt.timezone.utc).astimezone(zone)
@@ -182,7 +182,7 @@ def run(config):
             raise ValueError('read-all did not clear digest')
         read_sse_until(first_stream, 'notification.dismissed', digest['id'])
         read_sse_until(second_stream, 'notification.dismissed', digest['id'])
-        privacy_barrier()
+        privacy_barrier({n['id'], digest['id']})
         print('PASS: member-private read-all dismissal on both devices, absent on other member', flush=True)
     finally:
         for conn, reply in streams:

@@ -5,17 +5,21 @@
 Download `porchlight-<V>-dist.tar`, `manifest.json` and `manifest.json.minisig` from the chosen GitHub Release.
 Before running anything, compare the minisign key fingerprint in the release notes with the independently trusted
 public anchor in `deploy/release-keys/minisign.pub`; do not trust a key merely because it arrived with the download.
-Extract into a new empty private directory under runtime state, then verify the extracted manifest using that
-trusted key (`minisign -Vm manifest.json -x manifest.json.minisig -p <trusted-public-key-file>`). Compare it with
-the separately downloaded manifest and check the extracted `install.sh` size/SHA-256 against its signed entry
-before executing it. Use a safe extractor that rejects absolute/parent paths, links and special files, for example
-`python3 -I -B deploy/lib/operations.py extract <downloaded-tar> <new-directory>` from an independently trusted
-checkout. Never execute a helper from an unverified archive. The generated `install.sh` then verifies every release
-member before installing.
+Verify the separately downloaded manifest **before extraction** using that trusted key
+(`minisign -Vm manifest.json -x manifest.json.minisig -p <trusted-public-key-file>`). Keep its signature alongside it.
+From an independently trusted checkout, run
+`python3 -I -B deploy/lib/operations.py extract <downloaded-tar> <new-private-directory> <verified-manifest.json>`.
+This checks the entire archive's names/types/sizes against the signed inventory before writing members, caps
+expanded bytes/member count from that inventory, bounds extended headers, and rejects links/special files.
+Compare the extracted manifest with the verified download and check the extracted `install.sh` size/SHA-256
+against its signed entry before executing it. Never run an unverified archive's helper. The generated
+`install.sh` then verifies every release member before installing.
 
 Run `bash <extracted>/install.sh server --source <extracted> ...` with the server options below, or `desktop` for
-a first desktop install. Keep the complete signed distribution for recovery. Future server updates use the
-[one-command wrapper](upgrade.md); only this first bootstrap requires establishing trust out of band.
+a first desktop install. Keep the complete signed distribution for recovery. **For 0.1.6 → next release**, use
+`scripts/deploy-server.sh upgrade <new-version>` with the laptop-verified signed dist: the old network wrapper
+extracts unsigned archives before handoff, and old `upgrade --source` retains unsafe rollback code. Later releases
+can use the [one-command wrapper](upgrade.md), which hands off to the verified new installer.
 
 ## Local artifacts or SSH
 
@@ -24,12 +28,14 @@ embedded public-key fingerprint out of band. Verification helpers (bash and Pyth
 it can be copied alone to a host and used with `--source`. No source `lib/` code is loaded before verification. The
 checkout `deploy/install.sh` is a template, not an executable trust root. Running an installer from an untrusted source cannot bootstrap its own
 trust. It verifies the selected source's minisign signature and **all** member hashes before using artifacts. Never
-substitute a public key from the same untrusted source. Native bash, Python 3.12+, minisign, tar and (for restore) age
+substitute a public key from the same untrusted source. Native bash, Python 3.12+, minisign, tar, flock and (for restore) age
 are required; SSH sources additionally require rsync/ssh. The installer never fetches packages; `upgrade --release`
 fetches signed artifacts over HTTPS (plain HTTP is limited to the explicit loopback test harness).
 Source format is a local directory or `user@host:/absolute/path` (`rsync --protect-args`); remote installer code is not
 executed during fetching. Artifact install/upgrade/restore modes use `--source`; `funnel`, `server-cert`, `enroll-host` and `backup`
 operate on the already installed `release-current` instead (upgrade first when adding capabilities).
+For upgrades, execute the **new** verified installer, never the old installer with a new `--source`. For restore,
+execute the newest verified installer with the bundle's matching signed `--source` artifacts, not its old installer.
 
 ## Server on this laptop
 
@@ -54,6 +60,24 @@ ENROLL_CIDRS=127.0.0.1/32 LAN_BIND=127.0.0.1 PG_PORT=25432 LAN_PORT=28443 ENROLL
 Without `--admin-password-file`, prompts ask for display name and hidden password. Additional options:
 `--admin-username`, `--household`, `--tz`, repeated `--san-dns`/`--san-ip`. The init output contains a bootstrap PAT and is saved only to
 `<root>/init.json` (0600); never paste it into logs. Recover/save the PAT privately, then delete the init output.
+Initial inputs (including password policy and the server's bundled storage-timezone allowlist) are checked
+before publishing `.env`. `Factory`, host-only `localtime`, and `posix/` or `right/` names are rejected; supported
+IANA aliases such as `US/Eastern` are accepted and canonicalized by the server. A private, durable
+`.provisioning` marker binds the release and provisioning options until API/backup startup completes.
+Retries compare all effective non-secret deployment inputs with `.env` (UID/GID, CIDRs, ports, bind address,
+endpoints, subnets and minimum client version); changed inputs are refused before service changes. Compose uses
+this persisted configuration, never inherited overrides. Retry with the original deployment inputs; after
+completion change configuration through the supported operations. Credentials are never regenerated to correct inputs.
+If image loading, migration, init or startup fails, correct the cause and rerun the same `server` command (or
+controller `install`) with the same release/options; a corrected password is allowed. Credentials are reused,
+recoverable init is resumed, and acknowledged init output/PKI is not regenerated. A flushed delivery is recovered
+even if init acknowledgement cleanup or the installer itself was killed. After preserving that delivery, resume
+reruns server init to check publication/fingerprints and acknowledge/remove `data/.init-staging`, discarding any
+redelivered stdout rather than creating another plaintext copy. The server's `AlreadyInitialized` exit is accepted
+only after PKI/database verification and complete staging cleanup. Do not delete `.env`, PKI,
+`init.pending.json`, `init-attempt.json` or provisioning markers to retry; after success only `init.json` remains. Upgrade refuses
+unfinished provisioning. Older installers without a marker require the [legacy recovery procedure](server-install.md#failed-first-init-recovery).
+
 By default certificate SANs include `porchlight.lan`, localhost/127.0.0.1, plus the hostnames/IPs in `ENROLL_HOST`
 and `PORCHLIGHT_ENDPOINTS`. Explicit SAN options replace this default list; supply every required endpoint name. Enrollment peer-CIDR
 checking is intentionally strict: verify Docker's source IP preservation with the M2 gate before enrolling devices.
@@ -86,10 +110,11 @@ scripts/deploy-server.sh enroll-host <server-lan-ip>
 IPv6 is refused. The host must already be in the **current** certificate SANs; if missing, run
 `install.sh server-cert` with the complete required SAN set first. Only `ENROLL_HOST` changes: neither the
 certificate, enrollment CIDRs/listener ports nor `PORCHLIGHT_ENDPOINTS` are changed. An API health-checked
-recreation and backup scheduler bind-mount refresh happen only when the stored value changes. A failed change
-restores the previous `.env` and recreates the API/backup with it; recovery failures include an operator diagnostic.
-Success, including a no-restart rerun, prints `PASS enroll-host <server-lan-ip>:8444` for this example.
-If interrupted between the .env write and the recreate, run the printed api/backup recreate.
+recreation and backup scheduler bind-mount refresh precede the durable `.enroll-host-applied` marker. Matching
+desired `.env` alone is not completion: after an interruption, rerun the same command to reconcile both services.
+Only a matching applied marker permits a no-restart rerun. A handled failure restores the previous `.env` and
+recreates API/backup with it; recovery failures include an operator diagnostic. Success prints
+`PASS enroll-host <server-lan-ip>:8444` for this example.
 Generate **new** enrollment URIs after the change; previously generated URIs retain their old host.
 For phones with no LAN DNS, [enable Funnel first, then enroll by LAN IP](devices.md#phones-without-lan-dns).
 
@@ -108,8 +133,12 @@ trusted installed installer verifies minisign first, then every present member's
 `release.json.desktop.files` inventory, including `release.json` itself. Unlisted files, missing required members,
 and symlinks are refused. Full distributions still work; legacy releases without `release.json` require the
 complete inventory. Lower versions are refused (`porchlight-update --rollback` remains the explicit exception).
-An identical same-version manifest yields `PASS already installed <V>` without changing launchers or rollback
-history; differing same-version content is refused.
+An identical same-version manifest **and complete installed tree** yield `PASS already installed <V>` without
+changing launchers or rollback history; differing same-version manifests are refused. Every new/retried tree is
+assembled in a private sibling under `releases/` on the target filesystem, checked in full (including launcher,
+runtime and trusted updater), then renamed into place. Incomplete existing trees are moved to
+`releases/.incomplete.<version>.*` for inspection and rebuilt; a matching manifest alone is never completion.
+Desktop expansion is capped at 4 GiB and 100,000 members, with bounded tar headers.
 
 Defaults: `~/.local/share/porchlight/releases/<version>/app`, atomic `current`, `previous` for rollback,
 `~/.local/bin/porchlight-update`, launcher and hicolor scalable icon in XDG_DATA_HOME. The installer writes no XDG

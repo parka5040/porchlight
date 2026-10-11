@@ -6,9 +6,11 @@ import java.time.format.FormatStyle
 import java.util.Locale
 import kotlin.time.Instant
 
-actual fun formatPlanningTime(value: Instant, zone: String): String {
+actual fun formatPlanningTime(value: Instant, zone: String): String = formatPlanningTime(value, zone, Locale.getDefault())
+
+internal fun formatPlanningTime(value: Instant, zone: String, locale: Locale): String {
     val zoneId = runCatching { ZoneId.of(zone) }.getOrDefault(ZoneId.of("UTC"))
     val local = java.time.Instant.ofEpochMilli(value.toEpochMilliseconds()).atZone(zoneId)
     return DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT)
-        .withLocale(Locale.getDefault()).format(local) + " · " + local.offset + " (" + zoneId.id + ")"
+        .withLocale(locale).format(local) + " · " + local.offset + " (" + zoneId.id + ")"
 }

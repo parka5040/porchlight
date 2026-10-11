@@ -16,7 +16,11 @@ use axum::{
 use chrono::DateTime;
 use chrono::{Duration, Utc};
 use porchlight_core::auth::token::{TokenKind, hash_token, looks_like};
-use porchlight_db::{auth, devices, idempotency::ScopeKind};
+use porchlight_db::{
+    auth, devices,
+    idempotency::ScopeKind,
+    security_events::{self, Kind},
+};
 use serde::Deserialize;
 use uuid::Uuid;
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -101,6 +105,14 @@ pub async fn certificate(
                 ApiError::new(crate::error::Problem::RenewalTooEarly).into_response(),
             ));
         }
+        if !devices::renewal_available(&mut tx.tx, s.device.device_id, &fp).await? {
+            return Ok((
+                tx,
+                ApiError::new(crate::error::Problem::RateLimited)
+                    .retry(86400)
+                    .into_response(),
+            ));
+        }
         if porchlight_pki::validate_csr(&m.body.csr).is_err() {
             return Ok((
                 tx,
@@ -117,7 +129,15 @@ pub async fn certificate(
                 state.settings.device_cert_days,
             )
             .map_err(|_| ApiError::internal("renewal_certificate_issue"))?;
+        devices::revoke_unused_successors(&mut tx.tx, s.device.device_id, &fp).await?;
         store_certificate(&mut tx.tx, s.device.household_id, s.device.device_id, &cert).await?;
+        security_events::record(
+            &mut tx.tx,
+            s.device.household_id,
+            Kind::CertificateRenewed,
+            s.device.device_id,
+        )
+        .await?;
         let not_after: chrono::DateTime<Utc> = cert.not_after.into();
         Ok((
             tx,

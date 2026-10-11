@@ -152,7 +152,7 @@ PY
 stage=restore
 private bundle-sha256 sha256sum --check "$work/bundle.sha256"
 drill_args=(); (( ! keep )) || drill_args+=(--keep)
-private restore deploy/scripts/restore-drill.sh "$bundle" --source "$source" --identity "$identity" "${drill_args[@]}"
+private restore deploy/scripts/restore-drill.sh "$bundle" --source "$source" --installer "$newer/install.sh" --identity "$identity" "${drill_args[@]}"
 printf 'PASS independent backup restore drill\n'
 stage=upgrade
 private upgrade bash "$newer/install.sh" upgrade --source "$newer" "${args[@]}"

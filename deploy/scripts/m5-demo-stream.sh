@@ -8,11 +8,11 @@
 # M5_STREAM_DATABASE_URL      SUPERUSER dev DB connection (INSERT/DELETE outbox rows)
 # M5_STREAM_ADMIN_CLIENT      var/... directory: ca.crt, client.crt, client.key, session.token
 # M5_STREAM_READER_CLIENT     same files, DIFFERENT live member in the same household
-# Stdout: PASS/FAIL only. Private work dirs (0700) are removed even on failure.
+# Stdout: PASS/FAIL only. Private work dirs (0700) are retained on failure; inspect locally, never paste.
 umask 022
 set -Eeuo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-M5_STREAM_ROOT="$root" python3 - <<'PY'
+M5_STREAM_ROOT="$root" python3 -I - <<'PY'
 import json, os, pathlib, shutil, subprocess, tempfile, time, traceback, urllib.parse, uuid
 os.umask(0o077)
 root = pathlib.Path(os.environ['M5_STREAM_ROOT']).resolve()
@@ -177,7 +177,7 @@ try:
     print('PASS: stream expired cursor resnapshot and clean EOF')
 except Exception:
     traceback.print_exc(file=log)
-    print('FAIL: stream TLS gate (private diagnostics discarded)')
+    print('FAIL: stream TLS gate')
     rc = 1
 finally:
     try:
@@ -188,9 +188,12 @@ finally:
             request(admin,'DELETE','/v1/items/'+item_id,body={},version=current['version'])  # every mutation carries a JSON body
     except Exception:
         traceback.print_exc(file=log)
-        print('FAIL: stream fixture cleanup (private diagnostics discarded)')
+        print('FAIL: stream fixture cleanup')
         rc = 1
     log.close()
-    shutil.rmtree(work)
+    if rc == 0:
+        shutil.rmtree(work)
+    else:
+        print("FAIL: private diagnostics retained in " + str(work))
 raise SystemExit(rc)
 PY

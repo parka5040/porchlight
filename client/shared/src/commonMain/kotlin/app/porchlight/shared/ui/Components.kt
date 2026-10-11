@@ -12,7 +12,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.style.TextAlign
@@ -41,7 +40,7 @@ fun MemberChip(member: app.porchlight.shared.api.models.MemberRead, modifier: Mo
 
 @Composable
 private fun MemberChip(name: String, color: Color, initials: String, modifier: Modifier) {
-    val ink = if (color.luminance() > 0.179f) Color.Black else Color.White
+    val ink = memberInk(color, LocalPorchlightPalette.current.memberInk)
     Row(modifier.semantics(mergeDescendants = true) { contentDescription = "Member $name" },
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceSm.dp)) {
         Box(Modifier.background(color, CircleShape).padding(PorchlightTokens.spaceSm.dp), contentAlignment = Alignment.Center) {
@@ -70,7 +69,8 @@ fun StatusPill(label: String, color: Color = LocalPorchlightPalette.current.info
         color = LocalPorchlightPalette.current.onSurfaceMuted)
 }
 @Composable fun EmptyState(title: String, message: String) {
-    PorchlightCard { Text(title, style = MaterialTheme.typography.titleMedium); Text(message) }
+    // Status notices announce politely at their container; headings stay discoverable without stealing focus.
+    PorchlightCard { Text(title, Modifier.semantics { heading() }, style = MaterialTheme.typography.titleMedium); Text(message) }
 }
 @Composable fun OfflineState() { StatusPill("Offline — showing saved data") }
 @Composable fun ErrorState(message: String, retry: () -> Unit) {

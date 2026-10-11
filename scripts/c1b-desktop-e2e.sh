@@ -22,5 +22,5 @@ export PORCHLIGHT_E2E_URI PORCHLIGHT_E2E_PASSWORD
 export PORCHLIGHT_E2E_REQUIRED=1
 export PORCHLIGHT_KEYRING_TEST=1
 cd "$root/client"
-./gradlew --offline --console=plain --rerun-tasks :shared:jvmTest \
+./gradlew --offline --max-workers=4 --console=plain --rerun-tasks :shared:jvmTest \
   --tests 'app.porchlight.shared.trust.DesktopE2eTest'

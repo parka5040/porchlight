@@ -46,7 +46,8 @@ class C3bInstrumentedTest {
             compose.onNodeWithContentDescription("Agenda").performScrollTo().performClick()
             compose.onNodeWithContentDescription("Agenda").assertIsSelected()
             compose.onNodeWithContentDescription("Month").assertDoesNotExist()
-            compose.onNodeWithContentDescription("Next").performScrollTo().assertHeightIsAtLeast(48.dp).assertWidthIsAtLeast(48.dp)
+            // Agenda is selected here; the navigation step is part of the accessible label.
+            compose.onNodeWithContentDescription("Next 7 days").performScrollTo().assertHeightIsAtLeast(48.dp).assertWidthIsAtLeast(48.dp)
         }
     }
     @Test fun settingsControlsInitialsAndRangeAtDoubleScaleBothThemes() {

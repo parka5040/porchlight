@@ -92,10 +92,11 @@ or mistake them for restorable bundles. Keep the recovery private key separately
    # Set bundle and receipt to the matching desktop .tar.age / .json paths; originals remain unchanged.
    # Copies ciphertext + receipt into private var/pulled-restore.*, then checks the COPY's sha256 and size.
    staged=$(python3 -I deploy/scripts/stage-pulled-bundle.py "$bundle" "$receipt") &&
-   deploy/scripts/restore-drill.sh "$staged" --source dist/VERSION --identity var/backup-recovery.key --keep
+   deploy/scripts/restore-drill.sh "$staged" --source dist/VERSION --installer dist/RECOVERY_VERSION/install.sh --identity var/backup-recovery.key --keep
    # A failed staging must not run a drill; an explicit empty bundle path is rejected.
-   # Or the drill can stage itself: restore-drill.sh "$bundle" --receipt "$receipt" --source ... --identity ...
+   # Or the drill can stage itself: restore-drill.sh "$bundle" --receipt "$receipt" --source ... --installer ... --identity ...
    ```
+   Set RECOVERY_VERSION to the newest verified installer, independently of the bundle version.
    Fetch the **matching signed release** identified by the decrypted bundle manifest; the independent
    [restore drill](backup-restore.md) verifies it before applying state. Keep the separately held recovery identity
    under private `var/` while running the laptop wrapper, then remove the temporary identity copy when done.
@@ -103,12 +104,12 @@ or mistake them for restorable bundles. Keep the recovery private key separately
 3. The bundle alone contains DB dump, PKI, secrets and referenced blob bytes. The archive verifier inside the installer
    validates safe paths, the manifest and every member hash **before** state replacement. Supply explicit scratch
    root/run/project/loopback spare ports; keep the identity on the laptop, never mount it into the live server.
-4. Only after a successful drill use the **generated matching release installer**, not the `deploy/install.sh` template:
+4. Only after a successful drill use the **newest verified installer**, with matching bundle artifacts, not the `deploy/install.sh` template:
    ```bash
-   bash dist/VERSION/install.sh restore "$staged" --source dist/VERSION --identity var/backup-recovery.key \
+   bash dist/RECOVERY_VERSION/install.sh restore "$staged" --source dist/VERSION --identity var/backup-recovery.key \
      --root "$PWD/var/restore-target" --run-dir "$PWD/var/restore-target/run" --project porchlight-restore-target --no-funnel
    ```
-   Replace VERSION and target root/run/project deliberately. The target root must be under the repository on this
+   Replace VERSION (bundle artifacts), RECOVERY_VERSION (trusted tool) and target root/run/project deliberately. The target root must be under the repository on this
    laptop: the `age` wrapper cannot access an external target during decryption. `--force` deliberately replaces
    existing state, even a stopped stack. Inspect migration/count/CA comparisons and health before enabling writers.
    See upgrade/rollback runbooks.

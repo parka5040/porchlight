@@ -14,6 +14,7 @@ pub struct DeviceIdentity {
     pub label: String,
     pub revoked: bool,
     pub certificate_live: bool,
+    pub certificate_seen: bool,
 }
 pub struct SessionRow {
     pub id: Uuid,
@@ -35,7 +36,7 @@ pub async fn device_by_fingerprint<'e>(
     ex: impl Executor<'e, Database = Postgres>,
     fp: &[u8; 32],
 ) -> sqlx::Result<Option<DeviceIdentity>> {
-    sqlx::query_as!(DeviceIdentity, "SELECT d.id AS device_id,d.household_id,d.member_id,u.id AS user_id,u.username,m.role,d.platform,d.label,(d.revoked_at IS NOT NULL) AS \"revoked!\",(c.not_after>clock_timestamp()) AS \"certificate_live!\" FROM porchlight.device_certificates c JOIN porchlight.devices d ON d.id=c.device_id JOIN porchlight.household_members m ON m.id=d.member_id JOIN porchlight.users u ON u.id=m.user_id WHERE c.fingerprint_sha256=$1 AND m.deleted_at IS NULL AND u.deleted_at IS NULL",fp.as_slice()).fetch_optional(ex).await
+    sqlx::query_as!(DeviceIdentity, "SELECT d.id AS device_id,d.household_id,d.member_id,u.id AS user_id,u.username,m.role,d.platform,d.label,(d.revoked_at IS NOT NULL OR c.revoked_at IS NOT NULL) AS \"revoked!\",(c.not_after>clock_timestamp()) AS \"certificate_live!\",(c.first_seen_at IS NOT NULL) AS \"certificate_seen!\" FROM porchlight.device_certificates c JOIN porchlight.devices d ON d.id=c.device_id JOIN porchlight.household_members m ON m.id=d.member_id JOIN porchlight.users u ON u.id=m.user_id WHERE c.fingerprint_sha256=$1 AND m.deleted_at IS NULL AND u.deleted_at IS NULL",fp.as_slice()).fetch_optional(ex).await
 }
 /// Re-check revocation under the same row lock used by device revocation.
 /// Lock order is device → session for issuance, revocation and sliding touch.

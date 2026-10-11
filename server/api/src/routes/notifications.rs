@@ -73,8 +73,8 @@ pub struct ReadAllResult {
     pub count: u64,
 }
 #[derive(sqlx::FromRow)]
-struct Row {
-    id: Uuid,
+pub(super) struct Row {
+    pub(super) id: Uuid,
     category: String,
     created_at: DateTime<Utc>,
     release_at: DateTime<Utc>,
@@ -82,69 +82,86 @@ struct Row {
     read_at: Option<DateTime<Utc>>,
     version: i32,
 }
-const ROW: &str = "select id,category,created_at,release_at,released_at,read_at,version from porchlight.notifications where household_id=$1 and recipient_member_id=$2 and released_at is not null";
-async fn detail(
+pub(super) const ROW: &str = "select id,category,created_at,release_at,released_at,read_at,version from porchlight.notifications where household_id=$1 and recipient_member_id=$2 and released_at is not null";
+pub(super) async fn detail(
     c: &mut PgConnection,
     member: Uuid,
     h: Uuid,
     row: Row,
 ) -> Result<Option<Notification>, ApiError> {
-    let sources = notifier::visible_sources(c, row.id, member, h).await?;
-    let Some(first) = sources.first() else {
-        return Ok(None);
-    };
-    let same_actor = sources
-        .iter()
-        .all(|s| s.actor_member_id == first.actor_member_id && s.actor_label == first.actor_label);
+    Ok(details(c, member, h, vec![row]).await?.pop())
+}
+async fn details(
+    c: &mut PgConnection,
+    member: Uuid,
+    h: Uuid,
+    rows: Vec<Row>,
+) -> Result<Vec<Notification>, ApiError> {
+    let mut values = Vec::with_capacity(rows.len());
+    for batch in rows.chunks(notifier::SOURCE_DETAIL_BATCH) {
+        let ids: Vec<_> = batch.iter().map(|r| r.id).collect();
+        let mut summaries: std::collections::HashMap<_, _> =
+            notifier::visible_source_summaries(c, &ids, member, h)
+                .await?
+                .into_iter()
+                .map(|s| (s.notification_id, s))
+                .collect();
+        for row in batch {
+            if let Some(sources) = summaries.remove(&row.id) {
+                values.push(render_detail(row, sources));
+            }
+        }
+    }
+    Ok(values)
+}
+fn render_detail(row: &Row, sources: notifier::SourceSummary) -> Notification {
+    let first = &sources.first;
     let category = if row.category == "digest" {
         "digest"
-    } else if sources
-        .iter()
-        .all(|s| notifier::category(&s.kind) == notifier::category(&first.kind))
-    {
+    } else if sources.same_category {
         notifier::category(&first.kind)
     } else {
         "activity"
     }
     .to_string();
-    Ok(Some(Notification {
+    Notification {
         id: row.id,
-        kind: if sources.len() == 1 {
+        kind: if sources.count == 1 {
             first.kind.clone()
         } else {
             "summary".into()
         },
         category,
-        item_id: if sources.len() == 1 {
+        item_id: if sources.count == 1 {
             first.item_id
         } else {
             None
         },
-        occurrence_id: if sources.len() == 1 {
+        occurrence_id: if sources.count == 1 {
             first.occurrence_id
         } else {
             None
         },
         entity_type: first.entity_type.clone(),
         entity_id: first.entity_id,
-        actor_member_id: if same_actor {
+        actor_member_id: if sources.same_actor {
             first.actor_member_id
         } else {
             None
         },
-        actor_label: if same_actor {
+        actor_label: if sources.same_actor {
             first.actor_label.clone()
         } else {
             None
         },
-        count: sources.len() as i32,
-        summary: notifier::summary(&sources, row.category == "digest"),
+        count: sources.count,
+        summary: sources.summary(row.category == "digest"),
         created_at: row.created_at,
         release_at: row.release_at,
         released_at: row.released_at,
         read_at: row.read_at,
         version: row.version,
-    }))
+    }
 }
 async fn inbox(
     state: &AppState,
@@ -189,12 +206,7 @@ async fn inbox(
         .bind((limit + 1) as i64)
         .fetch_all(&mut *tx)
         .await?;
-    let mut values = Vec::new();
-    for row in rows {
-        if let Some(n) = detail(&mut tx, member, caller.household_id(), row).await? {
-            values.push(n);
-        }
-    }
+    let values = details(&mut tx, member, caller.household_id(), rows).await?;
     let page = state.idem.cursor.page(&context, values, limit, |n| n.id)?;
     tx.commit().await?;
     Ok(Json(page))
@@ -282,7 +294,7 @@ pub fn read_all<'a>(
         Ok(Json(ReadAllResult { count }).into_response())
     })
 }
-async fn prefs_row(
+pub(super) async fn prefs_row(
     c: &mut PgConnection,
     caller: &Caller,
     lock: bool,
@@ -423,11 +435,6 @@ pub async fn snapshot_fields(
         .bind(caller.member_id())
         .fetch_all(&mut *c)
         .await?;
-    let mut values = Vec::new();
-    for row in rows {
-        if let Some(n) = detail(c, caller.member_id(), caller.household_id(), row).await? {
-            values.push(n);
-        }
-    }
+    let values = details(c, caller.member_id(), caller.household_id(), rows).await?;
     Ok((values, prefs_row(c, caller, false).await?))
 }

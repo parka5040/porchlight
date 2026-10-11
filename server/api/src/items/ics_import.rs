@@ -92,6 +92,30 @@ struct CalendarInput {
     unsafe_global: bool,
     unsafe_uids: BTreeSet<String>,
 }
+// Shared by imports and feed refreshes. A cancelled request cannot stop blocking
+// work, so the worker owns admission until it actually finishes (not its waiter).
+static PARSE_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+async fn parse_calendar_blocking(
+    content: &str,
+    zone: chrono_tz::Tz,
+    now: DateTime<Utc>,
+) -> Result<CalendarInput, ApiError> {
+    if content.len() > calendar::fetch::MAX_BYTES {
+        return Err(ApiError::new(Problem::ValidationFailed));
+    }
+    let permit = PARSE_SLOTS
+        .acquire()
+        .await
+        .map_err(|_| ApiError::internal("calendar_parse_admission"))?;
+    let content = content.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        parse_calendar(&content, zone, now)
+    })
+    .await
+    .map_err(|_| ApiError::internal("calendar_parse_worker"))?
+}
+
 // Pure parse/normalization phase: no domain writes.
 fn parse_calendar(
     content: &str,
@@ -193,7 +217,7 @@ async fn plan_calendar(
         .parsed
         .events
         .retain(|e| !invalid_uids.contains(&e.uid));
-    let skipped = before - input.parsed.events.len();
+    let skipped = before - input.parsed.events.len() + input.parsed.invalid_skipped;
     // Input iteration alone exceeds admission; do not ACL-plan tens of thousands
     // of doomed writes before discovering this deterministic content limit.
     if input.parsed.events.len() > MAX_CALENDAR_WORK {
@@ -415,8 +439,16 @@ async fn plan_calendar(
     };
     // Representation replacement is explicit source content, not ordinary file absence.
     // It applies to one-off reimports too, but still requires the caller's deletion ACL.
+    // Source-owned history is not a live body reference. Inspect only deletion state,
+    // in one batch, before ACL loading; do not expose details of hidden live items.
+    let removed_ids: Vec<_> = removed.iter().map(|m| m.item_id).collect();
+    let historical: BTreeSet<Uuid> = sqlx::query_scalar("select id from porchlight.items where household_id=$1 and id=any($2) and deleted_at is not null")
+        .bind(c.household_id()).bind(&removed_ids).fetch_all(&mut **tx).await?.into_iter().collect();
     let mut accessible_removed = Vec::new();
     for m in removed {
+        if historical.contains(&m.item_id) {
+            continue;
+        }
         let row = match load(tx, c, m.item_id, true).await {
             Ok(row) => row,
             Err(e) if e.status() == StatusCode::NOT_FOUND => {
@@ -488,8 +520,9 @@ async fn enforce_work_budget(
     now: DateTime<Utc>,
 ) -> Result<(), ApiError> {
     let reject = calendar_work_error;
-    // Hash/identity handling for every parsed event, plus 2 units per removed item (M3: a
-    // soft delete and its derivation measured ~3.9 ms, about 2x a parsed standalone event).
+    // One baseline unit per parsed event; two per removed item for delete + derivation.
+    // Retained occurrence rows are charged separately below (a standalone removal normally
+    // costs three units). Historical timing ratios are not total admission weights.
     let removal_units = removed.len() * 2;
     let mut work = input.parsed.events.len() + removal_units;
     let mut existing = BTreeSet::new();
@@ -543,12 +576,16 @@ async fn enforce_work_budget(
         let spec = core::SeriesSpec::new(timing(event, input.zone)?)
             .map_err(|e| validation(e.field, e.reason))?;
         let zone = spec.zone().unwrap_or(input.zone);
-        let until = porchlight_core::time::to_local(
+        let horizon = porchlight_core::time::to_local(
             core::horizon_end(now, zone).map_err(|e| validation(e.field, e.reason))?,
             zone,
         );
+        // Far-future identities require traversing history even when they do not
+        // match the series. Charge that walk before acquiring domain write locks.
+        let until = exception_window(event, &input.parsed, zone)?
+            .map_or(horizon, |(_, end)| horizon.max(end));
         let rows = core::bounded_occurrence_count(&spec, until, MAX_CALENDAR_WORK - work)
-            .map_err(|e| validation(e.field, e.reason))?;
+            .map_err(|_| reject())?;
         work += rows;
         projected += rows;
     }
@@ -633,7 +670,7 @@ async fn apply_calendar_inner(
     now: DateTime<Utc>,
 ) -> Result<ImportSummary, ApiError> {
     let zone = calendar::target_zone(tx, source.household_id, source.target_member_id).await?;
-    let input = parse_calendar(content, zone, now)?;
+    let input = parse_calendar_blocking(content, zone, now).await?;
     let CalendarPlan {
         input,
         mut summary,
@@ -666,7 +703,7 @@ async fn apply_calendar_inner(
     for (id, version) in planned_versions {
         let row = scope.item(id).await.map_err(domain_error)?;
         if row.version != version {
-            return Err(ApiError::transient(Problem::Conflict).retry(1));
+            return Err(ApiError::transient_conflict().retry(1));
         }
         planned_rows.insert(id, row);
     }
@@ -748,7 +785,7 @@ async fn apply_calendar_inner(
         #[cfg(feature = "testing")]
         {
             if crate::testing::calendar_apply_contention() {
-                return Err(ApiError::transient(Problem::Conflict).retry(1));
+                return Err(ApiError::transient_conflict().retry(1));
             }
             crate::testing::calendar_after_write().await;
         }
@@ -1129,6 +1166,35 @@ struct ExceptionPlan<'a> {
     unsafe_global: bool,
     unsafe_uids: &'a BTreeSet<String>,
 }
+// One window per retained series, shared by admission and the single exception walk.
+fn exception_window(
+    event: &porchlight_core::ics::ImportedEvent,
+    parsed: &ics::ParsedCalendar,
+    zone: chrono_tz::Tz,
+) -> Result<Option<(chrono::NaiveDateTime, chrono::NaiveDateTime)>, ApiError> {
+    let mut bounds: Option<(chrono::NaiveDateTime, chrono::NaiveDateTime)> = None;
+    for exception in event.exdates.iter().chain(
+        parsed
+            .events
+            .iter()
+            .filter(|e| matches!(e.origin, EventOrigin::Override) && e.uid == event.uid)
+            .filter_map(|e| e.recurrence_id.as_ref()),
+    ) {
+        let local = match exception {
+            IcsTime::Date(d) => d.and_time(chrono::NaiveTime::MIN),
+            IcsTime::Floating(t) => *t,
+            IcsTime::Fixed(t) => porchlight_core::time::to_local(*t, zone),
+        };
+        let end = local
+            .checked_add_signed(chrono::Duration::days(1))
+            .ok_or_else(calendar_work_error)?;
+        bounds = Some(bounds.map_or((local, end), |(from, until)| {
+            (from.min(local), until.max(end))
+        }));
+    }
+    Ok(bounds)
+}
+
 async fn apply_exceptions(
     scope: &mut WriteScope<'_, '_>,
     summary: &mut ImportSummary,
@@ -1183,6 +1249,12 @@ async fn apply_exceptions(
             .spec()
             .map_err(domain_error)?;
         let master_zone = master.zone().unwrap_or(zone);
+        let extra_anchors = match exception_window(event, parsed, master_zone)? {
+            Some((from, until)) => {
+                core::expand(&master, from, until).map_err(|_| calendar_work_error())?
+            }
+            None => vec![],
+        };
         let exceptions = event.exdates.iter().chain(
             parsed
                 .events
@@ -1197,17 +1269,7 @@ async fn apply_exceptions(
             {
                 continue;
             }
-            let local = match exception {
-                IcsTime::Date(d) => d.and_time(chrono::NaiveTime::MIN),
-                IcsTime::Floating(t) => *t,
-                IcsTime::Fixed(t) => porchlight_core::time::to_local(*t, master_zone),
-            };
-            let until = local
-                .checked_add_signed(chrono::Duration::days(1))
-                .ok_or_else(|| validation("content", "Exception date out of bounds"))?;
-            let anchors =
-                core::expand(&master, local, until).map_err(|e| validation(e.field, e.reason))?;
-            if let Some(anchor) = anchors
+            if let Some(anchor) = extra_anchors
                 .iter()
                 .find(|a| matches_anchor(exception, a, master_zone))
             {
@@ -1348,4 +1410,37 @@ async fn apply_exceptions(
         }
     }
     Ok(save)
+}
+
+#[cfg(test)]
+mod audit_authz {
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn parser_admission_waits_without_blocking_the_runtime() {
+        let permits = PARSE_SLOTS.acquire_many(2).await.unwrap();
+        let waiting = tokio::spawn(parse_calendar_blocking(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n",
+            chrono_tz::UTC,
+            "2026-10-06T12:00:00Z".parse().unwrap(),
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        assert!(
+            !waiting.is_finished(),
+            "parsing must wait for shared worker admission"
+        );
+        waiting.abort();
+        assert!(matches!(waiting.await, Err(e) if e.is_cancelled()));
+        assert_eq!(PARSE_SLOTS.available_permits(), 0);
+        drop(permits);
+        let parsed = parse_calendar_blocking(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n",
+            chrono_tz::UTC,
+            "2026-10-06T12:00:00Z".parse().unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(parsed.parsed.events.is_empty());
+        assert_eq!(PARSE_SLOTS.available_permits(), 2);
+    }
 }

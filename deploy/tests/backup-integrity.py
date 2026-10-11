@@ -109,9 +109,9 @@ class Tests(unittest.TestCase):
                 raise AssertionError('unexpected restored SQL query')
             script = (ROOT / 'deploy/scripts/restore-drill.sh').read_text()
             snippet = re.search(r'<<\'PY\'\n(import hashlib,json,pathlib,re,subprocess,sys.*?)\nPY', script, re.S).group(1)
-            # The shell drill always cd's to the trusted project root before its Python blocks.
-            with patch('sys.argv', ['drill', str(root)]), patch('subprocess.check_output', side_effect=query), \
-                 patch('pathlib.Path.cwd', return_value=ROOT):
+            # The helper is passed explicitly; an unrelated cwd cannot choose imported code.
+            with patch('sys.argv', ['drill', str(root), str(ROOT / 'deploy/lib/blob_integrity.py')]), patch('subprocess.check_output', side_effect=query), \
+                 patch('pathlib.Path.cwd', return_value=root):
                 with self.assertRaises(ValueError): exec(compile(snippet, 'drill-comparison', 'exec'), {})
 
     def test_restored_main_and_thumbnail_missing_size_corruption_and_symlink(self):

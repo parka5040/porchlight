@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT t.expires_at FROM porchlight.api_tokens t\n        JOIN porchlight.install_state i ON i.household_id=t.household_id\n        JOIN porchlight.households h ON h.id=i.household_id\n        JOIN porchlight.household_members m ON m.id=t.owner_member_id\n        JOIN porchlight.users u ON u.id=m.user_id\n        WHERE t.revoked_at IS NULL AND t.expires_at>now() AND 'admin'=ANY(t.scopes)\n          AND m.role='super_admin' AND m.deleted_at IS NULL AND u.deleted_at IS NULL AND h.deleted_at IS NULL\n        ORDER BY t.created_at DESC,t.id DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "api_tokens",
+            "name": "expires_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d356628829839d57519ca1f9ad008257ae6fcc8d2214c74fd89cbcd57efd9038"
+}

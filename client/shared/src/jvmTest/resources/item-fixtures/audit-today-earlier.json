@@ -1,0 +1,178 @@
+{
+  "agenda": {
+    "items": [],
+    "next_cursor": null
+  },
+  "member": "01999999-0000-7000-8000-000000000001",
+  "now": "2026-10-10T12:05:00Z",
+  "snapshot": {
+    "attachments": [],
+    "availability": [
+      {
+        "conflicts": [],
+        "member_id": "01999999-0000-7000-8000-000000000001",
+        "version": 0,
+        "windows": []
+      }
+    ],
+    "comments": [],
+    "cursor": 0,
+    "ics_sources": [],
+    "items": [
+      {
+        "address": null,
+        "all_day": false,
+        "assignees": [
+          "01999999-0000-7000-8000-000000000001"
+        ],
+        "buffer_after_min": 0,
+        "buffer_before_min": 0,
+        "capabilities": [
+          "view",
+          "comment",
+          "change_status",
+          "complete",
+          "snooze",
+          "edit",
+          "edit_reminders",
+          "reassign",
+          "change_visibility",
+          "delete"
+        ],
+        "completion_interval": null,
+        "created_at": "2026-10-10T12:05:00Z",
+        "deleted_at": null,
+        "due_at": null,
+        "due_date": null,
+        "ends_at": null,
+        "est_minutes": null,
+        "household_id": "01999999-0000-7000-8000-000000000002",
+        "ics_source_id": null,
+        "id": "01999999-0000-7000-8000-000000000003",
+        "kind": "deadline",
+        "local_due": "2026-10-10T08:00:00",
+        "local_end": null,
+        "local_start": null,
+        "missed_policy": "skip",
+        "nominal_local_anchor": null,
+        "nominal_wall_duration": null,
+        "notes": "",
+        "owner_id": "01999999-0000-7000-8000-000000000004",
+        "pending_derivation": false,
+        "priority": 0,
+        "recurrence_mode": "calendar",
+        "reminders": [],
+        "rrule": "FREQ=DAILY;COUNT=1",
+        "series_id": null,
+        "source": null,
+        "split_from_item_id": null,
+        "split_from_seq": null,
+        "starts_at": null,
+        "subject_member_id": null,
+        "time_mode": "floating",
+        "title": "Recipient work",
+        "tzid": null,
+        "updated_at": "2026-10-10T12:05:00Z",
+        "version": 2,
+        "viewers": [],
+        "visibility": "household"
+      }
+    ],
+    "lists": [],
+    "member_settings": {
+      "member_id": "01999999-0000-7000-8000-000000000001",
+      "settings": {
+        "pinned_list_id": null,
+        "scope": "mine",
+        "this_week_days": 7,
+        "today_sections": [
+          "overdue",
+          "today",
+          "this_week",
+          "needs_owner"
+        ]
+      },
+      "version": 1
+    },
+    "members": [
+      {
+        "color": "#FABD2F",
+        "display_name": "Sam Rivera",
+        "household_id": "01999999-0000-7000-8000-000000000002",
+        "id": "01999999-0000-7000-8000-000000000001",
+        "initials": "SR",
+        "pending_derivation": false,
+        "role": "super_admin",
+        "tz_authority_device_id": null,
+        "tz_source": "manual",
+        "tzid": "America/New_York",
+        "version": 3
+      },
+      {
+        "color": "#8EC07C",
+        "display_name": "Sam Rivera",
+        "household_id": "01999999-0000-7000-8000-000000000002",
+        "id": "01999999-0000-7000-8000-000000000004",
+        "initials": "SR",
+        "pending_derivation": false,
+        "role": "user",
+        "tz_authority_device_id": null,
+        "tz_source": "manual",
+        "tzid": "America/Los_Angeles",
+        "version": 3
+      }
+    ],
+    "notification_prefs": {
+      "member_id": "01999999-0000-7000-8000-000000000001",
+      "prefs": {
+        "activity": true,
+        "assignments": true,
+        "connection": true,
+        "default_appointment_offsets": [],
+        "default_deadline_offsets": [],
+        "default_todo_offsets": [],
+        "dependents": true,
+        "digest": true,
+        "quiet_end": null,
+        "quiet_start": null,
+        "reminders": true
+      },
+      "version": 1
+    },
+    "notifications": [],
+    "occurrences": [
+      {
+        "board_moved": false,
+        "board_position": "80",
+        "closed_at": null,
+        "completed_at": null,
+        "completed_by": null,
+        "created_at": "2026-10-10T12:05:00Z",
+        "disposition": "open",
+        "due_at": null,
+        "due_date": null,
+        "ends_at": null,
+        "household_id": "01999999-0000-7000-8000-000000000002",
+        "id": "01999999-0000-7000-8000-000000000005",
+        "is_detached": false,
+        "item_id": "01999999-0000-7000-8000-000000000003",
+        "local_due": "2026-10-10T08:00:00",
+        "local_end": null,
+        "local_start": null,
+        "override_due_date": null,
+        "override_local_due": null,
+        "override_local_end": null,
+        "override_local_start": null,
+        "seq": 0,
+        "skipped_at": null,
+        "starts_at": null,
+        "status": "todo",
+        "updated_at": "2026-10-10T12:05:00Z",
+        "version": 3
+      }
+    ],
+    "scheduled_reminders": [],
+    "suggestions": []
+  },
+  "zone": "America/New_York"
+}

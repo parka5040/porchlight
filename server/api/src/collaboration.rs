@@ -437,12 +437,16 @@ pub async fn snapshot_comments_s4b(
         .fetch_all(conn)
         .await?)
 }
-/// Shared comment source: expand the VISIBLE placeholder with S4b's canonical ACL.
+/// Shared comment source, complete with the canonical item ACL.
 /// Binds $1..$4 match item and list sources; pagination is applied once by reads::search.
-pub const COMMENT_SEARCH_SOURCE: &str = "SELECT 'comment'::text AS source,c.id,
+pub fn comment_search_source() -> String {
+    format!(
+        "SELECT 'comment'::text AS source,c.id,
     (to_jsonb(c)-'household_id'-'updated_at'-'search_document') AS value
     FROM porchlight.comments c JOIN porchlight.items i ON i.id=c.item_id
-    WHERE {VISIBLE} AND c.deleted_at IS NULL AND c.search_document @@ plainto_tsquery('simple',$4)";
+    WHERE {VISIBLE} AND c.deleted_at IS NULL AND c.search_document @@ plainto_tsquery('simple',$4)"
+    )
+}
 
 const LOAD_COMMENT: &str = concat!(
     "SELECT ",

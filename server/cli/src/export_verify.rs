@@ -114,31 +114,13 @@ impl Verification {
 }
 
 #[cfg(test)]
+#[path = "../tests/support/export_archive.rs"]
+mod archive_fixture;
+
+#[cfg(test)]
 mod tests {
+    use super::archive_fixture::{archive, unfinished_deflate};
     use super::*;
-    fn archive(complete: bool) -> Vec<u8> {
-        let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
-            Vec::new(),
-            flate2::Compression::default(),
-        ));
-        for (name, data) in [
-            ("data.json", b"{\"format_version\":2}".as_slice()),
-            (
-                "complete.json",
-                b"{\"format_version\":2,\"complete\":true}".as_slice(),
-            ),
-        ] {
-            if name == "complete.json" && !complete {
-                continue;
-            }
-            let mut header = tar::Header::new_gnu();
-            header.set_mode(0o600);
-            header.set_size(data.len() as u64);
-            header.set_cksum();
-            tar.append_data(&mut header, name, data).unwrap();
-        }
-        tar.into_inner().unwrap().finish().unwrap()
-    }
     #[test]
     fn completion_and_gzip_trailer_are_both_required() {
         assert!(verify(archive(true).as_slice()).is_ok());
@@ -146,5 +128,6 @@ mod tests {
         let mut truncated = archive(true);
         truncated.truncate(truncated.len() - 8);
         assert!(verify(truncated.as_slice()).is_err());
+        assert!(verify(unfinished_deflate().as_slice()).is_err());
     }
 }

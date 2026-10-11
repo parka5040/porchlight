@@ -761,6 +761,7 @@ internal class FakeSecretService(
             if (createPrompt != null && attributes !in items) { pendingCreate = attributes to value; return "/org/freedesktop/secrets/prompt/c1" }
             items[attributes] = value; return "/"
         }
+        override fun delete(attributes: Map<String, String>): String { provider(); check(!locked); items.remove(attributes); return "/" }
         override fun close() {}
     }
 }

@@ -604,7 +604,8 @@ export STREAM_WRITE_FAIL=1
 printf 'TRUNCATED-OLD-TRANSPORT\n' > "$fixture/remote/stack/tmp/m9-ts-authkey"
 run 1 funnel --ts-hostname quiet-node --tailscale-image "$image"
 [[ ! -e $fixture/remote/stack/tmp/m9-ts-authkey && $(< "$fixture/var/stderr") != *'Installer safe state diagnostic'* ]]
-[[ -z $(ls -A "$fixture/remote/stack/tmp") ]]
+[[ $(ls -A "$fixture/remote/stack/tmp") == .m9-funnel.lock ]]
+[[ $(stat -c %a "$fixture/remote/stack/tmp/.m9-funnel.lock") == 600 ]]
 unset STREAM_WRITE_FAIL
 # A failure after staging retries without a new stdin key and consumes part A's staged copy.
 export FUNNEL_RESULT=fail

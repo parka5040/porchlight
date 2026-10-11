@@ -127,6 +127,8 @@ class C2aWiringTest {
             }
         }, "android", { Instant.parse("2026-10-05T00:00:00Z") }, true)
         setContent { TrustedPorchlightApp(FakeServices(), controller) }
+        // The controller restores stored trust on its own scope, outside Compose idling: wait for the gate.
+        waitUntil(timeoutMillis = 10_000) { onAllNodesWithText("Unlock with device credential").fetchSemanticsNodes().isNotEmpty() }
         onNodeWithText("Unlock with device credential").performClick()
         onNodeWithTag("shell-content").assertDoesNotExist()
         assertEquals(TrustState.PinRequired, controller.state.value)

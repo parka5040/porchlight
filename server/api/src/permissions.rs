@@ -67,6 +67,8 @@ pub enum Policy {
         label: &'static str,
         expected: fn(&PolicyContext) -> u16,
     },
+    /// Custom callbacks must enforce any admin PAT-scope obligation themselves;
+    /// the generic precheck only enforces read/write by HTTP method.
     Custom {
         label: &'static str,
         expected: fn(&PolicyContext) -> u16,
@@ -419,15 +421,16 @@ macro_rules! sse_row {
 /// Standalone-list rows use the same core policy as S7a and the installed SQL ACL.
 pub const STREAM_ENDPOINTS: &[Endpoint] = &[
     sse_row!("", "session-only SSE", sse_session),
-    sse_row!(@resource,"SSE item.changed", "current item ACL", sse_item),
-    sse_row!(@resource,"SSE item.access_changed", "current item ACL", sse_item),
-    sse_row!(@resource,
+    sse_row!(@resource, "SSE item.changed", "current item ACL", sse_item),
+    sse_row!(@resource, "SSE item.access_changed", "current item ACL", sse_item),
+    sse_row!(
+        @resource,
         "SSE item.access_changed (former reader)",
         "eviction, no content",
         sse_session
     ),
-    sse_row!(@resource,"SSE occurrence.changed", "current parent ACL", sse_item),
-    sse_row!(@resource,"SSE derived", "current item ACL", sse_item),
+    sse_row!(@resource, "SSE occurrence.changed", "current parent ACL", sse_item),
+    sse_row!(@resource, "SSE derived", "current item ACL", sse_item),
     sse_row!(@resource,
         "SSE list.changed (attached)",
         "current parent ACL",
@@ -453,8 +456,8 @@ pub const STREAM_ENDPOINTS: &[Endpoint] = &[
         "eviction, no content",
         sse_session
     ),
-    sse_row!(@resource,"SSE comment.changed", "current parent ACL", sse_item),
-    sse_row!(@resource,"SSE attachment.changed", "current parent ACL", sse_item),
+    sse_row!(@resource, "SSE comment.changed", "current parent ACL", sse_item),
+    sse_row!(@resource, "SSE attachment.changed", "current parent ACL", sse_item),
     sse_row!(@member,
         "SSE notification.created",
         "recipient equality, IDs only",
@@ -571,6 +574,8 @@ pub fn endpoint_tables() -> Vec<&'static [Endpoint]> {
         crate::routes::exports::ENDPOINTS,
         crate::routes::backups::ENDPOINTS,
         crate::routes::release::ENDPOINTS,
+        crate::routes::admin::ENDPOINTS,
+        crate::routes::security_events::ENDPOINTS,
         crate::calendar::permissions::CALENDAR_ENDPOINTS,
         crate::lists_policy::ENDPOINTS,
         crate::routes::administration::ENDPOINTS,
@@ -611,6 +616,9 @@ pub fn matrix_rows(endpoints: &[Endpoint]) -> Vec<EndpointRow> {
                     .map(|scope| (Relationship::Agent, CallerKind::Agent, Some(scope))),
             ) {
                 for is_self in [true, false] {
+                    if endpoint.path == "/v1/me/settings" && !is_self {
+                        continue; // This route has no target-member parameter.
+                    }
                     let context = AccessContext {
                         caller,
                         visibility: Visibility::Household,
@@ -729,7 +737,7 @@ pub fn matrix_rows(endpoints: &[Endpoint]) -> Vec<EndpointRow> {
 }
 fn expected_status(endpoint: Endpoint, context: &PolicyContext) -> u16 {
     if let Some(scope) = context.pat_scope {
-        let required = if matches!(endpoint.method, "GET" | "HEAD" | "SSE") {
+        let required = if matches!(endpoint.method, "GET" | "HEAD") {
             "read"
         } else {
             "write"
@@ -745,7 +753,8 @@ pub fn permissions_markdown() -> String {
     use std::fmt::Write;
     let mut doc = access::permissions_markdown();
     doc.push_str(ENDPOINT_MARKER);
-    doc.push_str("\n## HTTP endpoint dimension\n\nGenerated from `porchlight_api::permissions`; regenerate both dimensions with `CARGO_NET_OFFLINE=true cargo run --manifest-path server/Cargo.toml -p porchlight-api --example endpoint-matrix`.\n\nDomain rows use live session+mTLS OR a PAT on the agent socket. `/v1/admin/…` rows are agent-only (app callers receive 404); `/v1/feeds…` rows are app-only with separate `/v1/admin/feeds…` counterparts. `/v1/stream` is session+mTLS only (agent rows are 404); SSE results mean allowed tickle or filtered frame, not HTTP statuses. PAT scopes form the hierarchy **admin ⊇ write ⊇ read**: every live token can read; mutations require write or admin; admin-only endpoints require admin. Endpoint-owned pluggable policies describe item, member self-only, list, settings and admin rules. UD records whether an item is unassigned and about a dependent; take requires UD=true even for agents. Additional cases cover request-specific permission branches. App creation sets caller as owner; agents may choose any live household owner. PATCH details/overrides require edit, owner transfer additionally reassign, visibility/viewers change_visibility; status/board/reopen change_status; complete complete. Versioned mutations require If-Match and may return 204 when access is removed. Collection reads omit invisible items. Conflict masking nulls both counterpart ids and replaces its title with Busy. Idempotency binds method, path/query and body, not If-Match; rotate the key after version-conflict.\n\nNon-item rows cross caller kind and PAT scope with **self / other** target members independently of item ACLs. For `/v1/me/settings` the route always resolves the caller's settings; other-target rows demonstrate that an unrelated member context cannot retarget it. Read PATs cannot mutate; write/admin PATs may patch their owner's member, but cannot request `make_zone_authority:true` (no device). Item rows retain their item ACL dimension and use write-scoped PATs; custom item policies additionally cross independent self/other target members and all PAT scopes. Collaboration rows likewise cross the full item ACL dimension with all PAT scopes and independent resource self/other (author or uploader), not item ownership. The comment-attachment delete case uses comment authorship/moderation rather than the item-editor rule. Notification SSE rows likewise retain the full item relationship/visibility dimension while independently crossing recipient self/other and all PAT scopes; item ACL never grants another member’s notification. List rows retain private/household/selected and owner/viewer/inherited item relationships, independently crossed with self/other and all three PAT scopes; self never changes list ACLs.\n\n| Method | Endpoint | Case | Relationship / role | PAT scope | Target member / resource | Visibility | UD | Policy | Result |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
+    doc.push_str("\nAll mutation transports (LAN, Funnel, enrollment and agent socket) return `maintenance` (503, `Retry-After: 1`) before authentication/idempotency while the installer write fence exists. Reads and readiness are unaffected.\n");
+    doc.push_str("\n## HTTP endpoint dimension\n\nGenerated from `porchlight_api::permissions`; regenerate both dimensions with `CARGO_NET_OFFLINE=true cargo run --manifest-path server/Cargo.toml -p porchlight-api --example endpoint-matrix`.\n\nDomain rows use live session+mTLS OR a PAT on the agent socket. `/v1/admin/…` rows are agent-only (app callers receive 404); `/v1/feeds…` rows are app-only with separate `/v1/admin/feeds…` counterparts. `/v1/stream` is session+mTLS only (agent rows are 404); SSE results mean allowed tickle or filtered frame, not HTTP statuses. PAT scopes form the hierarchy **admin ⊇ write ⊇ read**: every live token can read; mutations require write or admin; admin-only endpoints require admin. Endpoint-owned pluggable policies describe item, member self-only, list, settings and admin rules. Custom callbacks must explicitly enforce admin PAT scope when required; the generic HTTP-method precheck enforces read/write only. UD records whether an item is unassigned and about a dependent; take requires UD=true even for agents. Additional cases cover request-specific permission branches. App creation sets caller as owner; agents may choose any live household owner. PATCH details/overrides require edit, owner transfer additionally reassign, visibility/viewers change_visibility; status/board/reopen change_status; complete complete. Versioned mutations require If-Match and may return 204 when access is removed. Collection reads omit invisible items. Conflict masking nulls both counterpart ids and replaces its title with Busy. Idempotency binds method, path/query and body, not If-Match; rotate the key after version-conflict.\n\nNon-item rows cross caller kind and PAT scope with **self / other** target members independently of item ACLs. For `/v1/me/settings` the route always resolves the caller's settings; other-target rows are nonapplicable and omitted because there is no target-member parameter. Read PATs cannot mutate; write/admin PATs may patch their owner's member, but cannot request `make_zone_authority:true` (no device). Item rows retain their item ACL dimension and use write-scoped PATs; custom item policies additionally cross independent self/other target members and all PAT scopes. Collaboration rows likewise cross the full item ACL dimension with all PAT scopes and independent resource self/other (author or uploader), not item ownership. The comment-attachment delete case uses comment authorship/moderation rather than the item-editor rule. Notification SSE rows likewise retain the full item relationship/visibility dimension while independently crossing recipient self/other and all PAT scopes; item ACL never grants another member’s notification. List rows retain private/household/selected and owner/viewer/inherited item relationships, independently crossed with self/other and all three PAT scopes; self never changes list ACLs. `GET /v1/lists?include_orphaned=true` admits deleted-parent cleanup for the list owner or admin, but content still requires the parent ACL ignoring only deletion. Other cleaners receive a nameless `redacted: true` descriptor with delete only and empty entries/checks/viewers; stale-delete current uses the same rule.\n\n| Method | Endpoint | Case | Relationship / role | PAT scope | Target member / resource | Visibility | UD | Policy | Result |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
     for table in endpoint_tables() {
         for row in matrix_rows(table) {
             let cap = row.endpoint.policy.label();
@@ -827,6 +836,10 @@ pub fn read_allowed(caller: &str, visibility: &str, relationship: &str) -> bool 
 }
 
 #[cfg(test)]
+#[path = "permissions_audit_rust.rs"]
+mod audit_rust;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     #[test]
@@ -856,14 +869,20 @@ mod tests {
     }
     #[test]
     fn all_endpoints_are_registered_on_their_surfaces() {
-        for table in endpoint_tables() {
-            for e in table {
+        assert_endpoint_coverage(crate::routes::ROUTES, &endpoint_tables());
+    }
+    pub(super) fn assert_endpoint_coverage(
+        routes: &[crate::routes::Route],
+        tables: &[&[Endpoint]],
+    ) {
+        audit_rust::assert_registered_routes_have_policy(routes, tables);
+        for table in tables {
+            for e in *table {
                 let surfaces = endpoint_surfaces(e);
-                let method = if e.method == "SSE" { "GET" } else { e.method };
                 for surface in [crate::routes::Surface::Mtls, crate::routes::Surface::Agent] {
-                    let registered = crate::routes::ROUTES.iter().any(|r| {
+                    let registered = routes.iter().any(|r| {
                         r.surface == surface
-                            && r.method == method
+                            && r.method == e.method
                             && r.path == e.path
                             && r.handler == e.handler
                     });
@@ -877,7 +896,7 @@ mod tests {
                 }
                 if e.path == "/v1/stream" || e.path.starts_with("/v1/backups") {
                     assert!(
-                        !crate::routes::ROUTES
+                        !routes
                             .iter()
                             .any(|r| r.surface == crate::routes::Surface::Agent && r.path == e.path),
                         "SSE must not be registered on the agent surface"
@@ -887,7 +906,7 @@ mod tests {
                     let path = e.path.replacen("/v1/feeds", "/v1/admin/feeds", 1);
                     let handler = format!("admin_{}", e.handler);
                     assert!(
-                        endpoint_tables()
+                        tables
                             .iter()
                             .any(|t| t.iter().any(|other| other.path == path
                                 && other.method == e.method

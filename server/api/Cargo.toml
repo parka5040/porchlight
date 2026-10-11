@@ -11,6 +11,7 @@ name = "porchlight"
 path = "src/main.rs"
 
 [dependencies]
+rustix.workspace = true
 porchlight-core.workspace = true
 porchlight-pki.workspace = true
 porchlight-db.workspace = true
@@ -53,7 +54,7 @@ minisign-verify.workspace = true
 tokio-util.workspace = true
 chrono-tz.workspace = true
 tempfile.workspace = true
-libc = "0.2"
+libc.workspace = true
 
 [features]
 testing = ["porchlight-db/testing", "tokio/test-util"]

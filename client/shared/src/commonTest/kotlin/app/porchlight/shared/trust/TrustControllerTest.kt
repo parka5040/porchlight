@@ -164,6 +164,7 @@ class TrustControllerTest {
         val controller = TrustController(keys, factory, "desktop", { now }, false)
         val cache = memoryCache { now }
         val data = HouseholdData(cache, GeneratedCall.trusted(controller), { now })
+        cache.initialize(value().cacheOwner()) // Persisted fixtures must belong to the restored identity.
         cache.install(emptySnapshot(41).copy(items = listOf(itemRead("persisted"))))
         val prior = cache.view.value
         // Actual application order: data binds in composition, TrustGate restores afterwards.
@@ -188,6 +189,7 @@ class TrustControllerTest {
         val controller = TrustController(keys, factory, "desktop", { now }, false)
         val cache = memoryCache { now }
         val data = HouseholdData(cache, GeneratedCall.trusted(controller), { now })
+        cache.initialize(value().cacheOwner()) // Persisted fixtures must belong to the restored identity.
         cache.install(emptySnapshot(41).copy(items = listOf(itemRead("persisted"))))
         val prior = cache.view.value
         val binding = data.bindTrust(controller, backgroundScope)
@@ -253,6 +255,7 @@ class TrustControllerTest {
         val controller = TrustController(keys, factory, "android", { now }, true)
         val cache = memoryCache { now }
         val data = HouseholdData(cache, GeneratedCall.trusted(controller), { now })
+        cache.initialize(value().cacheOwner()) // Persisted fixtures must belong to the restored identity.
         cache.install(emptySnapshot(41).copy(items = listOf(itemRead("persisted"))))
         val binding = data.bindTrust(controller, backgroundScope) // production order: bind, then restore
         try {
@@ -270,6 +273,8 @@ class TrustControllerTest {
             controller.logout()
             cache.view.first { it.sync == null && it.items.isEmpty() }
             assertEquals(TrustState.Login, controller.state.value)
+            assertFailsWith<CacheOwnerUnavailable> { cache.install(emptySnapshot(43)) }
+            controller.login("password") // Readmit the owner before seeding data for the revocation check.
             cache.install(emptySnapshot(43))
             controller.onProblem(ApiProblem("device-revoked", 401, ""))
             cache.view.first { it.sync == null }

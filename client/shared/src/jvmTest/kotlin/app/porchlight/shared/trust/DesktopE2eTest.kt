@@ -22,7 +22,8 @@ class DesktopE2eTest {
         runBlocking {
             val base = Path.of(System.getProperty("porchlight.test.dir")); Files.createDirectories(base)
             val directory = Files.createTempDirectory(base, "desktop-e2e-")
-            val keys = DesktopKeyStore(directory, DesktopSecretWallet("app.porchlight.test", "desktop-e2e"))
+            val wallet = DesktopSecretWallet("app.porchlight.test", "desktop-e2e")
+            val keys = DesktopKeyStore(directory, wallet)
             val factory = OkHttpTrustFactory(keys, ClientInfo("0.1.0"))
             val controller = TrustController(keys, factory, "desktop", { Clock.System.now() }, false)
             try {
@@ -40,7 +41,12 @@ class DesktopE2eTest {
                 assertTrue(controller.transport().request("GET", "/v1/me", session = controller.sessionToken()).containsKey("member_id"))
                 controller.logout()
                 assertEquals(TrustState.Login, controller.state.value)
-            } finally { runCatching { controller.transport().close() }; keys.clear(); directory.toFile().deleteRecursively() }
+            } finally {
+                runCatching { controller.transport().close() }
+                try { keys.clear() } finally {
+                    try { wallet.deleteProbe() } finally { directory.toFile().deleteRecursively() }
+                }
+            }
     }
     }
     @Test fun secretServiceRuntime() {
@@ -50,12 +56,17 @@ class DesktopE2eTest {
         val account = "runtime-probe"
         val value = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32).also { SecureRandom().nextBytes(it) })
         val wallet = DesktopSecretWallet("app.porchlight.test", account)
-        wallet.write(value)
-        assertTrue(wallet.read() == value)
-        assertTrue(DirectSecretService("app.porchlight.test", account).read() == value)
-        // Also exercise the dbus-java 5 adapter directly, not just whichever java-keyring backend works.
         val direct = DirectSecretService("app.porchlight.test", "direct-runtime-probe")
-        direct.write(value)
-        assertTrue(direct.read() == value)
+        try {
+            wallet.write(value)
+            assertTrue(wallet.read() == value)
+            assertTrue(DirectSecretService("app.porchlight.test", account).read() == value)
+            // Also exercise the dbus-java 5 adapter directly, not just whichever java-keyring backend works.
+            direct.write(value)
+            assertTrue(direct.read() == value)
+        } finally {
+            try { wallet.deleteProbe() } finally { direct.deleteProbe() }
+        }
+        assertNull(wallet.read()); assertNull(direct.read())
     }
 }

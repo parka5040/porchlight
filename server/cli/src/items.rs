@@ -227,6 +227,8 @@ impl Fields {
         if self.all_day {
             b.insert("all_day".into(), json!(true));
         }
+        let mut override_offsets = Vec::new();
+        let mut override_locals = std::collections::BTreeMap::new();
         for (k, v) in [
             ("start", &self.start),
             ("end", &self.end),
@@ -243,13 +245,16 @@ impl Fields {
                                 "Fixed overrides require an item time zone",
                             ))?)
                             .ok_or(Error::Usage("Invalid time zone"))?;
-                            porchlight_core::time::to_local(instant.with_timezone(&Utc), z)
+                            let instant = instant.with_timezone(&Utc);
+                            override_offsets.push((k, instant, z));
+                            porchlight_core::time::to_local(instant, z)
                         } else {
                             local(v)?
                         }
                     } else {
                         local(v)?
                     };
+                    override_locals.insert(k, l);
                     b.insert(format!("local_{k}"), json!(l));
                 } else if mode == "floating" {
                     let l = local(v)?;
@@ -271,6 +276,27 @@ impl Fields {
                     };
                     b.insert(key.into(), json!(utc));
                 }
+            }
+        }
+        for (field, expected, zone) in override_offsets {
+            let resolved = match (
+                field,
+                override_locals.get("start"),
+                override_locals.get("end"),
+            ) {
+                ("start" | "end", Some(start), Some(end)) => {
+                    let (start, end) = porchlight_core::time::resolve_span(*start, *end, zone)
+                        .map_err(|_| {
+                            Error::Usage("Override end must follow start in item-zone wall time")
+                        })?;
+                    if field == "start" { start } else { end }
+                }
+                _ => porchlight_core::time::resolve_local(override_locals[field], zone),
+            };
+            if resolved != expected {
+                return Err(Error::Usage(
+                    "Override offset cannot be preserved: item-zone folds use the earlier offset; use a representable local time",
+                ));
             }
         }
         if existing.is_none()
@@ -394,10 +420,8 @@ pub async fn run(c: &Client, cmd: &Command) -> Result<Value> {
                 // Always verify membership, even when --version was supplied.
                 // The item collection also includes preserved/out-of-window history;
                 // a household snapshot is neither a parent check nor a complete list.
-                let rows = domain::collection(c, &format!("/v1/items/{item}/occurrences")).await?;
-                let row = rows["items"]
-                    .as_array()
-                    .and_then(|xs| xs.iter().find(|r| r["id"] == oid.to_string()))
+                let row = domain::collection_row(c, &format!("/v1/items/{item}/occurrences"), oid)
+                    .await?
                     .ok_or(Error::Usage(
                         "Occurrence does not belong to the specified item",
                     ))?;
@@ -485,4 +509,42 @@ async fn write(
         Some(version),
     )
     .await
+}
+
+#[cfg(test)]
+mod audit_bl_server {
+    use super::*;
+
+    #[tokio::test]
+    async fn later_fold_override_offsets_are_not_silently_changed() {
+        let client = Client::new("/srv/data/unused.sock".into(), String::new());
+        let existing = json!({"time_mode":"fixed", "tzid":"America/New_York"});
+        for (field, later, earlier) in [
+            (
+                "start",
+                "2026-11-01T01:15:00-05:00",
+                "2026-11-01T01:15:00-04:00",
+            ),
+            (
+                "due",
+                "2026-11-01T01:15:00-05:00",
+                "2026-11-01T01:15:00-04:00",
+            ),
+        ] {
+            for (text, accepted) in [(later, false), (earlier, true)] {
+                let mut fields = Fields::default();
+                if field == "start" {
+                    fields.start = Some(text.into());
+                    fields.end = Some("2026-11-01T02:15:00-05:00".into());
+                } else {
+                    fields.due = Some(text.into());
+                }
+                assert_eq!(
+                    fields.body(&client, Some(&existing), true).await.is_ok(),
+                    accepted,
+                    "{field} fold identity"
+                );
+            }
+        }
+    }
 }

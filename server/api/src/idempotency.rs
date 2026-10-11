@@ -366,6 +366,9 @@ async fn revalidate(
             let d = auth::device_by_fingerprint(&mut **tx, fingerprint)
                 .await?
                 .ok_or_else(|| ApiError::new(crate::error::Problem::DeviceUnknown))?;
+            if d.revoked {
+                return Err(ApiError::new(crate::error::Problem::DeviceRevoked));
+            }
             if !d.certificate_live {
                 return Err(ApiError::new(
                     crate::error::Problem::DeviceCertificateExpired,

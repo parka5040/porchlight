@@ -48,7 +48,7 @@ with tempfile.TemporaryDirectory(prefix='compose-env.', dir=root / 'var/tests') 
     assert demo['ENROLL_CIDRS'] == '192.0.2.0/24,172.31.252.1/32,172.31.253.1/32'
 
     installer = (root / 'deploy/install.sh').read_text()
-    server_writer = next(code for code in re.findall(r'python3 -I -B - "\$stackroot/\.env" "\$version" <<\'PY\'\n(.*?)\nPY', installer, re.S) if code.startswith('import os,secrets'))
+    server_writer = next(code for code in re.findall(r'python3 -I -B - "\$stage/initial\.env" "\$version" <<\'PY\'\n(.*?)\nPY', installer, re.S) if code.startswith('import os,secrets'))
     # Exercise the actual installed-stack writer with non-secret deterministic passwords.
     subprocess.run(['python3', '-I', '-', str(work / 'var/stack.env'), version],
                    input="import secrets\nsecrets.token_hex=lambda _: 'fixture-password'\n" + server_writer,

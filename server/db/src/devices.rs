@@ -5,7 +5,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 pub async fn revoked_fingerprints(pool: &PgPool) -> sqlx::Result<Vec<[u8; 32]>> {
-    let rows=sqlx::query!("SELECT c.fingerprint_sha256 FROM porchlight.device_certificates c JOIN porchlight.devices d ON d.id=c.device_id WHERE d.revoked_at IS NOT NULL").fetch_all(pool).await?;
+    let rows=sqlx::query!("SELECT c.fingerprint_sha256 FROM porchlight.device_certificates c JOIN porchlight.devices d ON d.id=c.device_id WHERE d.revoked_at IS NOT NULL OR c.revoked_at IS NOT NULL").fetch_all(pool).await?;
     rows.into_iter()
         .map(|r| decode(r.fingerprint_sha256))
         .collect()
@@ -51,6 +51,36 @@ pub async fn not_after(
     device: Uuid,
 ) -> sqlx::Result<DateTime<Utc>> {
     sqlx::query_scalar!("SELECT not_after FROM porchlight.device_certificates WHERE fingerprint_sha256=$1 AND device_id=$2",fp.as_slice(),device).fetch_one(&mut **tx).await
+}
+/// Called under the live device lock. Replay is resolved before this check.
+pub async fn renewal_available(
+    tx: &mut Transaction<'_, Postgres>,
+    device: Uuid,
+    fp: &[u8; 32],
+) -> sqlx::Result<bool> {
+    sqlx::query_scalar("SELECT (SELECT count(*) FROM porchlight.device_certificates WHERE device_id=$1 AND created_at>clock_timestamp()-interval '24 hours') < 3 AND NOT EXISTS (SELECT 1 FROM porchlight.device_certificates newer JOIN porchlight.device_certificates presented ON presented.device_id=newer.device_id WHERE presented.device_id=$1 AND presented.fingerprint_sha256=$2 AND newer.first_seen_at IS NOT NULL AND (newer.created_at,newer.id)>(presented.created_at,presented.id))")
+        .bind(device).bind(fp.as_slice()).fetch_one(&mut **tx).await
+}
+/// Serialized with issuance under the device lock; never mark a superseded leaf as used.
+pub async fn mark_certificate_seen(
+    tx: &mut Transaction<'_, Postgres>,
+    fp: &[u8; 32],
+) -> sqlx::Result<()> {
+    sqlx::query("UPDATE porchlight.device_certificates SET first_seen_at=clock_timestamp() WHERE fingerprint_sha256=$1 AND first_seen_at IS NULL AND revoked_at IS NULL")
+        .bind(fp.as_slice()).execute(&mut **tx).await?;
+    Ok(())
+}
+/// Replacing a lost reply revokes only confirmed-unused leaves, not legacy unknowns.
+/// All issuances still count toward the budget. Caller holds the live-device lock
+/// and has already checked renewal_available.
+pub async fn revoke_unused_successors(
+    tx: &mut Transaction<'_, Postgres>,
+    device: Uuid,
+    fp: &[u8; 32],
+) -> sqlx::Result<()> {
+    sqlx::query("UPDATE porchlight.device_certificates newer SET revoked_at=clock_timestamp() FROM porchlight.device_certificates presented WHERE presented.device_id=$1 AND presented.fingerprint_sha256=$2 AND newer.device_id=presented.device_id AND (newer.created_at,newer.id)>(presented.created_at,presented.id) AND newer.usage_tracked AND newer.first_seen_at IS NULL AND newer.revoked_at IS NULL")
+        .bind(device).bind(fp.as_slice()).execute(&mut **tx).await?;
+    Ok(())
 }
 #[derive(Clone, Serialize)]
 pub struct DeviceRow {

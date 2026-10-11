@@ -39,7 +39,7 @@ class CollaborationInstrumentedTest {
         val theme = mutableStateOf(ThemeMode.Evening)
         val id = "01999999-0000-7000-8000-000000000010"
         val entry = EntryResponse(id, id, id, "Oat milk", "cartons", "", "a0", 1, at, at, qty = 2.0)
-        val list = ListResponse(id, id, id, "Groceries", ListMode.persistent, ListVisibility.household, 1, at, at, emptyList(), listOf("check"), listOf(entry), emptyList())
+        val list = ListResponse(id = id, householdId = id, ownerId = id, name = "Groceries", mode = ListMode.persistent, visibility = ListVisibility.household, version = 1, createdAt = at, updatedAt = at, viewers = emptyList(), capabilities = listOf("check"), propertyEntries = listOf(entry), gotIt = emptyList())
         val comment = Comment(id, id, "A comment", emptyList(), at, 1, authorId = id)
         val attachment = Attachment(id, id, "notes.txt", at, 1, 5, "text/plain", false)
         compose.setContent { CompositionLocalProvider(LocalDensity provides Density(LocalDensity.current.density, 2f)) { PorchlightTheme(theme.value, false) { Column {

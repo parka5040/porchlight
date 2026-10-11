@@ -579,7 +579,7 @@ member_id=$2 order by id",
             .fetch_all(&mut *d)
             .await?;
             if devices != now_devices {
-                return Err(ApiError::transient(Problem::Conflict).retry(1));
+                return Err(ApiError::transient_conflict().retry(1));
             }
             let now_pats: Vec<Uuid> = sqlx::query_scalar(
                 "select id from porchlight.api_tokens where household_id=$1
@@ -590,7 +590,7 @@ and owner_member_id=$2 order by id",
             .fetch_all(&mut *d)
             .await?;
             if pats != now_pats {
-                return Err(ApiError::transient(Problem::Conflict).retry(1));
+                return Err(ApiError::transient_conflict().retry(1));
             }
             for device in &devices {
                 if let Some(r) =
@@ -680,7 +680,7 @@ pub async fn revisions(
         .map(|v| s.idem.cursor.decode(&context, v))
         .transpose()?;
     let rows = sqlx::query_as(
-        "select id,item_id,rev,snapshot,actor,created_at from
+        "select id,item_id,rev,snapshot-'reminder_origin_id' as snapshot,actor,created_at from
 porchlight.item_revisions where household_id=$1 and
 item_id=$2 and ($3::int is null or rev>$3) order by rev
 limit $4",

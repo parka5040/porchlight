@@ -82,7 +82,7 @@ class CalendarGridUiTest {
                 assertTrue(close.positionInRoot.y < short.positionInRoot.y + short.size.height)
                 assertTrue(close.positionInRoot.x >= short.positionInRoot.x + short.size.width)
                 assertTrue(short.size.height >= 48 && short.size.width >= 48)
-                assertEquals(48, short.size.height)
+                assertEquals((52 * fontScale).toInt() - 4, short.size.height) // Keep the label readable at the requested scale.
             }
     }
     @Test fun narrowMobileAgendaAtDoubleScaleHasNoEmptyDaysOrSecretConflictText() {

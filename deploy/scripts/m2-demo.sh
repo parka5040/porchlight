@@ -156,12 +156,14 @@ make_env() {
     done
   } > "$envfile"
   chmod 600 "$envfile"
+  # Enrollment peer decisions log at DEBUG (O1-01: no per-connection INFO flood); section 11 inspects each probe's.
+  printf 'services:\n  api:\n    environment:\n      RUST_LOG: info,porchlight_api::server=debug\n' > "$base/compose.m2.yml"
   set -a
   . "$envfile"
   set +a
 }
 make_env
-dc() { docker compose -p porchlight-m2demo -f "$root/deploy/compose.dev.yml" --env-file "$envfile" "$@"; }
+dc() { docker compose -p porchlight-m2demo -f "$root/deploy/compose.dev.yml" -f "$base/compose.m2.yml" --env-file "$envfile" "$@"; }
 compose_ready=1
 # down needs interpolation even on the first invocation; then replace all bind state, never dev var/.
 dc down -v --remove-orphans >"$base/teardown.log" 2>&1

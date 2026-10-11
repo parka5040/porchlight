@@ -1,9 +1,20 @@
 # Production/laptop release stack. No Funnel service runs without its explicit profile.
 name: porchlight
+x-logging: &bounded-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
 services:
   postgres:
+    logging: *bounded-logging
+    mem_limit: 2g
+    cpus: "2.0"
+    pids_limit: 256
     image: postgres:18.6@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722
     restart: unless-stopped
+    command: ["postgres", "-c", "shared_buffers=512MB", "-c", "work_mem=4MB",
+              "-c", "maintenance_work_mem=128MB", "-c", "max_connections=50"]
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?missing stack .env}
       PORCHLIGHT_MIGRATOR_PASSWORD: ${PORCHLIGHT_MIGRATOR_PASSWORD:?missing stack .env}
@@ -18,10 +29,16 @@ services:
     networks: [backend]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d porchlight"]
-      interval: 2s
+      interval: 30s
+      start_period: 60s
+      start_interval: 2s
       timeout: 3s
       retries: 30
   migrate:
+    logging: *bounded-logging
+    mem_limit: 512m
+    cpus: "1.0"
+    pids_limit: 128
     image: porchlight-api:${PORCHLIGHT_VERSION:?missing release version}
     pull_policy: never
     restart: "no" # one-shot: never loop successful migrations
@@ -32,6 +49,10 @@ services:
       PORCHLIGHT_MIGRATOR_URL: postgres://porchlight_migrator:${PORCHLIGHT_MIGRATOR_PASSWORD:?missing credential}@postgres:5432/porchlight
     networks: [backend]
   api:
+    logging: *bounded-logging
+    mem_limit: 1g
+    cpus: "2.0"
+    pids_limit: 256
     image: porchlight-api:${PORCHLIGHT_VERSION:?missing release version}
     pull_policy: never
     user: "${PORCHLIGHT_UID:-1000}:${PORCHLIGHT_GID:-1000}"
@@ -42,6 +63,8 @@ services:
     environment:
       PORCHLIGHT_DATABASE_URL: postgres://porchlight_app:${PORCHLIGHT_APP_PASSWORD:?missing credential}@postgres:5432/porchlight
       PORCHLIGHT_DATA_DIR: /data
+      PORCHLIGHT_ATTACHMENT_QUOTA_BYTES: ${PORCHLIGHT_ATTACHMENT_QUOTA_BYTES:-10737418240}
+      PORCHLIGHT_DISK_RESERVE_BYTES: ${PORCHLIGHT_DISK_RESERVE_BYTES:-2147483648}
       PORCHLIGHT_AGENT_SOCKET: /run/porchlight/agent.sock
       PORCHLIGHT_LAN_ADDR: 0.0.0.0:8443
       PORCHLIGHT_ENROLL_ADDR: 0.0.0.0:8444
@@ -64,10 +87,16 @@ services:
     networks: [backend, ingress]
     healthcheck:
       test: ["CMD", "/usr/local/bin/porchlight", "healthcheck"]
-      interval: 5s
+      interval: 30s
+      start_period: 60s
+      start_interval: 5s
       timeout: 5s
       retries: 30
   backup:
+    logging: *bounded-logging
+    mem_limit: 1g
+    cpus: "1.0"
+    pids_limit: 128
     image: porchlight-backup:${PORCHLIGHT_VERSION:?missing release version}
     pull_policy: never
     user: "${PORCHLIGHT_UID:-1000}:${PORCHLIGHT_GID:-1000}"
@@ -92,7 +121,8 @@ services:
     networks: [backend]
     healthcheck:
       test: ["CMD", "/bin/bash", "/opt/porchlight/backup/backup.sh", "health"]
-      interval: 60s
+      interval: 30s
+      start_interval: 5s
       timeout: 10s
       retries: 3
       start_period: 120s

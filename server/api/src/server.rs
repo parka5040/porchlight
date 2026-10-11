@@ -178,13 +178,41 @@ fn peer_allowed(peer: SocketAddr, nets: &[IpNet]) -> bool {
     nets.iter()
         .any(|net| net.contains(&peer.ip().to_canonical()))
 }
+// Owned by the accept loop: bounded memory, no peer identifiers, one summary per minute.
+#[derive(Default)]
+struct PeerPolicyCounts {
+    allowed: u64,
+    refused: u64,
+}
+impl PeerPolicyCounts {
+    fn check(&mut self, transport: Transport, peer: SocketAddr, nets: &[IpNet]) -> bool {
+        let allowed = check_peer(transport, peer, nets);
+        if allowed {
+            self.allowed = self.allowed.saturating_add(1);
+        } else {
+            self.refused = self.refused.saturating_add(1);
+        }
+        allowed
+    }
+    fn report(&mut self, transport: Transport) {
+        let counts = std::mem::take(self);
+        if counts.allowed != 0 || counts.refused != 0 {
+            tracing::info!(
+                transport = transport.label(),
+                allowed = counts.allowed,
+                refused = counts.refused,
+                "peer policy summary"
+            );
+        }
+    }
+}
 fn check_peer(transport: Transport, peer: SocketAddr, nets: &[IpNet]) -> bool {
     let allowed = peer_allowed(peer, nets);
     if transport == Transport::Enrollment {
-        tracing::info!(transport = "enrollment", peer = %peer.ip().to_canonical(), allowed,
+        tracing::debug!(transport = "enrollment", peer = %peer.ip().to_canonical(), allowed,
             "enrollment peer policy");
     } else if !allowed {
-        tracing::info!(transport = transport.label(), peer = %peer.ip().to_canonical(), "peer refused by policy");
+        tracing::debug!(transport = transport.label(), peer = %peer.ip().to_canonical(), "peer refused by policy");
     }
     if !allowed {
         log_failure(transport, ConnectionFailure::new("policy", "peer_refused"));
@@ -360,10 +388,19 @@ async fn run_inner(
     let [lan_budget, funnel_budget, enroll_budget, agent_budget] =
         std::array::from_fn::<_, 4, _>(|_| Arc::new(Semaphore::new(policy.max_connections)));
     let mut connections = JoinSet::new();
+    let mut enroll_policy = PeerPolicyCounts::default();
+    let mut funnel_policy = PeerPolicyCounts::default();
+    let period = Duration::from_secs(60);
+    let mut policy_reports = tokio::time::interval_at(Instant::now() + period, period);
+    policy_reports.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
             () = &mut shutdown => break,
+            _ = policy_reports.tick() => {
+                enroll_policy.report(Transport::Enrollment);
+                funnel_policy.report(Transport::Funnel);
+            }
             accepted = lan_accept.accept(Transport::Lan, listeners.lan.accept()) => {
                 let Some((stream, peer)) = accepted else { continue };
                 let Some(permit) = permit(&lan_budget, Transport::Lan) else { continue };
@@ -371,14 +408,14 @@ async fn run_inner(
             }
             accepted = funnel_accept.accept(Transport::Funnel, optional_tcp(&listeners.funnel)) => {
                 let Some((stream, peer)) = accepted else { continue };
-                if check_peer(Transport::Funnel, peer, &policy.funnel_peers) {
+                if funnel_policy.check(Transport::Funnel, peer, &policy.funnel_peers) {
                     let Some(permit) = permit(&funnel_budget, Transport::Funnel) else { continue };
                     spawn_connection(&mut connections, permit, Transport::Funnel, tcp(stream, peer, Transport::Funnel, mtls.clone(), mtls_router.clone(), policy.clone(), hub.clone()));
                 }
             }
             accepted = enroll_accept.accept(Transport::Enrollment, listeners.enroll.accept()) => {
                 let Some((stream, peer)) = accepted else { continue };
-                if check_peer(Transport::Enrollment, peer, &policy.enroll_cidrs) {
+                if enroll_policy.check(Transport::Enrollment, peer, &policy.enroll_cidrs) {
                     let Some(permit) = permit(&enroll_budget, Transport::Enrollment) else { continue };
                     spawn_connection(&mut connections, permit, Transport::Enrollment, tcp(stream, peer, Transport::Enrollment, enroll_tls.clone(), enroll_router.clone(), policy.clone(), hub.clone()));
                 }
@@ -395,6 +432,8 @@ async fn run_inner(
             }
         }
     }
+    enroll_policy.report(Transport::Enrollment);
+    funnel_policy.report(Transport::Funnel);
     // Stop accepting, terminate SSE bodies with a drain hint, and disable keepalive.
     // Slow requests/handshakes receive a bounded grace period, then are cancelled.
     drop(listeners);
@@ -484,13 +523,61 @@ mod tests {
         ] {
             assert!(text.contains(kind), "{text}");
         }
+        assert!(text.contains("DEBUG") && text.contains("funnel") && text.contains("lan"));
         assert!(
-            text.contains("DEBUG")
-                && text.contains("INFO")
-                && text.contains("funnel")
-                && text.contains("lan")
+            !text.contains("INFO"),
+            "per-peer diagnostics must be debug-only"
         );
         assert!(!text.contains("secret-payload-marker"));
+    }
+
+    #[test]
+    fn audit_ops_peer_summary_bounds_logs_without_losing_refusals() {
+        use std::io::Write;
+        #[derive(Clone, Default)]
+        struct Capture(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let output = Capture::default();
+        let writer = output.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let mut counts = PeerPolicyCounts::default();
+            let peer = "192.168.77.2:1234".parse().unwrap();
+            let nets = ["192.168.77.0/24".parse().unwrap()];
+            for _ in 0..5_000 {
+                assert!(counts.check(Transport::Enrollment, peer, &nets));
+                assert!(!counts.check(Transport::Enrollment, peer, &[]));
+            }
+            assert!(output.0.lock().unwrap().is_empty());
+            counts.report(Transport::Enrollment);
+            counts.report(Transport::Enrollment); // No empty summaries during idle periods.
+            assert_eq!(counts.allowed, 0);
+            assert_eq!(counts.refused, 0);
+        });
+        let text = String::from_utf8(output.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(text.lines().count(), 1, "{text}");
+        for field in [
+            "peer policy summary",
+            "enrollment",
+            "allowed=5000",
+            "refused=5000",
+        ] {
+            assert!(text.contains(field), "{text}");
+        }
+        assert!(!text.contains("192.168.77.2"));
     }
 
     #[tokio::test]

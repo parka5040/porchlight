@@ -24,7 +24,7 @@ class CollaborationFixtureTest {
         val uncheckEntry = WireJson.decodeFromString<EntryResponse>(recording("entry-occurrence-uncheck"))
         assertTrue(checked.gotIt.isEmpty()); assertNotNull(checked.propertyEntries.first().checkedAt)
         assertNull(unchecked.propertyEntries.first().checkedAt); assertNull(other.propertyEntries.first().checkedAt)
-        val cache = memoryCache { checked.createdAt }
+        val cache = memoryCache { assertNotNull(checked.createdAt) }
         var current = template.copy(occurrenceId = checked.occurrenceId, propertyEntries = template.propertyEntries.map { it.copy(occurrenceId = checked.occurrenceId) })
         var moveBody: JsonObject? = null
         val transport = KtorApiTransport(HttpClient(MockEngine { req ->

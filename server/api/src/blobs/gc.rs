@@ -27,7 +27,11 @@ fn directory(entry: &std::fs::DirEntry, class: &'static str) -> bool {
         }
     }
 }
-fn old_files(root: &Path, now: DateTime<Utc>) -> Vec<(String, i64, DateTime<Utc>)> {
+fn old_files(
+    root: &Path,
+    now: DateTime<Utc>,
+    budget: &DiskBudget,
+) -> Vec<(String, i64, DateTime<Utc>)> {
     let mut candidates = Vec::new();
     let inspect =
         |entry: &std::fs::DirEntry| -> std::io::Result<Option<(String, i64, DateTime<Utc>)>> {
@@ -41,8 +45,9 @@ fn old_files(root: &Path, now: DateTime<Utc>) -> Vec<(String, i64, DateTime<Utc>
             }
             let name = entry.file_name().to_string_lossy().into_owned();
             if name.starts_with('.') && name.ends_with(".tmp") {
-                std::fs::remove_file(entry.path())?;
-                std::fs::File::open(entry.path().parent().unwrap())?.sync_all()?;
+                let path = entry.path();
+                budget.change(&[&path], || std::fs::remove_file(&path))?;
+                std::fs::File::open(path.parent().unwrap())?.sync_all()?;
             } else if blob_path(root, &name).is_ok_and(|p| p == entry.path())
                 && meta.len() <= MAX_UPLOAD as u64
             {
@@ -90,14 +95,29 @@ pub async fn gc(
     root: &Path,
     now: DateTime<Utc>,
 ) -> anyhow::Result<usize> {
-    gc_with_unlink(
-        pool,
-        metadata_pool,
-        root,
-        now,
-        std::sync::Arc::new(|path: &Path| std::fs::remove_file(path)),
-    )
-    .await
+    DiskBudget::default()
+        .gc(pool, metadata_pool, root, now)
+        .await
+}
+impl DiskBudget {
+    /// Server GC shares the upload ledger; standalone helpers below retain fixture compatibility.
+    pub async fn gc(
+        &self,
+        pool: &sqlx::PgPool,
+        metadata_pool: &sqlx::PgPool,
+        root: &Path,
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<usize> {
+        gc_accounted(
+            pool,
+            metadata_pool,
+            root,
+            now,
+            std::sync::Arc::new(|path: &Path| std::fs::remove_file(path)),
+            self.clone(),
+        )
+        .await
+    }
 }
 /// Blocking unlink GC runs on the blocking pool; `gc` uses `std::fs::remove_file`.
 pub type Unlink = std::sync::Arc<dyn Fn(&Path) -> std::io::Result<()> + Send + Sync>;
@@ -110,6 +130,27 @@ pub async fn gc_with_unlink(
     now: DateTime<Utc>,
     unlink: Unlink,
 ) -> anyhow::Result<usize> {
+    gc_accounted(
+        pool,
+        metadata_pool,
+        root,
+        now,
+        unlink,
+        DiskBudget::default(),
+    )
+    .await
+}
+async fn gc_accounted(
+    pool: &sqlx::PgPool,
+    metadata_pool: &sqlx::PgPool,
+    root: &Path,
+    now: DateTime<Utc>,
+    unlink: Unlink,
+    budget: DiskBudget,
+) -> anyhow::Result<usize> {
+    let scan_root = root.join("blobs");
+    let scan_budget = budget.clone();
+    tokio::task::spawn_blocking(move || scan_budget.reconcile(&scan_root)).await??;
     let (orphans, candidates) = {
         // Returned to the pool before the per-candidate gates: the scheduler's sweep pool has one
         // connection, and each gate must be an owned transaction (see `commit_and_unlink`).
@@ -122,8 +163,9 @@ pub async fn gc_with_unlink(
         // One self-hosted household owns the data volume. Do not assign orphan bytes ambiguously.
         if let [household] = households.as_slice() {
             let root = root.to_owned();
+            let budget = budget.clone();
             for (hash, size, modified) in
-                tokio::task::spawn_blocking(move || old_files(&root, now)).await?
+                tokio::task::spawn_blocking(move || old_files(&root, now, &budget)).await?
             {
                 let exists: bool = sqlx::query_scalar(BLOB_EXISTS)
                     .bind(household)
@@ -192,7 +234,11 @@ pub async fn gc_with_unlink(
                 return Err(error);
             }
         };
-        let remove = (!other).then(|| (root.to_owned(), hash, unlink.clone()));
+        let unlink = unlink.clone();
+        let budget = budget.clone();
+        let accounted: Unlink =
+            std::sync::Arc::new(move |path| budget.change(&[path], || unlink(path)));
+        let remove = (!other).then(|| (root.to_owned(), hash, accounted));
         // Awaited, but owned by its own task: dropping this sweep cannot cut the phase short.
         let phase = commit_and_unlink(tx, gate, remove)
             .in_current_span()

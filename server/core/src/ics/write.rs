@@ -34,12 +34,8 @@ fn time_line(name: &str, t: &IcsTime, tz: Option<&str>) -> String {
 /// X-PORCHLIGHT-{UID,INSTANCE,ORIGIN} preserving typed source identity on re-import.
 /// Other clients can ignore these extensions without seeing orphan overrides.
 pub fn write(events: &[ImportedEvent], calendar_name: &str, dtstamp: DateTime<Utc>) -> String {
-    let mut lines = vec![
-        "BEGIN:VCALENDAR".to_owned(),
-        "VERSION:2.0".to_owned(),
-        "PRODID:-//Porchlight//EN".to_owned(),
-        format!("X-WR-CALNAME:{}", escape(calendar_name)),
-    ];
+    let mut out = Vec::new();
+    let mut writer = Writer::new(&mut out, calendar_name, dtstamp).expect("writing to memory");
     let series: BTreeSet<_> = events
         .iter()
         .filter(|e| {
@@ -48,6 +44,34 @@ pub fn write(events: &[ImportedEvent], calendar_name: &str, dtstamp: DateTime<Ut
         .map(|e| e.uid.as_str())
         .collect();
     for e in events {
+        writer.event(e, &series).expect("writing to memory");
+    }
+    writer.finish().expect("writing to memory");
+    String::from_utf8(out).expect("ICS is UTF-8")
+}
+
+/// Incremental calendar serialization. Retains only one event's formatted lines, never
+/// the calendar or repeated copies of a series' notes. The caller owns the output sink.
+pub struct Writer<W> {
+    out: W,
+    dtstamp: DateTime<Utc>,
+}
+impl<W: std::io::Write> Writer<W> {
+    pub fn new(out: W, calendar_name: &str, dtstamp: DateTime<Utc>) -> std::io::Result<Self> {
+        let mut writer = Self { out, dtstamp };
+        for line in [
+            "BEGIN:VCALENDAR".to_owned(),
+            "VERSION:2.0".to_owned(),
+            "PRODID:-//Porchlight//EN".to_owned(),
+            format!("X-WR-CALNAME:{}", escape(calendar_name)),
+        ] {
+            writer.line(&line)?;
+        }
+        Ok(writer)
+    }
+    pub fn event(&mut self, e: &ImportedEvent, series: &BTreeSet<&str>) -> std::io::Result<()> {
+        let dtstamp = self.dtstamp;
+        let mut lines = Vec::new();
         let real_override = e.origin == EventOrigin::Override && series.contains(e.uid.as_str());
         let standalone_id = if real_override {
             None
@@ -114,23 +138,32 @@ pub fn write(events: &[ImportedEvent], calendar_name: &str, dtstamp: DateTime<Ut
             }
         ));
         lines.push("END:VEVENT".to_owned());
+        for line in lines {
+            self.line(&line)?;
+        }
+        Ok(())
     }
-    lines.push("END:VCALENDAR".to_owned());
-    let mut out = String::new();
-    for line in lines {
+    pub fn finish(mut self) -> std::io::Result<W> {
+        self.line("END:VCALENDAR")?;
+        Ok(self.out)
+    }
+    fn line(&mut self, line: &str) -> std::io::Result<()> {
         let mut bytes = 0;
-        for c in line.chars() {
+        let mut start = 0;
+        for (index, c) in line.char_indices() {
             if bytes + c.len_utf8() > 75 {
-                out.push_str("\r\n ");
+                self.out.write_all(&line.as_bytes()[start..index])?;
+                self.out.write_all(b"\r\n ")?;
+                start = index;
                 bytes = 1;
             }
-            out.push(c);
             bytes += c.len_utf8();
         }
-        out.push_str("\r\n");
+        self.out.write_all(&line.as_bytes()[start..])?;
+        self.out.write_all(b"\r\n")
     }
-    out
 }
+
 fn safe_time_line(name: &str, t: &IcsTime, tz: Option<&str>) -> String {
     if let (IcsTime::Fixed(d), Some(zone)) = (t, tz.and_then(parse_tz))
         && resolve_local(to_local(*d, zone), zone) != *d

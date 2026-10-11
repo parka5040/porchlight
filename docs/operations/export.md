@@ -21,10 +21,16 @@ another live member but still follow that member's ACL. Appointment materializat
 TZID-local fixed times, floating-without-TZID, all-day dates and later-fold UTC behavior are documented in
 [the data-out contract](../specs/data-out.md). Exports do not guarantee a restorable series definition in another app.
 
+Member preparation is serialized per household; at most two in-progress/completed member spools may be retained.
+Additional requests receive 429 with `Retry-After: 1`. Retained bytes remain charged to the disk ledger until
+completion, body cancellation or a 30-second idle timeout. Member writes leave an additional disk reserve for
+administrative preparation; completed member downloads do not hold household export admission.
+
 Household export is a streaming tar.gz formatv2: small `data.json` manifest, `tables/NAME.jsonl`, blob bytes, and
 **LAST complete.json** containing table counts + blob inventory. All members are exported but credentials, sessions,
 PATs, step-ups, feed bearer tokens, PKI and filesystem secrets are excluded. Admin agent scope suffices; an mTLS app
-caller must be super-admin with single-use step-up action `household.export`.
+caller must be super-admin with single-use step-up action `household.export`. A 429 admission rejection does not
+consume that authorization: retry with the same token after the quota clears.
 
 Require final complete.json, matching entries/counts/hashes **and** valid gzip CRC/trailer. An archive without the
 marker or a valid trailer is incomplete despite HTTP200. The verifier reads bounded blob chunks and does not

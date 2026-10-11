@@ -64,6 +64,7 @@ elif name=='gh':
   assert args[3]=='--dir';out=pathlib.Path(args[4]);assert not list(out.iterdir())
   for asset in (root/'uploaded').iterdir(): shutil.copy2(asset,out)
   bad=os.environ.get('ROUND_TRIP','')
+  if bad=='download-failure': sys.exit(1)
   if bad in ('manifest.json','manifest.json.minisig','porchlight-0.1.6.apk','install.sh'):
    (out/bad).write_text('tampered')
   elif bad in ('tar-hash','tar-path'):
@@ -201,10 +202,21 @@ root=pathlib.Path(sys.argv[1]);calls=[json.loads(line) for line in (root/'argv.j
 assert json.loads((root/'expected-create.json').read_text()) in calls
 assert sum(call[:3]==['gh','release','create'] for call in calls)==1
 assert sum(call[:3]==['gh','release','download'] for call in calls)==1
+publish=root/'var/publish/0.1.6'
+assert not list((publish/'check').glob('download.*')), 'F1-07: successful round trip retains downloads/extraction'
+assert (publish/'porchlight-0.1.6-dist.tar').is_file() and (root/'dist/0.1.6/manifest.json').is_file()
 PY
+refuse 1 'published release download failed' env ROUND_TRIP=download-failure "${command[@]}"
 for asset in manifest.json manifest.json.minisig porchlight-0.1.6.apk install.sh; do
   refuse 1 'published asset differs' env ROUND_TRIP="$asset" "${command[@]}"
 done
-refuse 1 'published archive verification failed' env ROUND_TRIP=tar-hash "${command[@]}"
+refuse 1 'published archive extraction failed' env ROUND_TRIP=tar-hash "${command[@]}"
 refuse 1 'published archive extraction failed' env ROUND_TRIP=tar-path "${command[@]}"
+python3 -I - "$fixture/var/publish/0.1.6" <<'PY'
+import pathlib,sys
+publish=pathlib.Path(sys.argv[1]);checks=list((publish/'check').glob('download.*'))
+assert len(checks)==7, 'failed download/verification diagnostics must remain'
+assert all((p/'porchlight-0.1.6-dist.tar').is_file() for p in checks)
+assert not list(publish.glob('work.*'))
+PY
 printf 'PASS publish refusals, exact dry-run/create argv, deterministic tar, notes and verified round trip\n'

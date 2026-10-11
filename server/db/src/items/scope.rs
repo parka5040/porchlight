@@ -16,7 +16,7 @@ pub struct ScopeRequest {
     pub board_moves: Vec<BoardMove>,
     /// Member timezone writes enqueue all owner/subject/assignee dependents, even non-pending ones.
     pub member_zones: Vec<Uuid>,
-    /// Zone report: enqueue only; no projection/member-peer drain locks.
+    /// Member-zone scope: enqueue only; no projection/member-peer drain locks.
     pub enqueue_only: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,6 +45,7 @@ pub struct WriteScope<'a, 't> {
     splits: Vec<(Uuid, u32)>,
     boards: Vec<(BoardMove, MovePlan)>,
     derive_order: Vec<(Uuid, Uuid)>,
+    load_dates: Vec<(Uuid, chrono::NaiveDate)>,
     dirty: BTreeSet<Uuid>,
     board_only: BTreeSet<Uuid>,
     enqueue_only: bool,
@@ -128,14 +129,8 @@ fn neighbourhood(rows: &[(Uuid, String)], m: &BoardMove) -> Result<MovePlan> {
             keys: vec![key],
         });
     }
-    let mut start = gap.saturating_sub(1);
-    let mut end = (gap + 1).min(rows.len());
-    while start > 0 && rows[start - 1].1 == rows[start].1 {
-        start -= 1;
-    }
-    while end < rows.len() && rows[end - 1].1 == rows[end].1 {
-        end += 1;
-    }
+    let keys: Vec<_> = rows.iter().map(|r| r.1.clone()).collect();
+    let (start, end, keys) = ordering::insertion_run(&keys, gap)?;
     for row in &rows[start.saturating_sub(1)..(end + 1).min(rows.len())] {
         if !snapshot.contains(row) {
             snapshot.push(row.clone());
@@ -143,11 +138,6 @@ fn neighbourhood(rows: &[(Uuid, String)], m: &BoardMove) -> Result<MovePlan> {
     }
     let mut ordered: Vec<_> = rows[start..end].iter().map(|r| r.0).collect();
     ordered.insert(gap - start, m.occurrence);
-    let keys = spread(
-        ordered.len(),
-        start.checked_sub(1).map(|i| rows[i].1.as_str()),
-        rows.get(end).map(|r| r.1.as_str()),
-    )?;
     Ok(MovePlan {
         snapshot,
         ordered,
@@ -297,6 +287,9 @@ impl<'a, 't> WriteScope<'a, 't> {
         if marker.is_some() {
             return Err(Error::ScopeAlreadyUsed);
         }
+        if !request.member_zones.is_empty() && !request.enqueue_only {
+            return Err(scope_error("member-zone scopes require enqueue_only"));
+        }
         if request.enqueue_only
             && (request.member_zones.is_empty()
                 || !request.items.is_empty()
@@ -306,7 +299,7 @@ impl<'a, 't> WriteScope<'a, 't> {
                 || !request.board_moves.is_empty()
                 || !request.members.is_empty())
         {
-            return Err(scope_error("enqueue_only is only for zone reports"));
+            return Err(scope_error("enqueue_only is only for member-zone scopes"));
         }
         sqlx::query("select set_config('porchlight.write_scope','active',true)")
             .execute(&mut **tx)
@@ -381,6 +374,7 @@ impl<'a, 't> WriteScope<'a, 't> {
                 .zip(initial.boards)
                 .collect(),
             derive_order: Vec::new(),
+            load_dates: Vec::new(),
             dirty: BTreeSet::new(),
             board_only: BTreeSet::new(),
             enqueue_only: request.enqueue_only,
@@ -498,6 +492,45 @@ impl<'a, 't> WriteScope<'a, 't> {
         .fetch_one(&mut **self.tx)
         .await?;
         Ok(value)
+    }
+    /// Recheck projection eligibility from authoritative anchors under the held
+    /// item/occurrence/member locks, rather than using the aggregate board expiry.
+    pub async fn recipient_disposition(
+        &mut self,
+        occurrence: Uuid,
+        member: Uuid,
+        now: DateTime<Utc>,
+    ) -> Result<core::Disposition> {
+        if !self.members.contains(&member) {
+            return Err(scope_error("recipient member not prelocked"));
+        }
+        let occurrence = self.occurrence(occurrence).await?;
+        let spec = self.item(occurrence.item_id).await?.spec()?;
+        let zone: String = sqlx::query_scalar("select porchlight.pl_effective_member_zone(m.role,m.tzid,h.tzid) from porchlight.household_members m join porchlight.households h on h.id=m.household_id where m.id=$1")
+            .bind(member).fetch_one(&mut **self.tx).await?;
+        let rows = derive::occurrences(self.tx, occurrence.item_id).await?;
+        let index = rows
+            .iter()
+            .position(|o| o.id == occurrence.id)
+            .ok_or(Error::NotFound)?;
+        let effective: Vec<_> = rows
+            .iter()
+            .map(|o| {
+                Ok(core::OpenOccurrence {
+                    anchor: derive::effective_anchor(o, &spec)?,
+                    status: o.status,
+                    disposition: o.disposition,
+                    closed_at: o.closed_at,
+                    generated_anchor: o.is_detached.then(|| o.anchor.clone()),
+                })
+            })
+            .collect::<Result<_>>()?;
+        Ok(core::dispositions(
+            &effective,
+            now,
+            spec.input().missed_policy,
+            spec.zone().unwrap_or(derive::parse_zone(&zone)?),
+        )?[index])
     }
     async fn checked_occurrence(
         &mut self,
@@ -632,7 +665,7 @@ impl<'a, 't> WriteScope<'a, 't> {
     ) -> Result<()> {
         let row = self.checked(id, version).await?;
         self.ensure_members(&ItemWrite::from(&row), sets).await?;
-        replace(self.tx, self.household, id, sets).await?;
+        restore_relationships(self.tx, self.household, id, sets).await?;
         self.dirty.insert(id);
         Ok(())
     }
@@ -716,11 +749,25 @@ impl<'a, 't> WriteScope<'a, 't> {
         )
         .await?;
         let sets = relationships(self.tx, id).await?;
-        replace(self.tx, self.household, tail_id, &sets).await?;
+        // Clone explicit offsets with their delivery identity before set-difference
+        // replacement; defaults inherit the head's reminder origin at item insertion.
+        sqlx::query("insert into porchlight.item_reminders(household_id,item_id,offset_minutes,delivery_id) select household_id,$2,offset_minutes,coalesce(delivery_id,id) from porchlight.item_reminders where item_id=$1")
+            .bind(id).bind(tail_id).execute(&mut **self.tx).await?;
+        restore_relationships(self.tx, self.household, tail_id, &sets).await?;
         // Preserve occurrence identity and ALL authoritative state. Keys change, so these rows
         // were locked FOR UPDATE before member acquisition. Generated rows are rebuilt at finish.
-        sqlx::query("delete from porchlight.member_agenda where occurrence_id in (select id from porchlight.item_occurrences where item_id=$1 and seq >= $2)").bind(id).bind(at_seq as i32).execute(&mut **self.tx).await?;
-        sqlx::query("delete from porchlight.scheduled_reminders where occurrence_id in (select id from porchlight.item_occurrences where item_id=$1 and seq >= $2)").bind(id).bind(at_seq as i32).execute(&mut **self.tx).await?;
+        let old_dates: Vec<(Uuid, Option<chrono::NaiveDate>)> = sqlx::query_as("delete from porchlight.member_agenda a where occurrence_id in (select id from porchlight.item_occurrences where item_id=$1 and seq >= $2) returning member_id,coalesce((coalesce(a.starts_at,a.due_at) at time zone (select porchlight.pl_effective_member_zone(m.role,m.tzid,h.tzid) from porchlight.household_members m join porchlight.households h on h.id=m.household_id where m.id=a.member_id))::date,a.due_date)")
+            .bind(id).bind(at_seq as i32).fetch_all(&mut **self.tx).await?;
+        // Tail edits can remove estimates, members or dates. Recompute these old
+        // dates after BOTH sides converge, even if no new load date replaces them.
+        self.load_dates
+            .extend(old_dates.into_iter().filter_map(|(m, d)| d.map(|d| (m, d))));
+        // A due reminder is a delivery obligation. Reparent without changing its
+        // dedupe identity: a concurrent producer may still commit the head snapshot.
+        // Tail derivation validates offsets/recipients/fire times and retires emitted
+        // rows against the SAME witness, even after a backward clock correction.
+        sqlx::query("update porchlight.scheduled_reminders r set item_id=$2 where r.item_id=$1 and r.occurrence_id in (select id from porchlight.item_occurrences where item_id=$1 and seq >= $3)")
+            .bind(id).bind(tail_id).bind(at_seq as i32).execute(&mut **self.tx).await?;
         self.derive_order.push((id, tail_id));
         sqlx::query("update porchlight.item_occurrences set item_id=$2,seq=seq-$3 where item_id=$1 and seq >= $3").bind(id).bind(tail_id).bind(at_seq as i32).execute(&mut **self.tx).await?;
         self.targets.insert(tail_id);
@@ -761,6 +808,16 @@ impl<'a, 't> WriteScope<'a, 't> {
         {
             return Err(Error::RetryableScope);
         }
+        let positions: BTreeMap<_, _> = rows.iter().map(|(id, key)| (*id, key)).collect();
+        if movement
+            .ordered
+            .iter()
+            .zip(&movement.keys)
+            .all(|(id, key)| positions.get(id) == Some(&key))
+        {
+            self.board_only.insert(o.item_id);
+            return Ok(());
+        }
         // Trigger bookkeeping distinguishes an explicit move from automatic respread.
         // Restore the previous transaction-local value for later raw/composed writes.
         let previous: Option<String> =
@@ -785,7 +842,9 @@ impl<'a, 't> WriteScope<'a, 't> {
         if !self.occurrences.contains(&id) {
             return Err(scope_error("board neighbourhood not locked"));
         }
-        sqlx::query("update porchlight.item_occurrences set board_position=$2 where id=$1 and (board_position is distinct from $2 or $3)").bind(id).bind(key).bind(mover).execute(&mut **self.tx).await?;
+        // A real respread may preserve the mover's key while changing its history marker.
+        // Already-marked rows with unchanged keys need no write or version bump.
+        sqlx::query("update porchlight.item_occurrences set board_position=$2 where id=$1 and (board_position is distinct from $2 or ($3 and not board_moved))").bind(id).bind(key).bind(mover).execute(&mut **self.tx).await?;
         Ok(())
     }
     /// Derive each dirty target once; pending peers each get an isolated savepoint.
@@ -799,7 +858,7 @@ impl<'a, 't> WriteScope<'a, 't> {
         }
         let mut poisoned: BTreeSet<Uuid> = sqlx::query_scalar("select d.item_id from porchlight.item_derivation d join porchlight.items i on i.id=d.item_id where i.household_id=$1 and d.applied_gen<d.requested_gen and d.attempts>=5").bind(self.household).fetch_all(&mut **self.tx).await?.into_iter().collect();
         let mut outcomes = BTreeMap::new();
-        let mut load_dates = Vec::new();
+        let mut load_dates = self.load_dates;
         for id in &self.locked {
             if self.dirty.contains(id) {
                 continue;
@@ -887,9 +946,6 @@ impl<'a, 't> WriteScope<'a, 't> {
             .await?;
         Ok(result)
     }
-}
-fn spread(n: usize, lo: Option<&str>, hi: Option<&str>) -> Result<Vec<String>> {
-    Ok(ordering::spread(n, lo, hi)?)
 }
 
 #[cfg(test)]

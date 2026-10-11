@@ -1,6 +1,9 @@
 package app.porchlight.shared.trust
 
+import app.porchlight.shared.theme.PorchlightTokens
+
 import app.porchlight.shared.transport.ApiProblem
+import app.porchlight.shared.data.randomOperationKey
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
@@ -186,9 +189,9 @@ fun TrustGate(controller: TrustController, android: Boolean = false,
     LaunchedEffect(controller) { controller.ensureRestored() }
     LaunchedEffect(state, busy) { controller.refreshWhenReady() }
     Column(Modifier.fillMaxSize()) {
-        error?.let { Text(it, Modifier.padding(16.dp)) }
+        error?.let { Text(it, Modifier.padding(PorchlightTokens.spaceMd.dp)) }
         if (state == TrustState.Ready || state == TrustState.PinRequired)
-            renewalWarning?.let { Text(it, Modifier.padding(16.dp)) }
+            renewalWarning?.let { Text(it, Modifier.padding(PorchlightTokens.spaceMd.dp)) }
         Box(Modifier.weight(1f)) {
             when (state) {
                 TrustState.Enrollment -> EnrollmentScreen(android, busy, { uri, password -> run { controller.enroll(uri, password) } }, scanner, { run { controller.startOverEnrollment() } }, enrollmentKey)
@@ -214,32 +217,48 @@ fun TrustAccountScreen(controller: TrustController) {
     var devices by remember { mutableStateOf(emptyList<OwnDevice>()) }
     var target by remember { mutableStateOf<OwnDevice?>(null) }
     var changing by remember { mutableStateOf(false) }
-    var busy by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
+    val actionBusy by controller.busy.collectAsState()
+    val error by controller.actionError.collectAsState()
+    val result by controller.accountResult.collectAsState()
+    val retry by controller.accountRetry.collectAsState()
+    val revision by controller.accountRevision.collectAsState()
+    var readBusy by remember { mutableStateOf(false) }
+    var readError by remember { mutableStateOf<String?>(null) }
     var protection by remember { mutableStateOf<KeyProtection?>(null) }
-    suspend fun refresh() { devices = controller.ownDevices() }
-    fun run(action: suspend () -> Unit) {
-        if (busy) return
-        busy = true
-        error = null
-        scope.launch {
-            try { action() }
-            catch (e: CancellationException) { throw e }
-            catch (_: Exception) { error = "Action failed. Check your connection and retry." }
-            finally { busy = false }
-        }
+    val busy = actionBusy || readBusy || retry
+    suspend fun refresh() {
+        readBusy = true
+        try { devices = controller.ownDevices(); readError = null }
+        catch (e: CancellationException) { throw e }
+        catch (_: Exception) { readError = "Could not load devices. Check your connection and retry." }
+        finally { readBusy = false }
     }
-    LaunchedEffect(controller) { run { refresh() } }
+    LaunchedEffect(controller, revision) { refresh() }
     LaunchedEffect(controller) { protection = controller.keyProtection() }
     Column {
-        error?.let { Text(it, Modifier.padding(16.dp)); TrustButton("Retry") { run { refresh() } } }
-        if (changing) ChangePasswordScreen(busy, { old, new -> run { controller.changePassword(old, new); changing = false } }, { changing = false })
-        else OwnDevicesScreen(devices, busy, { target = it }, { run { controller.logout() } }, { changing = true }, protection)
+        error?.let { Text(it, Modifier.padding(app.porchlight.shared.theme.PorchlightTokens.spaceMd.dp)) }
+        if (retry) TrustButton("Retry", !actionBusy) { controller.retryAccountAction() }
+        result?.let { Text(it) }
+        readError?.let { Text(it); TrustButton("Refresh devices", !actionBusy && !readBusy) { scope.launch { refresh() } } }
+        if (changing) ChangePasswordScreen(busy, { old, new ->
+            val key = randomOperationKey()
+            controller.runAccountAction("Password changed.") { controller.changePassword(old, new, key) }
+            changing = false
+        }, { changing = false })
+        else OwnDevicesScreen(devices, busy, { target = it }, {
+            val key = randomOperationKey()
+            controller.runAccountAction("Logged out.") { controller.logout(key) }
+        }, { changing = true }, protection)
     }
-    target?.let { device -> StepUpDialog("revoke ${device.label}", busy, { password -> run {
-        val token = controller.reauth(password, "device.revoke")
-        controller.revoke(device.id, token)
+    target?.let { device -> StepUpDialog("revoke ${device.label}", busy, { password ->
+        val reauthKey = randomOperationKey()
+        val revokeKey = randomOperationKey()
+        var token: String? = null
+        // Keep the retry message reachable outside the modal; its closure retains the original intent.
         target = null
-        if (!device.current) refresh()
-    } }, { target = null }) }
+        controller.runAccountAction("Device revoked.") {
+            if (token == null) token = controller.reauth(password, "device.revoke", reauthKey)
+            controller.revoke(device.id, checkNotNull(token), revokeKey)
+        }
+    }, { target = null }) }
 }

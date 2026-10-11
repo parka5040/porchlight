@@ -13,9 +13,39 @@ dependencies {
     implementation(libs.kotlinx.coroutines.swing)
 }
 
+// The shipping image is glibc Linux x86_64. Filter only the packaging input: never mutate the
+// dependency cache or the JVM test/runtime classpath, and preserve every non-native entry verbatim.
+val sqliteJdbc = configurations.runtimeClasspath.map { files ->
+    files.single { it.name.startsWith("sqlite-jdbc-") && it.extension == "jar" }
+}
+val packageSqliteJdbc by tasks.registering(Zip::class) {
+    archiveFileName.set(sqliteJdbc.map { it.name })
+    destinationDirectory.set(layout.buildDirectory.dir("desktop-sqlite"))
+    isPreserveFileTimestamps = false
+    isReproducibleFileOrder = true
+    includeEmptyDirs = false
+    duplicatesStrategy = DuplicatesStrategy.FAIL
+    from(sqliteJdbc.map { zipTree(it) }) {
+        include {
+            it.isDirectory || !it.path.startsWith("org/sqlite/native/") ||
+                it.path == "org/sqlite/native/Linux/x86_64/libsqlitejdbc.so"
+        }
+    }
+    doFirst {
+        check(System.getProperty("os.name") == "Linux" && System.getProperty("os.arch") in listOf("amd64", "x86_64")) {
+            "Desktop packaging supports glibc Linux x86_64 only"
+        }
+    }
+}
+
 compose.desktop {
     application {
+        disableDefaultConfiguration()
+        fromFiles(tasks.named("jar"), packageSqliteJdbc, configurations.runtimeClasspath.get().filter {
+            !it.name.startsWith("sqlite-jdbc-")
+        })
         mainClass = "app.porchlight.desktop.MainKt"
+        mainJar.set(tasks.named<Jar>("jar").flatMap { it.archiveFile })
         jvmArgs += listOf("--enable-native-access=ALL-UNNAMED", "--sun-misc-unsafe-memory-access=allow", "-Dslf4j.internal.verbosity=ERROR") // Skiko loads its native library
         nativeDistributions {
             packageName = "porchlight"

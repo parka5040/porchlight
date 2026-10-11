@@ -69,20 +69,21 @@ class CalendarDocumentActivity : Activity() {
             } }
             if (!launched) onResult(Result.failure(IllegalStateException("A file dialog is already open or unavailable")))
         }
+        @OptIn(ExperimentalCoroutinesApi::class, DelicateCoroutinesApi::class)
         override fun save(household: Boolean, write: suspend (ExportSink) -> Unit, onResult: (Result<Boolean>) -> Unit) {
-            val launched = launch(true, household) { uri -> scope.launch {
+            // Even a cancelled identity scope must enter the cleanup owner for an already-created SAF document.
+            val launched = launch(true, household) { uri -> scope.launch(start = CoroutineStart.ATOMIC) {
                 if (uri == null) { onResult(Result.success(false)); return@launch }
-                var sink: StagedExportSink? = null
                 try {
-                    val spool = withContext(Dispatchers.IO) { File.createTempFile("export-", ".part", context.cacheDir) }
-                    val remove = { runCatching { DocumentsContract.deleteDocument(context.contentResolver, uri) }; Unit }
-                    sink = StagedExportSink(spool, household, { context.contentResolver.openOutputStream(uri, "wt")!! }, remove)
-                    write(sink); onResult(Result.success(true))
+                    exportCreatedDocument(household,
+                        { File.createTempFile("export-", ".part", context.cacheDir) },
+                        { context.contentResolver.openOutputStream(uri, "wt")!! },
+                        { runCatching { DocumentsContract.deleteDocument(context.contentResolver, uri) }; Unit }, write)
+                    onResult(Result.success(true))
                 } catch (e: CancellationException) {
-                    withContext(NonCancellable) { sink?.abort() }
                     if (currentCoroutineContext().isActive) onResult(Result.failure(e)) else throw e
                 }
-                catch (e: Exception) { withContext(NonCancellable) { sink?.abort() }; onResult(Result.failure(e)) }
+                catch (e: Exception) { onResult(Result.failure(e)) }
             } }
             if (!launched) onResult(Result.failure(IllegalStateException("A file dialog is already open or unavailable")))
         }

@@ -18,6 +18,8 @@ pub struct Tickle {
 }
 pub struct Batch {
     pub epoch: i64,
+    /// Highest discarded sequence, in the same snapshot as the rows/ACL decisions.
+    pub pruned_through: i64,
     pub cursor: i64,
     pub scanned: i64,
     pub events: Vec<Tickle>,
@@ -148,6 +150,7 @@ WITH batch AS MATERIALIZED (
     SELECT id FROM porchlight.household_members WHERE id=$2 AND household_id=$1 AND deleted_at IS NULL AND role<>'dependent'
 )
 SELECT (SELECT epoch FROM porchlight.stream_retention) AS "epoch!",
+       (SELECT pruned_through FROM porchlight.stream_retention) AS "pruned_through!",
        (SELECT coalesce(max(stream_seq),$3) FROM batch) AS "cursor!",
        (SELECT count(*) FROM batch) AS "scanned!",
        coalesce(jsonb_agg(jsonb_build_object('seq',stream_seq,'kind',kind,
@@ -160,6 +163,7 @@ FROM routed WHERE allowed AND EXISTS(SELECT 1 FROM live_member)
 "#, household, member, after, limit, through, seqs).fetch_one(pool).await?;
     Ok(Batch {
         epoch: row.epoch,
+        pruned_through: row.pruned_through,
         cursor: row.cursor,
         scanned: row.scanned,
         events: row.events.0,

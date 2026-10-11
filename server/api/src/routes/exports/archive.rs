@@ -1,4 +1,4 @@
-//! One read-only RR snapshot, one anonymous table spool, bounded gzip backpressure.
+//! One read-only RR snapshot, bounded anonymous table spools, then gzip backpressure.
 use super::HOUSEHOLD_TABLES;
 use crate::{blobs::blob_path, state::AppState};
 use axum::body::Bytes;
@@ -120,6 +120,35 @@ fn append(
     tar.append_file(name, &mut file)
 }
 
+struct TableSpool<'a> {
+    file: std::fs::File,
+    state: &'a AppState,
+    remaining: &'a mut u64,
+}
+impl Write for TableSpool<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let capacity = || std::io::Error::new(std::io::ErrorKind::StorageFull, "export capacity");
+        if bytes.len() as u64 > *self.remaining {
+            return Err(capacity());
+        }
+        let _reservation = self
+            .state
+            .disk_budget
+            .reserve(
+                &self.state.settings.data_dir,
+                bytes.len() as u64,
+                self.state.settings.disk_reserve_bytes,
+            )
+            .map_err(|_| capacity())?;
+        let written = self.file.write(bytes)?;
+        *self.remaining -= written as u64;
+        Ok(written)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
+}
+
 pub(super) fn produce(
     s: AppState,
     household: Uuid,
@@ -171,27 +200,9 @@ fn produce_with(
     if missing {
         return Err(interrupted());
     }
-    let aborted = Arc::new(AtomicBool::new(false));
-    let gzip = flate2::write::GzEncoder::new(
-        ChannelWriter {
-            aborted: aborted.clone(),
-            send: send.clone(),
-            pool: s.pool.clone(),
-            lease,
-            runtime: runtime.clone(),
-            renewed: Instant::now(),
-        },
-        flate2::Compression::default(),
-    );
-    let mut tar = tar::Builder::new(gzip);
-    let _abort = AbortOnDrop(aborted);
     let mut table_rows = std::collections::BTreeMap::new();
-    let manifest = serde_json::to_vec(&json!({"format_version":2,"exported_at":(s.item_clock)(),"tables":HOUSEHOLD_TABLES.iter().map(|n| (*n, format!("tables/{n}.jsonl"))).collect::<std::collections::BTreeMap<_,_>>()})).map_err(|_| interrupted())?;
-    let mut header = tar::Header::new_gnu();
-    header.set_size(manifest.len() as u64);
-    header.set_mode(0o600);
-    header.set_cksum();
-    tar.append_data(&mut header, "data.json", manifest.as_slice())?;
+    let mut tables = Vec::with_capacity(HOUSEHOLD_TABLES.len());
+    let mut remaining = 1024 * 1024 * 1024; // One GiB across the entire table phase.
     for &name in HOUSEHOLD_TABLES {
         let has_h: bool = wait(&runtime, &send, sqlx::query_scalar("select exists(select 1 from pg_attribute where attrelid=to_regclass('porchlight.'||$1) and attname='household_id' and not attisdropped)").bind(name).fetch_one(&mut *tx))?;
         let condition = if name == "households" {
@@ -218,7 +229,11 @@ fn produce_with(
         let mut rows = sqlx::query_scalar::<_, Json<Value>>(sqlx::AssertSqlSafe(sql.as_str()))
             .bind(household)
             .fetch(&mut *tx);
-        let mut spool = BufWriter::new(tempfile::tempfile_in(&s.settings.data_dir)?);
+        let mut spool = BufWriter::new(TableSpool {
+            file: tempfile::tempfile_in(&s.settings.data_dir)?,
+            state: &s,
+            remaining: &mut remaining,
+        });
         let mut count = 0u64;
         while let Some(Json(row)) = wait(&runtime, &send, rows.try_next())? {
             serde_json::to_writer(&mut spool, &row)?;
@@ -240,13 +255,38 @@ fn produce_with(
         }
         drop(rows);
         let spool = spool.into_inner().map_err(|_| interrupted())?;
-        append(&mut tar, &format!("tables/{name}.jsonl"), spool)?;
+        tables.push((name, spool.file));
         table_rows.insert(name, count);
     }
     // Fully consume blob metadata in the RR snapshot. No SELECT/cursor or
     // pooled snapshot connection may span client-paced blob writes.
     let hashes: Vec<String> = wait(&runtime, &send, sqlx::query_scalar("select distinct li.sha256 from porchlight.blob_lease_items li where li.lease_id=$1 and li.household_id=$2 and exists(select 1 from porchlight.attachments a where a.household_id=li.household_id and a.deleted_at is null and (a.blob_sha256=li.sha256 or a.thumbnail_sha256=li.sha256)) order by li.sha256").bind(lease).bind(household).fetch_all(&mut *tx))?;
     wait(&runtime, &send, tx.commit())?;
+    // No response bytes are emitted until the complete table snapshot is on disk
+    // and committed. A stalled consumer owns files/lease only, never connection/xmin.
+    let aborted = Arc::new(AtomicBool::new(false));
+    let gzip = flate2::write::GzEncoder::new(
+        ChannelWriter {
+            aborted: aborted.clone(),
+            send: send.clone(),
+            pool: s.pool.clone(),
+            lease,
+            runtime: runtime.clone(),
+            renewed: Instant::now(),
+        },
+        flate2::Compression::default(),
+    );
+    let mut tar = tar::Builder::new(gzip);
+    let _abort = AbortOnDrop(aborted);
+    let manifest = serde_json::to_vec(&json!({"format_version":2,"exported_at":(s.item_clock)(),"tables":HOUSEHOLD_TABLES.iter().map(|n| (*n, format!("tables/{n}.jsonl"))).collect::<std::collections::BTreeMap<_,_>>()})).map_err(|_| interrupted())?;
+    let mut header = tar::Header::new_gnu();
+    header.set_size(manifest.len() as u64);
+    header.set_mode(0o600);
+    header.set_cksum();
+    tar.append_data(&mut header, "data.json", manifest.as_slice())?;
+    for (name, spool) in tables {
+        append(&mut tar, &format!("tables/{name}.jsonl"), spool)?;
+    }
     before_blobs(backend)?;
     for hash in &hashes {
         use std::os::unix::fs::OpenOptionsExt;
@@ -427,5 +467,40 @@ mod tests {
             .collect();
         assert_eq!(paths.last().unwrap().to_str(), Some("complete.json"));
         s.stop().await;
+    }
+    #[sqlx::test(migrations = "../db/migrations")]
+    async fn audit_bl_server2_table_output_starts_after_snapshot_commit(pool: PgPool) {
+        let s = fixture(&pool, false).await;
+        // Enough incompressible table data to saturate the output, not only blobs.
+        let mut seed = 1u64;
+        for _ in 0..40 {
+            let description: String = (0..20_000)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    char::from(b'!' + (seed % 90) as u8)
+                })
+                .collect();
+            sqlx::query("insert into porchlight.items(household_id,owner_id,kind,title,notes) values($1,$2,'todo','Table phase',$3)")
+                .bind(s.init.household_id).bind(s.init.admin_member_id).bind(description)
+                .execute(&pool).await.unwrap();
+        }
+        let (send, mut receive) = tokio::sync::mpsc::channel(1);
+        let state = s.state.clone();
+        let household = s.init.household_id;
+        let runtime = Handle::current();
+        let worker = tokio::task::spawn_blocking(move || produce(state, household, send, runtime));
+        receive.recv().await.unwrap().unwrap();
+        let snapshots: i64 = sqlx::query_scalar("select count(*) from pg_stat_activity where datname=current_database() and pid<>pg_backend_pid() and backend_xmin is not null")
+            .fetch_one(&pool).await.unwrap();
+        // Cancel before asserting so the red test never leaves a blocked producer.
+        drop(receive);
+        let _ = worker.await.unwrap();
+        s.stop().await;
+        assert_eq!(
+            snapshots, 0,
+            "table output retained repeatable-read snapshot"
+        );
     }
 }

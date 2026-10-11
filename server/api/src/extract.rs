@@ -49,13 +49,7 @@ pub struct SessionAuth {
     pub request_id: Uuid,
 }
 pub fn actor(device: &DeviceIdentity, request_id: Uuid) -> Actor {
-    Actor {
-        member_id: Some(device.member_id),
-        device_id: Some(device.device_id),
-        request_id,
-        agent_label: None,
-        token_id: None,
-    }
+    Actor::member(device.member_id, device.device_id, request_id)
 }
 impl FromRequestParts<AppState> for DeviceAuth {
     type Rejection = ApiError;
@@ -65,9 +59,21 @@ impl FromRequestParts<AppState> for DeviceAuth {
             .get::<ConnInfo>()
             .and_then(|i| i.client_cert_fingerprint)
             .ok_or_else(|| ApiError::new(crate::error::Problem::Unauthenticated))?;
-        let device = auth::device_by_fingerprint(&state.pool, &fp)
+        let mut device = auth::device_by_fingerprint(&state.pool, &fp)
             .await?
             .ok_or_else(|| ApiError::new(crate::error::Problem::DeviceUnknown))?;
+        if !device.certificate_seen && !device.revoked && device.certificate_live {
+            // First use and unused-successor replacement serialize on the same device row.
+            let mut tx = begin_as(&state.pool, &actor(&device, request_id(parts))).await?;
+            auth::share_device(&mut tx, device.device_id).await?;
+            device = auth::device_by_fingerprint(&mut *tx, &fp)
+                .await?
+                .ok_or_else(|| ApiError::new(crate::error::Problem::DeviceUnknown))?;
+            if !device.revoked && device.certificate_live {
+                porchlight_db::devices::mark_certificate_seen(&mut tx, &fp).await?;
+            }
+            tx.commit().await?;
+        }
         if device.revoked {
             return Err(ApiError::new(crate::error::Problem::DeviceRevoked));
         }
@@ -138,10 +144,12 @@ impl FromRequestParts<AppState> for SessionAuth {
         }
         // S3: a zone report is its own small transaction before the mutation claim.
         // Never retain its locks and never turn a reporting failure into a request failure.
+        // GETs also report: defer authoritative changes until rollback is disarmed.
         if let Some(zone) = parts
             .extensions
             .get::<crate::protocol::ClientTz>()
             .and_then(|tz| tz.0)
+            && !state.maintenance.active()
             && porchlight_db::members::report_device_zone_at(
                 &state.pool,
                 &actor(&device, request_id),
@@ -217,13 +225,12 @@ impl PatAuth {
         }
     }
     pub fn actor(&self) -> Actor {
-        Actor {
-            agent_label: Some(self.0.name.clone()),
-            token_id: Some(self.0.token_id),
-            member_id: Some(self.0.member_id),
-            device_id: None,
-            request_id: self.1,
-        }
+        Actor::pat(
+            self.0.member_id,
+            self.0.token_id,
+            self.0.name.clone(),
+            self.1,
+        )
     }
 }
 impl FromRequestParts<AppState> for PatAuth {
@@ -460,26 +467,14 @@ impl Caller {
                 device_id,
                 request_id,
                 ..
-            } => Actor {
-                member_id: Some(*member_id),
-                device_id: Some(*device_id),
-                request_id: *request_id,
-                agent_label: None,
-                token_id: None,
-            },
+            } => Actor::member(*member_id, *device_id, *request_id),
             Self::Agent {
                 member_id,
                 token_id,
                 label,
                 request_id,
                 ..
-            } => Actor {
-                member_id: Some(*member_id),
-                device_id: None,
-                request_id: *request_id,
-                agent_label: Some(label.clone()),
-                token_id: Some(*token_id),
-            },
+            } => Actor::pat(*member_id, *token_id, label.clone(), *request_id),
         }
     }
     pub fn household_id(&self) -> Uuid {

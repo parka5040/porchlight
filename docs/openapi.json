@@ -3,7 +3,7 @@
   "info": {
     "title": "Porchlight",
     "description": "Household API. Application routes require TLS 1.3 mutual TLS with an enrolled household device certificate and a device-bound session bearer. Login/reset require the device certificate but no session. Enrollment uses LAN-only server-auth TLS plus a one-time token and password. Agent routes use PAT bearer over a local Unix socket; an admin-scoped PAT is agent step-up. Terminal logout/self-revoke/PAT-self-revoke retries authenticate first and may return 401 instead of replayed success.",
-    "version": "0.1.6"
+    "version": "0.1.7"
   },
   "servers": [
     {
@@ -409,6 +409,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -733,6 +753,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -900,6 +940,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1002,6 +1062,26 @@
           },
           "426": {
             "description": "Client version below the configured minimum",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit or credential lockout",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1301,6 +1381,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1640,6 +1740,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         }
       },
@@ -1841,6 +1961,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2058,6 +2198,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         }
       }
@@ -2241,6 +2401,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2688,6 +2868,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2815,7 +3015,276 @@
         ]
       }
     },
+    "/v1/admin/security-events": {
+      "get": {
+        "tags": [
+          "security_events"
+        ],
+        "operationId": "security_events_list",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "Porchlight-Client-Version",
+            "in": "header",
+            "description": "Client semver; required even on fallback responses.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Porchlight-TZ",
+            "in": "header",
+            "description": "Optional IANA time zone.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Secret-free security history, oldest first; one-year retention",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Events"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed request, client version or time zone",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication or credential no longer valid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Transient database conflict (including authentication/touch on GET); retry the same request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "Client version below the configured minimum",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "pat": []
+          }
+        ]
+      }
+    },
     "/v1/admin/tokens": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "admin_list_tokens",
+        "parameters": [
+          {
+            "name": "Porchlight-Client-Version",
+            "in": "header",
+            "description": "Client semver; required even on fallback responses.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Porchlight-TZ",
+            "in": "header",
+            "description": "Optional IANA time zone.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Token metadata (never credentials) and newest live admin PAT expiry health",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed request, client version or time zone",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication or credential no longer valid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Transient database conflict (including authentication/touch on GET); retry the same request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "Client version below the configured minimum",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "pat": []
+          }
+        ]
+      },
       "post": {
         "tags": [
           "admin"
@@ -2976,6 +3445,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3152,6 +3641,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3450,6 +3959,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3638,6 +4167,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3838,6 +4387,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4007,6 +4576,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4649,6 +5238,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4974,6 +5583,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         }
       }
@@ -5122,6 +5751,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5292,6 +5941,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5476,6 +6145,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5646,6 +6335,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -6273,7 +6982,7 @@
         "tags": [
           "release"
         ],
-        "description": "Enrolled device only, no session required. Exact allowlisted path, including nested files. Exempt from the minimum client version.",
+        "description": "Enrolled device only, no session required. Exact allowlisted path, including nested files. Exempt from the minimum client version. Two concurrent downloads per device and two hashing jobs globally; quota exhaustion returns 429 with Retry-After.",
         "operationId": "release_download",
         "parameters": [
           {
@@ -6404,6 +7113,26 @@
           },
           "416": {
             "description": "range-not-satisfiable; Content-Range bytes */size",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit or credential lockout",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -6607,6 +7336,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -6830,6 +7579,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7042,6 +7811,36 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "507": {
+            "description": "storage-full: household quota or free disk reserve exhausted",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -7465,6 +8264,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7662,6 +8481,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -7954,6 +8793,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         }
       }
@@ -8060,8 +8919,38 @@
               }
             }
           },
+          "429": {
+            "description": "Rate limit or credential lockout",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "507": {
+            "description": "storage-full: insufficient spool space",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -8358,6 +9247,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         }
       }
@@ -8561,6 +9470,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -8776,6 +9705,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         }
       }
@@ -8979,6 +9928,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -9214,6 +10183,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -9583,6 +10572,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -9942,6 +10951,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -10179,6 +11208,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -10400,6 +11449,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -10612,6 +11681,36 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "507": {
+            "description": "storage-full: household quota or free disk reserve exhausted",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -11134,6 +12233,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -11550,6 +12669,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -11764,6 +12903,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -11992,6 +13151,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -12193,6 +13372,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -12409,6 +13608,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -12634,6 +13853,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -12852,6 +14091,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -12869,6 +14128,7 @@
         "tags": [
           "lists"
         ],
+        "summary": "Orphan cleanup is opt-in and restricted to list owners/admins. Without the\nretained parent ACL, responses are redacted delete-only descriptors, not content.",
         "operationId": "lists_list",
         "parameters": [
           {
@@ -12910,7 +14170,7 @@
           {
             "name": "include_orphaned",
             "in": "query",
-            "description": "Include deleted-parent lists owned by the caller (or app super admin / admin agent) for cleanup.",
+            "description": "Include deleted-parent lists owned by the caller (or app super admin / admin agent) for cleanup.\nContent requires the parent's retained ACL; otherwise only a redacted delete descriptor is returned.",
             "required": false,
             "schema": {
               "type": "boolean"
@@ -13219,6 +14479,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -13597,6 +14877,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -13809,6 +15109,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -14034,6 +15354,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -14226,6 +15566,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -14447,6 +15807,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -14840,6 +16220,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -15111,6 +16511,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -15431,6 +16851,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -15794,6 +17234,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -16081,6 +17541,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -16233,6 +17713,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -16461,6 +17961,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -16675,6 +18195,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -16903,6 +18443,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -17076,6 +18636,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -17387,7 +18967,7 @@
         ],
         "responses": {
           "200": {
-            "description": "One REPEATABLE READ view; occurrences now-180d to 18 month horizon, plus undated occurrences; household published scan cursor",
+            "description": "One REPEATABLE READ view; occurrences now-180d to 18 month horizon, plus undated occurrences; global published scan cursor",
             "content": {
               "application/json": {
                 "schema": {
@@ -17522,7 +19102,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Success",
+            "description": "Success; at most three streams per device and eight per member across listeners",
             "content": {
               "text/event-stream": {
                 "schema": {
@@ -17573,6 +19153,26 @@
           },
           "426": {
             "description": "Client version below the configured minimum",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit or credential lockout",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -17982,6 +19582,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -18200,6 +19820,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -18248,6 +19888,28 @@
         },
         "additionalProperties": false
       },
+      "AdminTokenHealth": {
+        "type": "object",
+        "required": [
+          "expiring_soon",
+          "recovery_required"
+        ],
+        "properties": {
+          "newest_live_expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "expiring_soon": {
+            "type": "boolean"
+          },
+          "recovery_required": {
+            "type": "boolean"
+          }
+        }
+      },
       "AdvertisedClient": {
         "type": "object",
         "required": [
@@ -18275,6 +19937,13 @@
           "derived_at"
         ],
         "properties": {
+          "disposition": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Recipient-local missed-policy disposition; absent on pre-upgrade projections."
+          },
           "household_id": {
             "type": "string",
             "format": "uuid"
@@ -19555,6 +21224,26 @@
         },
         "additionalProperties": false
       },
+      "Events": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SecurityEvent"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "FieldError": {
         "type": "object",
         "required": [
@@ -19664,7 +21353,7 @@
           "invalid_skipped": {
             "type": "integer",
             "format": "int32",
-            "description": "Invalid events skipped with InvalidEvent warnings.",
+            "description": "Invalid events skipped; see warnings for the reason (warning codes use snake_case).",
             "minimum": 0
           },
           "cancelled_skipped": {
@@ -20432,6 +22121,91 @@
           }
         }
       },
+      "ListFields": {
+        "type": "object",
+        "required": [
+          "id",
+          "owner_id",
+          "mode",
+          "version"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "item_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "owner_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/ListMode"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "redacted": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Present only on cleanup descriptors whose parent ACL denies content access."
+          },
+          "household_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Absent on redacted cleanup descriptors; clients display \"Private list\"."
+          },
+          "visibility": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ListVisibility"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "deleted_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
       "ListMode": {
         "type": "string",
         "enum": [
@@ -20442,7 +22216,7 @@
       "ListResponse": {
         "allOf": [
           {
-            "$ref": "#/components/schemas/ListRow"
+            "$ref": "#/components/schemas/ListFields"
           },
           {
             "type": "object",
@@ -20559,6 +22333,58 @@
           "private",
           "selected"
         ]
+      },
+      "ListedToken": {
+        "type": "object",
+        "required": [
+          "id",
+          "owner_member_id",
+          "name",
+          "scopes",
+          "created_at",
+          "expires_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "owner_member_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "revoked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
       },
       "ListsPage": {
         "type": "object",
@@ -22627,6 +24453,49 @@
           }
         }
       },
+      "SecurityEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "household_id",
+          "occurred_at",
+          "kind",
+          "actor",
+          "target_type",
+          "target_id",
+          "outcome"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "household_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "actor": {
+            "description": "Transaction member/device/token identifiers, agent label and request_id. No credential material."
+          },
+          "target_type": {
+            "type": "string"
+          },
+          "target_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "outcome": {
+            "type": "string"
+          }
+        }
+      },
       "ServerRelease": {
         "type": "object",
         "required": [
@@ -23226,7 +25095,13 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ConflictResponse"
-            }
+            },
+            "description": "Acceptance-time warnings only; empty is not proof of no conflicts when unevaluated."
+          },
+          "conflicts_evaluated": {
+            "type": "boolean",
+            "description": "True only for successful acceptance. Reads/snapshots do not evaluate proposal conflicts.\nMissing on older servers means false.",
+            "default": false
           }
         }
       },
@@ -23311,6 +25186,24 @@
           }
         },
         "additionalProperties": false
+      },
+      "TokenList": {
+        "type": "object",
+        "required": [
+          "tokens",
+          "admin_token_health"
+        ],
+        "properties": {
+          "tokens": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ListedToken"
+            }
+          },
+          "admin_token_health": {
+            "$ref": "#/components/schemas/AdminTokenHealth"
+          }
+        }
       },
       "TokenResponse": {
         "type": "object",

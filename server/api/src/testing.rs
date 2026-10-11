@@ -2,7 +2,10 @@
 mod auth_helpers;
 mod enrollment_helpers;
 mod fixture;
+mod notification_probe;
 mod stream_helpers;
+pub(crate) use notification_probe::record_notification_source_query;
+pub use notification_probe::with_notification_source_probe;
 pub mod trust;
 use crate::{
     config::Settings,

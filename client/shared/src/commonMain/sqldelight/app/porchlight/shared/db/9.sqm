@@ -1,0 +1,6 @@
+CREATE TABLE CacheOwner (
+ singleton INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
+ ca_fingerprint TEXT NOT NULL,
+ member_id TEXT,
+ device_id TEXT NOT NULL
+);

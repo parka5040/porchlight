@@ -19,7 +19,7 @@ use uuid::Uuid;
 /// $2 member, $3 authenticated agent bypass. No derived row grants visibility.
 pub const VISIBLE: &str =
     "i.household_id=$1 AND i.deleted_at IS NULL AND ($3 OR porchlight.pl_item_can_read(i.id,$2))";
-const ITEM: &str = "(to_jsonb(i)-'search_document') || jsonb_build_object(
+const ITEM: &str = "(to_jsonb(i)-'search_document'-'reminder_origin_id') || jsonb_build_object(
     'completion_interval',porchlight.pl_interval_json(i.completion_interval),
     'pending_derivation',coalesce(d.applied_gen<d.requested_gen,false),
     'assignees',coalesce((select jsonb_agg(a.member_id
@@ -28,7 +28,7 @@ const ITEM: &str = "(to_jsonb(i)-'search_document') || jsonb_build_object(
     'viewers',coalesce((select jsonb_agg(v.member_id
         order by v.member_id)
         from porchlight.item_viewers v where v.item_id=i.id),'[]'::jsonb),
-    'reminders',coalesce((select jsonb_agg(to_jsonb(r)
+    'reminders',coalesce((select jsonb_agg(to_jsonb(r)-'delivery_id'
         order by r.offset_minutes,r.id)
         from porchlight.item_reminders r where r.item_id=i.id),'[]'::jsonb),
     'subject_role',(select role
@@ -211,7 +211,7 @@ pub async fn agenda(
         .map(|c| state.idem.cursor.decode(&context, c))
         .transpose()?;
     let anchor = "coalesce(a.starts_at,a.due_at,a.due_date::timestamp at time zone
-        (case when am.role='dependent' then ah.tzid else am.tzid end))";
+        (porchlight.pl_effective_member_zone(am.role,am.tzid,ah.tzid)))";
     let sql = format!(
         "select {ITEM} || jsonb_build_object(
         '_agenda_key',{anchor},'agenda',to_jsonb(a)-'busy','occurrence',to_jsonb(o)-'during',
@@ -235,7 +235,7 @@ pub async fn agenda(
         and ($7::timestamptz is null or ({anchor},a.occurrence_id)>($7,$8)) and (
         (a.starts_at<$6 and a.ends_at>$5) or (a.due_at>=$5 and a.due_at<$6)
         or (a.due_date is not null and {anchor}<$6 and
-          (a.due_date+1)::timestamp at time zone (case when am.role='dependent' then ah.tzid else am.tzid end)>$5))
+          (a.due_date+1)::timestamp at time zone (porchlight.pl_effective_member_zone(am.role,am.tzid,ah.tzid))>$5))
         order by {anchor},a.occurrence_id limit $9"
     );
     let (after_time, after_id) = after
@@ -348,7 +348,7 @@ pub async fn search(
         ) sources WHERE ($5::text IS NULL OR (source COLLATE \"C\",id)>($5 COLLATE \"C\",$6::uuid))
         ORDER BY source COLLATE \"C\",id LIMIT $7",
         lists = crate::lists::SEARCH_SOURCE,
-        comments = crate::collaboration::COMMENT_SEARCH_SOURCE.replace("{VISIBLE}", VISIBLE)
+        comments = crate::collaboration::comment_search_source()
     );
     let mut tx = porchlight_db::tx::begin(&state.pool).await?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
@@ -471,7 +471,7 @@ fn snapshot_in_window(
     start.is_none_or(|s| s < to && end.map_or(s >= from, |e| e > from))
 }
 
-#[utoipa::path(get,path="/v1/snapshot",responses((status=200,description="One REPEATABLE READ view; occurrences now-180d to 18 month horizon, plus undated occurrences; household published scan cursor",body=SnapshotRead),crate::openapi::UniversalProblems))]
+#[utoipa::path(get,path="/v1/snapshot",responses((status=200,description="One REPEATABLE READ view; occurrences now-180d to 18 month horizon, plus undated occurrences; global published scan cursor",body=SnapshotRead),crate::openapi::UniversalProblems))]
 pub async fn snapshot(
     State(state): State<AppState>,
     caller: Caller,
@@ -483,9 +483,8 @@ pub async fn snapshot(
         .await?;
     let cursor: i64 = sqlx::query_scalar(
         "select coalesce(max(stream_seq),0)
-        from porchlight.outbox where household_id=$1",
+        from porchlight.outbox",
     )
-    .bind(caller.household_id())
     .fetch_one(&mut *tx)
     .await?;
     let items = rows(

@@ -159,9 +159,9 @@ class C3aConnectedScreensTest {
                 waitUntil(timeoutMillis = 10_000) { onAllNodesWithContentDescription("Edit Laundry").fetchSemanticsNodes().isNotEmpty() }
                 onNodeWithContentDescription("Edit Laundry").performClick()
                 onNodeWithContentDescription("Title").performScrollTo().performTextReplacement("Typed title")
-                // These edits are against the head, not the seq-4 tail.
-                onNodeWithContentDescription("Due date").performScrollTo().performTextReplacement("2026-10-02")
-                onNodeWithContentDescription("Count").performScrollTo().performTextReplacement("9")
+                // Timing stays disabled until its head/tail baseline is explicitly chosen.
+                onNodeWithContentDescription("Due date").performScrollTo().assertIsNotEnabled()
+                onNodeWithContentDescription("Count").performScrollTo().assertIsNotEnabled()
                 onNodeWithContentDescription("Save item").performClick()
                 onNodeWithText("Choose a recurring edit scope before saving.").assertExists()
                 assertTrue(patches.isEmpty())

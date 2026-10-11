@@ -358,7 +358,7 @@ async fn claim(
         .map_err(|e| Err(e.into()))?;
     let done = match locked {
         Some(Json(current)) if current.version == source.version => return Ok(tx),
-        Some(_) => Err(ApiError::transient(Problem::Conflict).retry(1)),
+        Some(_) => Err(ApiError::transient_conflict().retry(1)),
         None => Ok(false),
     };
     Err(match tx.rollback().await {

@@ -7,7 +7,14 @@ use sqlx::PgConnection;
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 type LoadWarningRow = (Uuid, Uuid, Uuid, DateTime<Utc>, DateTime<Utc>);
-type TaskRow = (Uuid, Option<DateTime<Utc>>, Option<NaiveDate>, i32, i16);
+type TaskRow = (
+    Uuid,
+    Option<DateTime<Utc>>,
+    Option<NaiveDate>,
+    i32,
+    i16,
+    Option<String>,
+);
 
 #[derive(Clone, Debug, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Window {
@@ -40,7 +47,7 @@ pub async fn member_schedule(
     household: Uuid,
     member: Uuid,
 ) -> Result<core::MemberSchedule> {
-    let zone: String = sqlx::query_scalar("select case when m.role='dependent' then h.tzid else m.tzid end from porchlight.household_members m join porchlight.households h on h.id=m.household_id where m.id=$1 and m.household_id=$2 and m.deleted_at is null and h.deleted_at is null").bind(member).bind(household).fetch_optional(&mut *conn).await?.ok_or(derive::Error::NotFound)?;
+    let zone: String = sqlx::query_scalar("select porchlight.pl_effective_member_zone(m.role,m.tzid,h.tzid) from porchlight.household_members m join porchlight.households h on h.id=m.household_id where m.id=$1 and m.household_id=$2 and m.deleted_at is null and h.deleted_at is null").bind(member).bind(household).fetch_optional(&mut *conn).await?.ok_or(derive::Error::NotFound)?;
     let windows = windows(conn, member)
         .await?
         .iter()
@@ -132,7 +139,7 @@ async fn recompute_load_inner(
     if members.is_empty() {
         return Ok(());
     }
-    let profiles: Vec<LoadMember> = sqlx::query_as("select m.id as member_id,m.household_id,case when m.role='dependent' then h.tzid else m.tzid end as zone,coalesce((select jsonb_agg(jsonb_build_object('weekday',w.weekday,'starts_local',w.starts_local,'ends_local',w.ends_local)) from porchlight.availability_windows w where w.member_id=m.id),'[]'::jsonb) as windows,array(select l.date from porchlight.member_daily_load l where l.member_id=m.id and l.planned_minutes>l.available_minutes) as old_conflicts,coalesce(j.requested_gen>j.applied_gen,false) as pending,j.requested_gen as seen,(m.deleted_at is not null or h.deleted_at is not null) as deleted from porchlight.household_members m join porchlight.households h on h.id=m.household_id left join porchlight.member_load_jobs j on j.member_id=m.id where m.id=any($1) order by m.id").bind(members).fetch_all(&mut *conn).await?;
+    let profiles: Vec<LoadMember> = sqlx::query_as("select m.id as member_id,m.household_id,porchlight.pl_effective_member_zone(m.role,m.tzid,h.tzid) as zone,coalesce((select jsonb_agg(jsonb_build_object('weekday',w.weekday,'starts_local',w.starts_local,'ends_local',w.ends_local)) from porchlight.availability_windows w where w.member_id=m.id),'[]'::jsonb) as windows,array(select l.date from porchlight.member_daily_load l where l.member_id=m.id and l.planned_minutes>l.available_minutes) as old_conflicts,coalesce(j.requested_gen>j.applied_gen,false) as pending,j.requested_gen as seen,(m.deleted_at is not null or h.deleted_at is not null) as deleted from porchlight.household_members m join porchlight.households h on h.id=m.household_id left join porchlight.member_load_jobs j on j.member_id=m.id where m.id=any($1) order by m.id").bind(members).fetch_all(&mut *conn).await?;
     // Scheduled start day wins over the deadline, with the member's effective zone.
     let full: Vec<_> = members
         .iter()
@@ -157,7 +164,7 @@ async fn recompute_load_inner(
             )
         })
         .collect();
-    let tasks: Vec<(Uuid, NaiveDate, i64)> = sqlx::query_as("select a.member_id,coalesce((a.starts_at at time zone case when m.role='dependent' then h.tzid else m.tzid end)::date,(a.due_at at time zone case when m.role='dependent' then h.tzid else m.tzid end)::date,a.due_date) as date,sum(i.est_minutes)::bigint from porchlight.member_agenda a join porchlight.items i on i.id=a.item_id join porchlight.item_occurrences o on o.id=a.occurrence_id join porchlight.item_derivation d on d.item_id=i.id join porchlight.household_members m on m.id=a.member_id join porchlight.households h on h.id=m.household_id where m.deleted_at is null and h.deleted_at is null and a.member_id=any($1) and (a.member_id=any($2) or (a.member_id,coalesce((a.starts_at at time zone case when m.role='dependent' then h.tzid else m.tzid end)::date,(a.due_at at time zone case when m.role='dependent' then h.tzid else m.tzid end)::date,a.due_date)) in(select r.member_id,r.date from jsonb_to_recordset($3) as r(member_id uuid,date date))) and i.deleted_at is null and i.kind in ('todo','deadline') and i.est_minutes is not null and o.status in ('backlog','todo','doing') and o.disposition<>'expired' and d.requested_gen=d.applied_gen group by 1,2 having coalesce((a.starts_at at time zone case when m.role='dependent' then h.tzid else m.tzid end)::date,(a.due_at at time zone case when m.role='dependent' then h.tzid else m.tzid end)::date,a.due_date) is not null").bind(members).bind(&full).bind(sqlx::types::Json(&selected)).fetch_all(&mut *conn).await?;
+    let tasks: Vec<(Uuid, NaiveDate, i64)> = sqlx::query_as("select a.member_id,coalesce((a.starts_at at time zone porchlight.pl_effective_member_zone(m.role,m.tzid,h.tzid))::date,(a.due_at at time zone porchlight.pl_effective_member_zone(m.role,m.tzid,h.tzid))::date,a.due_date) as date,sum(i.est_minutes)::bigint from porchlight.member_agenda a join porchlight.items i on i.id=a.item_id join porchlight.item_occurrences o on o.id=a.occurrence_id join porchlight.item_derivation d on d.item_id=i.id join porchlight.household_members m on m.id=a.member_id join porchlight.households h on h.id=m.household_id where m.deleted_at is null and h.deleted_at is null and a.member_id=any($1) and (a.member_id=any($2) or (a.member_id,coalesce((a.starts_at at time zone porchlight.pl_effective_member_zone(m.role,m.tzid,h.tzid))::date,(a.due_at at time zone porchlight.pl_effective_member_zone(m.role,m.tzid,h.tzid))::date,a.due_date)) in(select r.member_id,r.date from jsonb_to_recordset($3) as r(member_id uuid,date date))) and i.deleted_at is null and i.kind in ('todo','deadline') and i.est_minutes is not null and o.status in ('backlog','todo','doing') and d.requested_gen=d.applied_gen group by 1,2 having coalesce((a.starts_at at time zone porchlight.pl_effective_member_zone(m.role,m.tzid,h.tzid))::date,(a.due_at at time zone porchlight.pl_effective_member_zone(m.role,m.tzid,h.tzid))::date,a.due_date) is not null").bind(members).bind(&full).bind(sqlx::types::Json(&selected)).fetch_all(&mut *conn).await?;
     let mut by_member: BTreeMap<Uuid, BTreeMap<NaiveDate, u64>> = BTreeMap::new();
     for (member, date, minutes) in tasks {
         by_member
@@ -359,7 +366,7 @@ async fn load_conflicts_filtered(
     members: Option<&[Uuid]>,
     occurrences: Option<&[Uuid]>,
 ) -> Result<Vec<(Uuid, derive::Conflict)>> {
-    let rows: Vec<LoadWarningRow> = sqlx::query_as("select a.item_id,a.member_id,a.occurrence_id,l.starts_at,l.ends_at from porchlight.member_agenda a join porchlight.items i on i.id=a.item_id join porchlight.item_occurrences o on o.id=a.occurrence_id join porchlight.household_members m on m.id=a.member_id join porchlight.households h on h.id=m.household_id join porchlight.member_daily_load l on l.member_id=a.member_id and l.date=coalesce((a.starts_at at time zone case when m.role='dependent' then h.tzid else m.tzid end)::date,(a.due_at at time zone case when m.role='dependent' then h.tzid else m.tzid end)::date,a.due_date) where a.item_id=any($1) and ($2::uuid[] is null or a.member_id=any($2)) and ($3::uuid[] is null or a.occurrence_id=any($3)) and i.deleted_at is null and i.kind in ('todo','deadline') and i.est_minutes is not null and o.status in ('backlog','todo','doing') and o.disposition<>'expired' and l.planned_minutes>l.available_minutes order by a.member_id,a.occurrence_id").bind(items).bind(members).bind(occurrences).fetch_all(conn).await?;
+    let rows: Vec<LoadWarningRow> = sqlx::query_as("select a.item_id,a.member_id,a.occurrence_id,l.starts_at,l.ends_at from porchlight.member_agenda a join porchlight.items i on i.id=a.item_id join porchlight.item_occurrences o on o.id=a.occurrence_id join porchlight.household_members m on m.id=a.member_id join porchlight.households h on h.id=m.household_id join porchlight.member_daily_load l on l.member_id=a.member_id and l.date=coalesce((a.starts_at at time zone porchlight.pl_effective_member_zone(m.role,m.tzid,h.tzid))::date,(a.due_at at time zone porchlight.pl_effective_member_zone(m.role,m.tzid,h.tzid))::date,a.due_date) where a.item_id=any($1) and ($2::uuid[] is null or a.member_id=any($2)) and ($3::uuid[] is null or a.occurrence_id=any($3)) and i.deleted_at is null and i.kind in ('todo','deadline') and i.est_minutes is not null and o.status in ('backlog','todo','doing') and l.planned_minutes>l.available_minutes order by a.member_id,a.occurrence_id").bind(items).bind(members).bind(occurrences).fetch_all(conn).await?;
     Ok(rows
         .into_iter()
         .map(|(item, member_id, occurrence_id, starts_at, ends_at)| {
@@ -407,10 +414,16 @@ pub async fn suggest(
     now: DateTime<Utc>,
 ) -> Result<(Uuid, core::ScheduleResult, Vec<Suggestion>)> {
     let schedule = member_schedule(conn, household, member).await?;
-    let rows: Vec<TaskRow> = sqlx::query_as("select a.occurrence_id,a.due_at,a.due_date,i.est_minutes,i.priority from porchlight.member_agenda a join porchlight.items i on i.id=a.item_id join porchlight.item_occurrences o on o.id=a.occurrence_id join porchlight.item_derivation d on d.item_id=i.id where a.member_id=$1 and a.item_id=any($2) and i.kind in ('todo','deadline') and i.deleted_at is null and i.est_minutes>0 and (a.due_at is not null or a.due_date is not null) and a.starts_at is null and o.override_local_start is null and o.status in ('backlog','todo','doing') and o.disposition<>'expired' and d.requested_gen=d.applied_gen order by a.occurrence_id").bind(member).bind(allowed).fetch_all(&mut *conn).await?;
+    let rows: Vec<TaskRow> = sqlx::query_as("select a.occurrence_id,a.due_at,a.due_date,i.est_minutes,i.priority,case when i.time_mode='fixed' then i.tzid end from porchlight.member_agenda a join porchlight.items i on i.id=a.item_id join porchlight.item_occurrences o on o.id=a.occurrence_id join porchlight.item_derivation d on d.item_id=i.id where a.member_id=$1 and a.item_id=any($2) and i.kind in ('todo','deadline') and i.deleted_at is null and i.est_minutes>0 and (a.due_at is not null or a.due_date is not null) and a.starts_at is null and o.override_local_start is null and o.status in ('backlog','todo','doing') and d.requested_gen=d.applied_gen order by a.occurrence_id").bind(member).bind(allowed).fetch_all(&mut *conn).await?;
+    let mut override_zones = BTreeMap::new();
+    for (id, _, _, _, _, zone) in &rows {
+        if let Some(zone) = zone {
+            override_zones.insert(*id, derive::parse_zone(zone)?);
+        }
+    }
     let tasks: Vec<_> = rows
         .into_iter()
-        .map(|(id, due, date, est, priority)| core::Task {
+        .map(|(id, due, date, est, priority, _)| core::Task {
             id,
             member_id: member,
             est_minutes: est as u32,
@@ -420,7 +433,13 @@ pub async fn suggest(
             priority,
         })
         .collect();
-    let result = core::suggest_edf(&tasks, &[schedule], now, now + Duration::days(90));
+    let result = core::suggest_edf_in_zones(
+        &tasks,
+        &[schedule],
+        now,
+        now + Duration::days(90),
+        &override_zones,
+    );
     // Retain history and excluded live items (R48). Retire every proposal of
     // considered items, including ineligible/missing occurrences, plus deleted
     // items which cannot appear in the authoritative agenda input anymore, including

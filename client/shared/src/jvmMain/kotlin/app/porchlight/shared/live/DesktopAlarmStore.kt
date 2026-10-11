@@ -59,7 +59,7 @@ class DesktopAlarmStore(private val directory: Path) {
         if (changes.isEmpty()) return
         if (savedNextCode != ledger.nextCode) { atomic(counter, ledger.nextCode.toString()); savedNextCode = ledger.nextCode }
         changes.forEach { (key, row) ->
-            if (row == null) codes.remove(key)?.let { Files.deleteIfExists(rows.resolve("$it.json")) }
+            if (row == null) codes[key]?.let { Files.deleteIfExists(rows.resolve("$it.json")); codes.remove(key) }
             else { atomic(rows.resolve("${row.code}.json"), WireJson.encodeToString(row)); codes[key] = row.code }
         }
         ledger.checkpoint()

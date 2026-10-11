@@ -9,6 +9,15 @@ use crate::items::{Kind, RecurrenceMode, Rule, SeriesInput, SeriesSpec};
 pub fn normalize_subset(rule: &str) -> Option<String> {
     normalize_with_anchor(rule, None)
 }
+/// Normalize with DTSTART's nominal local date. This can prove non-default WKST
+/// inert for interval-weekly BYDAY rules that the anchorless API must reject.
+/// Fixed DTSTARTs must first be converted to their event timezone (not UTC).
+pub fn normalize_subset_at(rule: &str, dtstart: NaiveDate) -> Option<String> {
+    use chrono::Datelike;
+    let weekday = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
+        [dtstart.weekday().num_days_from_monday() as usize];
+    normalize_with_anchor(rule, Some(weekday))
+}
 fn normalize_with_anchor(rule: &str, weekday: Option<&str>) -> Option<String> {
     let upper = rule.trim().to_ascii_uppercase();
     let mut parts = BTreeMap::new();
@@ -47,14 +56,12 @@ pub(super) fn keep_series(event: &ImportedEvent, rule: &str) -> Option<String> {
     if event.recurrence_id.is_some() {
         return None;
     }
-    use chrono::Datelike;
-    let day = match &event.start {
-        IcsTime::Date(d) => d.weekday(),
-        IcsTime::Floating(d) => d.weekday(),
-        IcsTime::Fixed(d) => to_local(*d, event.tzid.as_deref().and_then(parse_tz)?).weekday(),
+    let date = match &event.start {
+        IcsTime::Date(d) => *d,
+        IcsTime::Floating(d) => d.date(),
+        IcsTime::Fixed(d) => to_local(*d, event.tzid.as_deref().and_then(parse_tz)?).date(),
     };
-    let weekday = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"][day.num_days_from_monday() as usize];
-    let canonical = normalize_with_anchor(rule, Some(weekday))?;
+    let canonical = normalize_subset_at(rule, date)?;
     let mut input = SeriesInput {
         kind: Kind::Appointment,
         time_mode: match event.time_mode {

@@ -27,9 +27,11 @@ class PassivePull(private val root: Path, private val source: BackupSource, priv
     private var failures = 0
     private var retryAt = 0L
     private var retryPending = false
+    private var reachabilityFailed = false
     /** Test seam: fault injection at OwnedBackupFiles steps (e.g. "index.persist"). */
     internal var ownershipStep: (String) -> Unit = {}
-    fun resetView() { mutable.value = BackupView(); failures = 0; retryAt = 0; retryPending = false }
+    suspend fun resetView() = mutex.withLock { resetViewLocked() }
+    private fun resetViewLocked() { mutable.value = BackupView(); failures = 0; retryAt = 0; retryPending = false; reachabilityFailed = false }
     private fun failed() {
         failures = (failures + 1).coerceAtMost(16)
         val base = (60L shl (failures - 1)).coerceAtMost(3600)
@@ -82,9 +84,12 @@ class PassivePull(private val root: Path, private val source: BackupSource, priv
         withContext(Dispatchers.IO) {
             var operationPath = root
             try {
-                val household = source.authorizedHousehold()
-                if (household == null) { resetView(); return@withContext }
-                // Any successful authorized check ends the outage, including a non-due minute tick.
+                val household = try { source.authorizedHousehold() }
+                    catch (e: ConnectFailure) { reachabilityFailed = true; throw e }
+                if (household == null) { resetViewLocked(); return@withContext }
+                // A recovered authorization probe ends its outage even on a non-due tick. Successful probes
+                // alone do not reset backoff for an interrupted download or a storage failure.
+                if (reachabilityFailed) { failures = 0; retryAt = 0; reachabilityFailed = false }
                 mutable.value = mutable.value.copy(allowed = true, unreachableSince = null,
                     error = if (mutable.value.cantReachHome) null else mutable.value.error)
                 if (!force && now().epochSeconds < retryAt) return@withContext
@@ -178,12 +183,12 @@ class PassivePull(private val root: Path, private val source: BackupSource, priv
                         failures = 0; retryAt = 0; retryPending = false
                     }
                 }
-            } catch (e: CancellationException) { resetView(); throw e }
-            catch (_: HouseholdLocked) { resetView() }
+            } catch (e: CancellationException) { resetViewLocked(); throw e }
+            catch (_: HouseholdLocked) { resetViewLocked() }
             catch (_: ConnectFailure) { failed(); mutable.value = mutable.value.copy(pulling = false, error = "Can't reach home", unreachableSince = mutable.value.unreachableSince ?: now()) }
-            catch (_: DeviceCertificateRevoked) { resetView() }
+            catch (_: DeviceCertificateRevoked) { resetViewLocked() }
             catch (e: ApiProblem) {
-                if (e.status in listOf(401, 403)) resetView()
+                if (e.status in listOf(401, 403)) resetViewLocked()
                 else { failed(); mutable.value = mutable.value.copy(pulling = false, error = "Backup request failed (HTTP ${e.status}); check the household server backup status, then refresh") }
             }
             catch (e: BackupStorageFailure) { failed(); mutable.value = mutable.value.copy(pulling = false, error = e.message) }

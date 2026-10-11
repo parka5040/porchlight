@@ -15,7 +15,7 @@ case ${1:-} in
     . scripts/env.sh
     export CARGO_NET_OFFLINE=true
     mkdir -p var/m5-demo
-    if cargo test --manifest-path server/Cargo.toml -p porchlight-api --features testing --test notifications --test stream >var/m5-demo/server-tests.log 2>&1; then
+    if cargo test --manifest-path server/Cargo.toml -p porchlight-api --features testing --locked --test live -- notifications:: stream:: >var/m5-demo/server-tests.log 2>&1; then
       printf 'PASS: M5 server routing/coalescing/quiet-hours/inbox and TLS authorization fixtures\n'
     else
       printf 'FAIL: M5 server fixtures (private diagnostics in var/m5-demo)\n' >&2

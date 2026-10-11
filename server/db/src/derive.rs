@@ -7,7 +7,8 @@ use sqlx::{PgConnection, Postgres, Transaction, types::Json};
 use uuid::Uuid;
 
 /// Notification-event retention horizon in days. Single definition for the notifier reminder scan and the
-/// carry-forward CTE (R74); `pl_retention` (0056) hardcodes the same interval, pinned by `retention_horizon_matches_0056`.
+/// carry-forward CTE (R74). The final migrated `pl_retention` is pinned at this boundary by
+/// `o2_retention::retention_clock_boundaries_counts_and_repeat`.
 pub const NOTIFICATION_EVENT_RETENTION_DAYS: i32 = 90;
 
 #[cfg(test)]
@@ -304,7 +305,7 @@ pub async fn derive_item_prelocked(
             .await?;
     // Capture the old membership in the existing delete, without reloading item/relationships.
     let mut load_dates: Vec<(Uuid, Option<NaiveDate>)> = sqlx::query_as(
-        "delete from porchlight.member_agenda a where item_id=$1 returning member_id,coalesce((a.starts_at at time zone (select case when m.role='dependent' then h.tzid else m.tzid end from porchlight.household_members m join porchlight.households h on h.id=m.household_id where m.id=a.member_id))::date,(a.due_at at time zone (select case when m.role='dependent' then h.tzid else m.tzid end from porchlight.household_members m join porchlight.households h on h.id=m.household_id where m.id=a.member_id))::date,a.due_date)",
+        "delete from porchlight.member_agenda a where item_id=$1 returning member_id,coalesce((a.starts_at at time zone (select porchlight.pl_effective_member_zone(m.role,m.tzid,h.tzid) from porchlight.household_members m join porchlight.households h on h.id=m.household_id where m.id=a.member_id))::date,(a.due_at at time zone (select porchlight.pl_effective_member_zone(m.role,m.tzid,h.tzid) from porchlight.household_members m join porchlight.households h on h.id=m.household_id where m.id=a.member_id))::date,a.due_date)",
     )
     .bind(item)
     .fetch_all(&mut **tx)
@@ -316,18 +317,23 @@ pub async fn derive_item_prelocked(
     // Emitted obligations must be retired while the dedupe witness exists;
     // otherwise retention would eventually let a carried fired tuple replay.
     // R74: tuples whose fire_at fell out of the event-retention horizon are dropped (their witness may be gone).
-    // One statement replaces the projection AND selects only pending due tuples.
-    let old_reminders: Vec<(Uuid, Uuid, Uuid, DateTime<Utc>)> = sqlx::query_as(
-        "with removed as (delete from porchlight.scheduled_reminders where item_id=$1 returning household_id,member_id,occurrence_id,reminder_id,fire_at) select member_id,occurrence_id,reminder_id,fire_at from removed r where fire_at<=$2 and fire_at>$2-make_interval(days=>$3) and not exists(select 1 from porchlight.notification_events e where e.household_id=r.household_id and e.dedupe_key='reminder:'||r.occurrence_id::text||':'||r.member_id::text||':'||r.reminder_id::text)",
+    // One statement replaces the projection AND filters due tuples. Keep row IDs
+    // for unchanged future/pending obligations: clients key native alarms by them.
+    let old_reminders: Vec<(Uuid, Uuid, Uuid, Uuid, DateTime<Utc>)> = sqlx::query_as(
+        "with removed as (delete from porchlight.scheduled_reminders where item_id=$1 returning id,household_id,member_id,occurrence_id,reminder_id,fire_at) select id,member_id,occurrence_id,reminder_id,fire_at from removed r where fire_at>$2 or (fire_at<=$2 and fire_at>$2-make_interval(days=>$3) and not exists(select 1 from porchlight.notification_events e where e.household_id=r.household_id and e.dedupe_key='reminder:'||r.occurrence_id::text||':'||r.member_id::text||':'||r.reminder_id::text))",
     )
     .bind(item)
     .bind(now)
     .bind(NOTIFICATION_EVENT_RETENTION_DAYS)
     .fetch_all(&mut **tx)
     .await?;
-    let due_reminders: std::collections::BTreeSet<_> = old_reminders.into_iter().collect();
+    let retained_reminders: std::collections::BTreeMap<_, _> = old_reminders
+        .into_iter()
+        .map(|(id, member, occurrence, reminder, fire)| ((member, occurrence, reminder, fire), id))
+        .collect();
     let mut touched = Vec::new();
     let mut calendar_horizon = None;
+    let mut materialization_limited = false;
     if row.deleted_at.is_none() {
         let spec = row.spec()?;
         let household_zone: String =
@@ -362,7 +368,7 @@ pub async fn derive_item_prelocked(
                 open.anchor.clone() // reopen never changes the original occurrence's anchor
             } else if let Some(closed) = prior {
                 let member_zone = if let Some(member) = closed.completed_by {
-                    sqlx::query_scalar::<_,String>("select case when m.role='dependent' then h.tzid else m.tzid end from porchlight.household_members m join porchlight.households h on h.id=m.household_id where m.id=$1").bind(member).fetch_one(&mut **tx).await?
+                    sqlx::query_scalar::<_,String>("select porchlight.pl_effective_member_zone(m.role,m.tzid,h.tzid) from porchlight.household_members m join porchlight.households h on h.id=m.household_id where m.id=$1").bind(member).fetch_one(&mut **tx).await?
                 } else {
                     household_zone.clone()
                 };
@@ -416,7 +422,12 @@ pub async fn derive_item_prelocked(
         } else if spec.input().recurrence_mode.is_none() {
             vec![core::first_anchor(&spec)?]
         } else {
-            core::expand(&spec, from, until)?
+            let (anchors, exhausted) = core::expand_capped(&spec, from, until)?;
+            materialization_limited = exhausted;
+            if exhausted {
+                tracing::warn!(item_id = %item, "Series exceeds materialization budget; deriving bounded history");
+            }
+            anchors
         };
         desired.sort_by_key(|a| a.seq);
         let seqs: Vec<i32> = desired
@@ -428,7 +439,11 @@ pub async fn derive_item_prelocked(
                 })
             })
             .collect::<std::result::Result<_, _>>()?;
-        sqlx::query("delete from porchlight.item_occurrences where item_id=$1 and status not in ('done','skipped') and not is_detached and not (seq=any($2))").bind(item).bind(&seqs).execute(&mut **tx).await?;
+        // A capped prefix is not a complete desired set. Existing work beyond it
+        // remains authoritative and still participates in agenda/reminder projection.
+        if !materialization_limited {
+            sqlx::query("delete from porchlight.item_occurrences where item_id=$1 and status not in ('done','skipped') and not is_detached and not (seq=any($2))").bind(item).bind(&seqs).execute(&mut **tx).await?;
+        }
         let immutable_seqs: std::collections::BTreeSet<_> = old
             .iter()
             .filter(|o| !o.status.is_open() || o.is_detached)
@@ -445,7 +460,8 @@ pub async fn derive_item_prelocked(
         let mut current: std::collections::BTreeMap<_, _> = old
             .into_iter()
             .filter(|o| {
-                immutable_seqs.contains(&o.anchor.seq)
+                materialization_limited
+                    || immutable_seqs.contains(&o.anchor.seq)
                     || seqs.binary_search(&(o.anchor.seq as i32)).is_ok()
             })
             .map(|o| (o.anchor.seq, o))
@@ -465,7 +481,7 @@ pub async fn derive_item_prelocked(
                 .map(|m| (m, porchlight_core::access::Role::Dependent)),
         );
         touched.extend(members.iter().copied());
-        let zones:Vec<(Uuid,String)>=sqlx::query_as("select m.id,case when m.role='dependent' then h.tzid else m.tzid end from porchlight.household_members m join porchlight.households h on h.id=m.household_id where m.id=any($1) and m.deleted_at is null order by m.id").bind(&touched).fetch_all(&mut **tx).await?;
+        let zones:Vec<(Uuid,String)>=sqlx::query_as("select m.id,porchlight.pl_effective_member_zone(m.role,m.tzid,h.tzid) from porchlight.household_members m join porchlight.households h on h.id=m.household_id where m.id=any($1) and m.deleted_at is null order by m.id").bind(&touched).fetch_all(&mut **tx).await?;
         // Resolve defaults/explicit offsets for all touched members in one
         // statement; fallback remains member-specific, without N member reads.
         let offsets: Vec<(Uuid, Uuid, i32)> = sqlx::query_as(
@@ -494,27 +510,45 @@ pub async fn derive_item_prelocked(
             })
             .collect::<Result<_>>()?;
         // Disposition is per occurrence. Floating missed boundaries use its owner/dependent's authority zone.
-        let disposition_zone:String=sqlx::query_scalar("select case when m.role='dependent' then h.tzid else m.tzid end from porchlight.household_members m join porchlight.households h on h.id=m.household_id where m.id=$1").bind(row.subject_member_id.unwrap_or(row.owner_id)).fetch_one(&mut **tx).await?;
+        let disposition_zone:String=sqlx::query_scalar("select porchlight.pl_effective_member_zone(m.role,m.tzid,h.tzid) from porchlight.household_members m join porchlight.households h on h.id=m.household_id where m.id=$1").bind(row.subject_member_id.unwrap_or(row.owner_id)).fetch_one(&mut **tx).await?;
         let dispositions = core::dispositions(
             &effective,
             now,
             spec.input().missed_policy,
             spec.zone().unwrap_or(parse_zone(&disposition_zone)?),
-        );
+        )?;
+        // Board disposition remains owner/subject-based. Floating projections have
+        // recipient-local expiry, including when the owner is not an agenda member.
+        let mut recipient_dispositions = std::collections::BTreeMap::new();
+        if spec.input().time_mode == core::TimeMode::Floating {
+            for (member, z) in &zones {
+                recipient_dispositions.insert(
+                    *member,
+                    core::dispositions(
+                        &effective,
+                        now,
+                        spec.input().missed_policy,
+                        parse_zone(z)?,
+                    )?,
+                );
+            }
+        }
         let mut disposition_rows = Vec::new();
         let mut agenda_rows = Vec::new();
         let mut reminder_rows = Vec::new();
-        for ((o, e), d) in current.iter().zip(&effective).zip(dispositions) {
+        for (index, ((o, e), d)) in current.iter().zip(&effective).zip(dispositions).enumerate() {
             if !o.status.is_open() {
                 continue;
             }
             if o.disposition != d {
                 disposition_rows.push(serde_json::json!({"id":o.id,"disposition":d.as_str()}));
             }
-            if d == core::Disposition::Expired {
-                continue;
-            }
             for (member, z) in &zones {
+                let recipient_disposition =
+                    recipient_dispositions.get(member).map_or(d, |ds| ds[index]);
+                if recipient_disposition == core::Disposition::Expired {
+                    continue;
+                }
                 let a = &e.anchor;
                 let ar = agenda::agenda_row(
                     &agenda::Anchor {
@@ -543,7 +577,7 @@ pub async fn derive_item_prelocked(
                         .or(ar.due_date);
                     load_dates.push((*member, date));
                 }
-                agenda_rows.push(serde_json::json!({"member_id":member,"occurrence_id":o.id,"starts_at":ar.starts_at,"ends_at":ar.ends_at,"due_at":ar.due_at,"due_date":ar.due_date,"busy_start":ar.busy.map(|b|b.starts_at()),"busy_end":ar.busy.map(|b|b.ends_at())}));
+                agenda_rows.push(serde_json::json!({"member_id":member,"disposition":recipient_disposition.as_str(),"occurrence_id":o.id,"starts_at":ar.starts_at,"ends_at":ar.ends_at,"due_at":ar.due_at,"due_date":ar.due_date,"busy_start":ar.busy.map(|b|b.starts_at()),"busy_end":ar.busy.map(|b|b.ends_at())}));
                 let base = ar.starts_at.or(ar.due_at).or(ar.due_date.map(|date| {
                     time::start_of_day(date, parse_zone(z).expect("zone already validated"))
                 }));
@@ -555,11 +589,11 @@ pub async fn derive_item_prelocked(
                                 field: "offset_minutes",
                                 reason: "reminder overflow".into(),
                             })?;
-                        if fire <= now && !due_reminders.contains(&(*member, o.id, *reminder, fire))
-                        {
+                        let id = retained_reminders.get(&(*member, o.id, *reminder, fire));
+                        if fire <= now && id.is_none() {
                             continue;
                         }
-                        reminder_rows.push(serde_json::json!({"member_id":member,"occurrence_id":o.id,"reminder_id":reminder,"fire_at":fire}));
+                        reminder_rows.push(serde_json::json!({"id":id,"member_id":member,"occurrence_id":o.id,"reminder_id":reminder,"fire_at":fire}));
                     }
                 }
             }
@@ -567,10 +601,10 @@ pub async fn derive_item_prelocked(
         sqlx::query("update porchlight.item_occurrences o set disposition=a.disposition from jsonb_to_recordset($1) as a(id uuid,disposition text) where o.id=a.id and o.disposition is distinct from a.disposition").bind(Json(&disposition_rows)).execute(&mut **tx).await?;
         // Bounded multi-row writes: no per-occurrence/member/reminder round trips.
         for chunk in agenda_rows.chunks(1000) {
-            sqlx::query("insert into porchlight.member_agenda(household_id,member_id,occurrence_id,item_id,starts_at,ends_at,due_at,due_date,busy,derived_at) select $1,a.member_id,a.occurrence_id,$2,a.starts_at,a.ends_at,a.due_at,a.due_date,case when a.busy_start is null then null else tstzrange(a.busy_start,a.busy_end,'[)') end,$4 from jsonb_to_recordset($3) as a(member_id uuid,occurrence_id uuid,starts_at timestamptz,ends_at timestamptz,due_at timestamptz,due_date date,busy_start timestamptz,busy_end timestamptz)").bind(row.household_id).bind(item).bind(Json(chunk)).bind(now).execute(&mut **tx).await?;
+            sqlx::query("insert into porchlight.member_agenda(household_id,member_id,occurrence_id,item_id,starts_at,ends_at,due_at,due_date,busy,derived_at,disposition) select $1,a.member_id,a.occurrence_id,$2,a.starts_at,a.ends_at,a.due_at,a.due_date,case when a.busy_start is null then null else tstzrange(a.busy_start,a.busy_end,'[)') end,$4,a.disposition from jsonb_to_recordset($3) as a(member_id uuid,occurrence_id uuid,starts_at timestamptz,ends_at timestamptz,due_at timestamptz,due_date date,busy_start timestamptz,busy_end timestamptz,disposition text)").bind(row.household_id).bind(item).bind(Json(chunk)).bind(now).execute(&mut **tx).await?;
         }
         for chunk in reminder_rows.chunks(1000) {
-            sqlx::query("insert into porchlight.scheduled_reminders(household_id,member_id,occurrence_id,item_id,reminder_id,fire_at,derived_at) select $1,a.member_id,a.occurrence_id,$2,a.reminder_id,a.fire_at,$4 from jsonb_to_recordset($3) as a(member_id uuid,occurrence_id uuid,reminder_id uuid,fire_at timestamptz)").bind(row.household_id).bind(item).bind(Json(chunk)).bind(now).execute(&mut **tx).await?;
+            sqlx::query("insert into porchlight.scheduled_reminders(id,household_id,member_id,occurrence_id,item_id,reminder_id,fire_at,derived_at) select coalesce(a.id,uuidv7()),$1,a.member_id,a.occurrence_id,$2,a.reminder_id,a.fire_at,$4 from jsonb_to_recordset($3) as a(id uuid,member_id uuid,occurrence_id uuid,reminder_id uuid,fire_at timestamptz)").bind(row.household_id).bind(item).bind(Json(chunk)).bind(now).execute(&mut **tx).await?;
         }
     }
     // Emit hard calendar conflicts only. The shared read function also returns
@@ -581,7 +615,7 @@ pub async fn derive_item_prelocked(
         .bind(row.household_id).bind(item).bind(&touched).execute(&mut **tx).await?;
 
     // A newer request remains pending; no GUC suppresses authoritative triggers.
-    let applied:Option<i64>=sqlx::query_scalar("update porchlight.item_derivation set applied_gen=$2,attempts=0,retry_at=$3,last_error=null,updated_at=$3,calendar_horizon=$4 where item_id=$1 and requested_gen=$2 returning applied_gen").bind(item).bind(seen).bind(now).bind(calendar_horizon).fetch_optional(&mut **tx).await?;
+    let applied:Option<i64>=sqlx::query_scalar("update porchlight.item_derivation set applied_gen=$2,attempts=0,retry_at=$3,last_error=case when $5 then coalesce(last_error,'Series exceeds materialization budget; existing occurrences retained') else null end,updated_at=$3,calendar_horizon=$4 where item_id=$1 and requested_gen=$2 returning applied_gen").bind(item).bind(seen).bind(now).bind(calendar_horizon).bind(materialization_limited).fetch_optional(&mut **tx).await?;
     let applied_gen = match applied {
         Some(generation) => generation,
         None => {

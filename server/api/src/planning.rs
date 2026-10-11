@@ -134,12 +134,12 @@ async fn check_run_member(
     c: &Caller,
     member: Uuid,
 ) -> Result<(), ApiError> {
-    self_or_admin(c, member)?;
     let exists: bool = sqlx::query_scalar("select exists(select 1 from porchlight.household_members where id=$1 and household_id=$2 and deleted_at is null)")
         .bind(member).bind(c.household_id()).fetch_one(&mut *conn).await?;
     if !exists {
         return Err(items::reference_error("member_id", "invalid-reference"));
     }
+    self_or_admin(c, member)?;
     if member != c.member_id() {
         c.require_admin()?;
         let dependent: bool = sqlx::query_scalar(
@@ -179,7 +179,7 @@ async fn accept_preconditions(
 async fn suggestion_wire(
     conn: &mut PgConnection,
     row: db::Suggestion,
-    conflicts: Vec<crate::routes::items::ConflictResponse>,
+    conflicts: Option<Vec<crate::routes::items::ConflictResponse>>,
 ) -> Result<SuggestionResponse, ApiError> {
     let occurrence_version = sqlx::query_scalar(
         "select version from porchlight.item_occurrences where id=$1 and item_id=$2",
@@ -193,7 +193,7 @@ async fn suggestion_wire(
 fn suggestion_response(
     row: db::Suggestion,
     occurrence_version: Option<i32>,
-    conflicts: Vec<crate::routes::items::ConflictResponse>,
+    conflicts: Option<Vec<crate::routes::items::ConflictResponse>>,
 ) -> SuggestionResponse {
     SuggestionResponse {
         id: row.id,
@@ -207,7 +207,8 @@ fn suggestion_response(
         version: row.version,
         occurrence_version,
         created_at: row.created_at,
-        conflicts,
+        conflicts_evaluated: conflicts.is_some(),
+        conflicts: conflicts.unwrap_or_default(),
     }
 }
 async fn checked_suggestion(
@@ -225,9 +226,9 @@ async fn checked_suggestion(
     let item = derive::load_item(conn, row.item_id)
         .await
         .map_err(items::domain_error)?;
-    items::authorize_item(conn, c, &item, Capability::View).await?;
+    items::authorize(conn, c, &item, Capability::View).await?;
     if edit && c.member_id() != row.member_id {
-        items::authorize_item(conn, c, &item, Capability::Edit).await?;
+        items::authorize(conn, c, &item, Capability::Edit).await?;
     }
     Ok(row)
 }
@@ -386,7 +387,7 @@ async fn execute(
                 visible_ids(tx, c, &rows.iter().map(|r| r.item_id).collect::<Vec<_>>()).await?;
             for row in rows {
                 if visible.contains(&row.item_id) {
-                    suggestions.push(suggestion_wire(tx, row, vec![]).await?)
+                    suggestions.push(suggestion_wire(tx, row, None).await?)
                 }
             }
             let unplaced_ids: Vec<_> = result.unplaced.iter().map(|u| u.task_id).collect();
@@ -450,7 +451,7 @@ async fn execute(
                 if current.version != expected {
                     return Err(ApiError::new(Problem::VersionConflict).extension(
                         "current",
-                        serde_json::to_value(suggestion_wire(tx, current, vec![]).await?).unwrap(),
+                        serde_json::to_value(suggestion_wire(tx, current, None).await?).unwrap(),
                     ));
                 }
                 if current.status != "proposed" {
@@ -460,14 +461,14 @@ async fn execute(
                 if changed != 1 {
                     return Err(ApiError::new(Problem::VersionConflict).extension(
                         "current",
-                        serde_json::to_value(suggestion_wire(tx, current, vec![]).await?).unwrap(),
+                        serde_json::to_value(suggestion_wire(tx, current, None).await?).unwrap(),
                     ));
                 }
                 let current_suggestion = db::suggestion(tx, c.household_id(), id)
                     .await
                     .map_err(items::domain_error)?;
                 return Ok(
-                    Json(suggestion_wire(tx, current_suggestion, vec![]).await?).into_response()
+                    Json(suggestion_wire(tx, current_suggestion, None).await?).into_response()
                 );
             }
             accept_preconditions(tx, &row, now).await?;
@@ -495,8 +496,16 @@ async fn execute(
             if occurrence.version != expected {
                 return Err(ApiError::new(Problem::VersionConflict));
             }
+            let disposition = if item.timing.time_mode == TimeMode::Floating {
+                scope
+                    .recipient_disposition(row.occurrence_id, row.member_id, now)
+                    .await
+                    .map_err(items::domain_error)?
+            } else {
+                occurrence.disposition
+            };
             if !occurrence.status.is_open()
-                || occurrence.disposition == porchlight_core::items::Disposition::Expired
+                || disposition == porchlight_core::items::Disposition::Expired
                 || row.status != "proposed"
             {
                 return Err(rejected("suggestion", "not-proposed"));
@@ -512,9 +521,13 @@ async fn execute(
             };
             let start = time::to_local(row.proposed_start, zone);
             let end = time::to_local(row.proposed_end, zone);
-            if time::resolve_local(start, zone) != row.proposed_start
-                || time::resolve_local(end, zone) != row.proposed_end
-            {
+            if !porchlight_core::schedule::representable_override(
+                porchlight_core::schedule::TimeRange {
+                    start: row.proposed_start,
+                    end: row.proposed_end,
+                },
+                zone,
+            ) {
                 return Err(invalid(
                     "suggestion",
                     "Proposal cannot be represented by the occurrence DST policy",
@@ -534,7 +547,7 @@ async fn execute(
                 .await
                 .map_err(items::domain_error)?;
             if locked_schedule.tz != member_schedule.tz {
-                return Err(ApiError::transient(Problem::Conflict).retry(1));
+                return Err(ApiError::transient_conflict().retry(1));
             }
             let current = checked_suggestion(tx, c, id, true).await?;
             accept_preconditions(tx, &current, now).await?;
@@ -553,7 +566,7 @@ async fn execute(
             let current = db::suggestion(tx, c.household_id(), id)
                 .await
                 .map_err(items::domain_error)?;
-            Ok(Json(suggestion_wire(tx, current, conflicts).await?).into_response())
+            Ok(Json(suggestion_wire(tx, current, Some(conflicts)).await?).into_response())
         }
     }
 }
@@ -599,7 +612,7 @@ pub async fn list(
     let page = s.idem.cursor.page(&context, visible, limit, |r| r.id)?;
     let mut rows = vec![];
     for row in page.items {
-        rows.push(suggestion_wire(&mut tx, row, vec![]).await?)
+        rows.push(suggestion_wire(&mut tx, row, None).await?)
     }
     Ok(SuggestionsPage {
         items: rows,
@@ -615,7 +628,7 @@ pub async fn candidates(
     let item = derive::load_item(conn, id)
         .await
         .map_err(items::domain_error)?;
-    items::authorize_item(conn, c, &item, Capability::View).await?;
+    items::authorize(conn, c, &item, Capability::View).await?;
     let sets = porchlight_db::items::relationships(conn, id)
         .await
         .map_err(items::domain_error)?;
@@ -870,7 +883,7 @@ pub async fn snapshot_contribution(
         suggestions: suggestions
             .into_iter()
             .map(|v| {
-                serde_json::to_value(suggestion_response(v.row, v.occurrence_version, vec![]))
+                serde_json::to_value(suggestion_response(v.row, v.occurrence_version, None))
                     .map_err(|_| ApiError::internal("suggestion"))
             })
             .collect::<Result<_, _>>()?,

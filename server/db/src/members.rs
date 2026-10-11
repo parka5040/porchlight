@@ -19,7 +19,7 @@ pub struct MemberTimeZone {
     pub version: i32,
 }
 pub async fn get(conn: &mut PgConnection, member: Uuid) -> Result<MemberTimeZone> {
-    sqlx::query_as("select m.id,m.household_id,m.role,case when m.role='dependent' then h.tzid else m.tzid end as tzid,m.tz_source,m.tz_authority_device_id,m.version from porchlight.household_members m join porchlight.households h on h.id=m.household_id where m.id=$1 and m.deleted_at is null").bind(member).fetch_optional(conn).await?.ok_or(Error::NotFound)
+    sqlx::query_as("select m.id,m.household_id,m.role,porchlight.pl_effective_member_zone(m.role,m.tzid,h.tzid) as tzid,m.tz_source,m.tz_authority_device_id,m.version from porchlight.household_members m join porchlight.households h on h.id=m.household_id where m.id=$1 and m.deleted_at is null").bind(member).fetch_optional(conn).await?.ok_or(Error::NotFound)
 }
 fn validation(reason: &str) -> Error {
     porchlight_core::items::ValidationError {

@@ -131,7 +131,7 @@ class CollaborationConnectedFixTest {
             cache.install(emptySnapshot(1).copy(memberSettings = SettingsRead(list.ownerId, 1, defaultTodaySettings), lists = listOf(list)))
             val services = services(data)
             var route: AppRoute? = null
-            val item = itemRead(list.itemId!!).copy(capabilities = listOf("view", "edit", "comment"), occurrence = occurrenceRead(collabId("occurrence"), list.itemId!!))
+            val item = itemRead(list.itemId).copy(capabilities = listOf("view", "edit", "comment"), occurrence = occurrenceRead(collabId("occurrence"), list.itemId))
             runDesktopComposeUiTest(width = 700, height = 3000) {
                 setContent { CompositionLocalProvider(LocalScreenServices provides services) { PorchlightTheme(ThemeMode.Daylight, false) { androidx.compose.foundation.layout.Column { CollaborationSection(item) { route = it } } } } }
                 onNodeWithContentDescription("Open Daily groceries").performClick()

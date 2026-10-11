@@ -16,14 +16,14 @@ class CacheVisibilityFileTest {
         val base = Path.of(System.getProperty("porchlight.test.dir")); Files.createDirectories(base)
         for (endpoint in listOf("item", "comment", "download")) {
             val root = Files.createTempDirectory(base, "ccache-visibility-").toFile()
-            val cache = memoryCache { now }
+            val store = FileAttachmentStore(root)
+            val cache = memoryCache(store) { now }
             val api = KtorApiTransport(HttpClient(MockEngine {
                 respond("""{"type":"urn:porchlight:problem:not-found","status":404,"title":"Unavailable"}""", HttpStatusCode.NotFound, headersOf(HttpHeaders.ContentType, "application/problem+json"))
             }), listOf(testOrigin()), HeaderPolicy(ClientInfo("1.0.0"), { "UTC" }, { "unused" }), { false })
             try {
                 val row = attachmentFixture().copy(hasThumbnail = true)
-                val store = FileAttachmentStore(root)
-                val data = HouseholdData(cache, GeneratedCall({ api }, { null }), { now }, attachmentStore = store)
+                val data = HouseholdData(cache, GeneratedCall({ api }, { null }), { now })
                 cache.install(emptySnapshot(1).copy(items = listOf(itemRead(row.itemId)), comments = listOf(commentFixture()), attachments = listOf(row)))
                 // Download requests the absent thumbnail; the already viewed original and viewer must still purge.
                 store.write("0-${row.id}-${row.version}-file", byteArrayOf(1))

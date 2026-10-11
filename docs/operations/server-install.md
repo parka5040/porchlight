@@ -45,6 +45,77 @@ Phones use [enroll-by-IP](devices.md#phones-without-lan-dns), with Funnel enable
 <server-lan-ip> porchlight.lan
 ```
 
+## Initial resource envelope
+
+Production Compose limits are **initial, unmeasured values**, not a validated capacity recommendation:
+
+| Service | Memory ceiling | CPUs | PIDs |
+| --- | --- | --- | --- |
+| API | 1 GiB | 2 | 256 |
+| PostgreSQL | 2 GiB | 2 | 256 |
+| Backup | 1 GiB (including the 512 MiB secret-work tmpfs) | 1 | 128 |
+| Migration (one-shot) | 512 MiB | 1 | 128 |
+| Funnel (opt-in) | 256 MiB | 0.5 | 128 |
+
+Steady-state memory ceilings total 4.25 GiB with Funnel, plus 512 MiB during migration; these are caps, not
+reservations. Leave host/other-service headroom. CPU limits likewise do not reserve cores. Before accepting these
+sizes, the controller must measure cgroup memory peaks/OOM events, CPU/PIDs and latency with a representative
+household workload, largest admitted attachment/import, concurrent backup and restore. Reassess after pool changes.
+
+Attachment admission defaults to **10 GiB per household** (`PORCHLIGHT_ATTACHMENT_QUOTA_BYTES=10737418240`)
+and a **2 GiB filesystem free-space reserve** (`PORCHLIGHT_DISK_RESERVE_BYTES=2147483648`). Set byte counts in the
+installed stack's `.env` (see `deploy/.env.example`); Compose passes both to the API. Direct `serve` accepts the
+same environment variables or `--attachment-quota-bytes` / `--disk-reserve-bytes`. Every file byte under the blob
+root counts immediately, including incoming staging, canonical-write temps, thumbnails, soft-deleted blobs and
+fresh crash/rollback orphans (no 30-day accounting exemption). Startup and each GC pass reconcile the tree;
+ordinary admission uses a constant-time physical-byte ledger, updated with each write, replacement and unlink.
+Blocking writers retain pending-byte reservations through cancellation. Committed metadata is also checked as a
+conservative bound. Duplicate links share canonical bytes but still need temporary headroom
+for upload staging/replacement. GC timing is unchanged; deleting files releases their physical charge.
+The disk reserve additionally covers filesystem allocation overhead and anonymous export spools outside the
+blob root. Capacity rejection returns `storage-full` (507); both apps explain how to recover.
+Raising the quota does not override the disk reserve. Other processes can still consume this filesystem: these
+checks are not an OS filesystem quota, and the one-API-instance / one-household-per-volume invariant still applies.
+
+PostgreSQL explicitly uses `shared_buffers=512MB` (spec), `work_mem=4MB`, `maintenance_work_mem=128MB`,
+`max_connections=50`. The connection arithmetic is **16 + 4 + 3 = 23** API slots: default request pool
+(`server/api/src/config.rs`), four one-slot LISTEN pools (projector, derive worker, stream hub, revocation via
+`db::listener_pool`), three scheduler pools (blob GC, GC metadata, item operations). Of 50 slots, three retain
+PostgreSQL's default superuser reserve, leaving **24 ordinary slots** beyond those 23: budget three for concurrent
+backup snapshot/dump/lease SQL, two for API/backup health probes, one migrator, four direct agent/operator sessions,
+and fourteen spare/reconnection slots. Agent HTTP work shares the API request pool; direct SQL sessions do not.
+Changing pool sizes, instance count, or direct SQL concurrency requires recalculation. `work_mem` is per sort/hash
+operation (and parallel worker), not a total per connection; connection headroom is not permission to saturate all
+slots with large sorts.
+
+All healthchecked services probe every 30 seconds, with faster probes during a 60-second start period (backup:
+120 seconds). Requires Docker Engine 25+ / Compose 2.20.2+ for `start_interval`. Every production service rotates
+`json-file` logs at `10m`, retaining three files (~30 MB/service); the NixOS daemon defaults provide the same policy
+for other containers. Recreate containers to apply logging changes. Enrollment/Funnel policy INFO summaries report
+allowed/refused counts once per minute when nonzero, plus a final shutdown summary; per-peer details are DEBUG-only.
+
+Disk is **not** bounded by these memory/log limits: budget PostgreSQL data/WAL, one full custom-format dump in
+`backup-work`, an encrypted partial plus retained published bundles, and spare space for DB writes and upgrade
+rollback. `max_wal_size` is a checkpoint target, not a quota. Alert before that headroom is consumed; use separate
+filesystems/quotas where appropriate. Backup crash recovery, under the shared lock, frees abandoned work/partials
+before repairing SQL status; failed metadata repair retries with the existing hourly backoff and cannot start a new
+backup. Published bundles are never cleanup targets.
+
+The client-only backup image copies exact PG18.6 tools plus an isolated ELF/encoding/locale closure from the pinned
+PostgreSQL image into Debian trixie-slim; Python/OpenSSL use the runtime's own libraries. The Dockerfile's explicit
+`CONTROLLER_PIN` **must** be replaced with a verified slim-base digest before build/release. The controller must
+record all three client versions, prove backup/decrypt/manifest/independent restore (including DST/custom-directory
+fixtures), and measure image/export size; no image-size saving has yet been measured.
+
+## Build artifact housekeeping
+
+A successful `scripts/publish-release.sh` removes only its verified download/extracted round trip; failed checks
+retain that directory for diagnosis. Signed `dist` and the publish archive are retained for rollback. After update
+acceptance/diagnosis, explicitly run `bash deploy/scripts/update-gate-build.sh --discard` from the main tree to remove
+`var/update-gate/{dists,android,build.json}`. It takes the acceptance/build lock and refuses surviving gate containers;
+stop those through their original gate/Compose teardown first. Logs and private failure state remain for inspection.
+This never runs automatically at build exit, and does not discard Gradle's offline toolchain/cache.
+
 ## Deploy
 
 The LAN controller interface is:
@@ -95,8 +166,11 @@ scripts/deploy-server.sh install "$v" --admin-name 'Owner'
 `RequiresMountsFor=<data-mount>`; ports 8443/8444; and absence of a conflicting `porchlight` Compose project
 root. Existing ports are accepted only when their bindings belong to this project.
 
-Install refuses an existing `<data-mount>/porchlight/.env`: never delete production state to retry blindly.
-Inspect a partial install privately; see [Failed first init recovery](#failed-first-init-recovery) below. This is a **fresh production init**:
+Install refuses an existing `<data-mount>/porchlight/.env` unless a durable `.provisioning` marker identifies an
+unfinished first install. Rerun the same controller `install` with the original version/options to resume; fix
+invalid input or service errors first. Existing credentials and completed init/PKI are retained. Never delete
+production state to retry blindly. See [Failed first init recovery](#failed-first-init-recovery) below for older
+installers without this marker. This is a **fresh production init**:
 no laptop test database, device profile or PKI is copied. A new household CA is generated on the server.
 The only recovery material sent is the **public** age recipient derived locally with
 `age-keygen -y var/backup-recovery.key`. Back up that private identity separately first; it never leaves the
@@ -104,7 +178,7 @@ laptop/personal backup (see [keys.md](keys.md)).
 
 ### Failed first init recovery
 
-A rejected admin password can leave `.env`, `release-current`, signed `releases/`, loaded images, a migrated
+**Legacy installers only (no `.provisioning` marker):** a rejected admin password can leave `.env`, `release-current`, signed `releases/`, loaded images, a migrated
 `pgdata/` bind mount and the `porchlight` Compose project (postgres/migrate). `data/`, `backups/` and `backup-work/`
 may also exist. Shell redirection creates `init.json` **before** init runs, so a password rejection normally leaves
 an empty file, not necessarily an absent one; `init.log` holds the diagnostic. The controller refuses another
@@ -359,8 +433,10 @@ TLS 1.3 minimum, SNI and SAN hostname verification (CN fallback disabled), with 
 request. `PASS public-tls` requires the client handshake to complete with the verified household-CA/FQDN identity,
 then the **first recv** to raise `ssl.SSLError` with reason `TLSV13_ALERT_CERTIFICATE_REQUIRED` (or
 `CERTIFICATE_REQUIRED`). There is **no OpenSSL diagnostic-text matching**. Chain/name failures, any data or EOF
-without that alert, other errors and timeouts fail. The connection/handshake/read budget is 20 seconds, with a
-22-second outer watchdog also bounding DNS/runtime hangs. Probe exit 0 now means PASS, not the old OpenSSL alert
+without that alert, other errors and timeouts fail. A post-handshake reset/broken pipe gets at most two fresh-connection
+retries, still requiring that exact alert. Connect time is deducted before the handshake. The total
+connection/handshake/read budget is 20 seconds, with a
+22-second outer watchdog also bounding DNS/runtime hangs and distinguishing DNS from TLS stalls. Probe exit 0 now means PASS, not the old OpenSSL alert
 exit rule. This does not attest authenticated application behaviour; never weaken public mTLS.
 
 Refresh enrolled phones' endpoint lists **while still on LAN**; confirm LAN still works and the household CA
@@ -372,7 +448,12 @@ do not change egress or weaken TLS/enrollment boundaries without approval.
 
 ## Upgrade
 
-Once a release with remote updates is installed, log in as the stack owner on the server and run:
+**0.1.6 → next release must use `scripts/deploy-server.sh upgrade <version>`** below, with a laptop-verified signed
+dist. Its controller executes the new installer. Do not use the 0.1.6 network wrapper (unsigned, unbounded archive
+extraction before handoff), or an old installer's `upgrade --source` (old unfenced rollback). See the
+[first-hop warning](upgrade.md#required-first-hop-from-016).
+
+Once the hardened release after 0.1.6 is installed, log in as the stack owner on the server and run:
 
 ```bash
 <data-mount>/porchlight/porchlight-upgrade             # latest
@@ -420,6 +501,7 @@ remote and local SHA-256 before decrypting; keep the private identity local. Run
 
 ```bash
 # Set bundle_name to the exact PASS filename (not a path); v to its matching signed release.
+# Set recovery_version to the newest verified installer release, even for an older bundle.
 umask 077
 mkdir -m 700 -p var/m9/server-backups
 chmod 700 var/m9/server-backups
@@ -433,10 +515,28 @@ chmod 600 "var/m9/server-backups/$bundle_name"
 # Compare these hashes; stop on a mismatch before decrypting.
 sha256sum "var/m9/server-backups/$bundle_name"
 deploy/scripts/restore-drill.sh "var/m9/server-backups/$bundle_name" \
-  --source "dist/$v" --identity var/backup-recovery.key
+  --source "dist/$v" --installer "dist/$recovery_version/install.sh" --identity var/backup-recovery.key
 ```
 
 The drill uses a separate laptop `porchlight-drill` project, private `var/restore-drill`, loopback spare ports,
 and compares rows/migrations/CA/blob bytes before starting writers. It must never restore into the production
 root. Also verify passive desktop pull with a matching receipt ([passive-pull.md](passive-pull.md)). Complete
 restart/reboot, VPN relay-change, phones and later Funnel gates in [server-acceptance.md](server-acceptance.md).
+
+## Certificate replacement and recovery budgets
+
+`porchlight server-cert` writes a new leaf but does **not** reload a running API: it reads its certificate at startup.
+Prefer the installed, verified `install.sh server-cert --root <stack-root> --san-dns porchlight.lan ...` command with the
+complete desired DNS/IP SAN set; it stops/recreates the API and checks readiness. Direct offline CLI users must restart
+or recreate their serving API and verify LAN TLS/application readiness afterwards. `--show` cannot be combined with
+SAN flags; put numeric addresses in `--san-ip`, not `--san-dns`.
+
+The installed installer accepts `--api-health-timeout <seconds>` (1–600, default 30) for certificate/Funnel
+API start and all API recovery (normal enrollment-host recreation retains its separate 120-second budget). Choose an explicit bounded budget if this host needs more launch/health time; do not disable
+readiness. Failed activation retains only fixed step/outcome diagnostics in private `<stack-root>/tmp/failure.*/summary.txt`,
+not Tailscale raw output, credentials or login URLs. Inspect locally and remove after recovery.
+
+The laptop Funnel controller checks the auth-key upload's exact length and SHA-256 before publishing it remotely.
+While holding its transfer lock, it sweeps only owner-owned regular 0600 `.m9-ts-authkey.*` stages older than one day;
+symlinks, recent stages and unrelated files are untouched. Final `PASS funnel` is printed only after the laptop's
+private FQDN file and directory have been fsynced successfully. Retain the local key until activation succeeds.

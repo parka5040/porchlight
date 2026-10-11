@@ -53,7 +53,12 @@ pub struct SuggestionResponse {
     pub version: i32,
     pub occurrence_version: Option<i32>,
     pub created_at: DateTime<Utc>,
+    /// Acceptance-time warnings only; empty is not proof of no conflicts when unevaluated.
     pub conflicts: Vec<ConflictResponse>,
+    /// True only for successful acceptance. Reads/snapshots do not evaluate proposal conflicts.
+    /// Missing on older servers means false.
+    #[schema(required = false, default = false)]
+    pub conflicts_evaluated: bool,
 }
 #[derive(Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]

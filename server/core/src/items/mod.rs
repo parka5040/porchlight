@@ -11,6 +11,7 @@
 
 mod edits;
 mod engine;
+mod periods;
 mod rule;
 
 use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, Timelike, Utc};
@@ -19,8 +20,9 @@ pub use edits::{
     OccurrenceOverride, all, persisted_occurrence_override, this_and_future, this_occurrence,
 };
 pub use engine::{
-    HORIZON_MONTHS, OccurrenceAnchor, OpenOccurrence, bounded_occurrence_count, dispositions,
-    expand, first_anchor, horizon_end, next_after_completion,
+    HORIZON_MONTHS, MAX_MATERIALIZED_OCCURRENCES, OccurrenceAnchor, OpenOccurrence,
+    bounded_occurrence_count, dispositions, expand, expand_capped, first_anchor, horizon_end,
+    next_after_completion,
 };
 pub use rule::{Rule, Until};
 use serde::{Deserialize, Serialize};
@@ -470,18 +472,26 @@ impl SeriesSpec {
         })
     }
     pub(super) fn local_start(&self) -> Option<NaiveDateTime> {
-        self.input.local_start.or_else(|| {
-            self.input
-                .starts_at
-                .map(|t| crate::time::to_local(t, self.zone.unwrap()))
-        })
+        self.input
+            .local_start
+            .or_else(|| self.input.starts_at.map(|t| self.appointment_local(t)))
     }
     pub(super) fn local_end(&self) -> Option<NaiveDateTime> {
-        self.input.local_end.or_else(|| {
-            self.input
-                .ends_at
-                .map(|t| crate::time::to_local(t, self.zone.unwrap()))
-        })
+        self.input
+            .local_end
+            .or_else(|| self.input.ends_at.map(|t| self.appointment_local(t)))
+    }
+    // Fixed all-day instants encode nominal date bounds, including a midnight
+    // moved forward by a zone transition. Do not accept arbitrary nonmidnight times.
+    fn appointment_local(&self, instant: DateTime<Utc>) -> NaiveDateTime {
+        let zone = self.zone.unwrap();
+        let local = crate::time::to_local(instant, zone);
+        let midnight = local.date().and_time(chrono::NaiveTime::MIN);
+        if self.input.all_day && crate::time::resolve_local(midnight, zone) == instant {
+            midnight
+        } else {
+            local
+        }
     }
     pub(super) fn start(&self) -> Option<NaiveDateTime> {
         self.cursor.map(|c| c.nominal_local_anchor).or_else(|| {

@@ -17,8 +17,13 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.decodeFromString
 
 /** Private EC key never leaves AndroidKeyStore; certificate/session metadata is AES-GCM encrypted at rest. */
-class AndroidDeviceKeyStore(context: Context, private val alias: String = "porchlight.device", private val prefsName: String = "porchlight.trust") : JavaDeviceKeyStore {
-    private val prefs = context.applicationContext.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
+class AndroidDeviceKeyStore internal constructor(private val alias: String, private val prefsName: String,
+                                                metadata: () -> app.porchlight.shared.settings.PrivateMetadataStore) : JavaDeviceKeyStore {
+    constructor(context: Context, alias: String = "porchlight.device", prefsName: String = "porchlight.trust") :
+        this(alias, prefsName, { app.porchlight.shared.settings.privateMetadata(context.applicationContext, prefsName) })
+    // Load/migrate inside the suspend operations' IO context and TrustController's recovery boundary.
+    // Kotlin lazy retries after a failed initializer; do not cache a transient storage exception.
+    private val prefs by lazy(metadata)
     private val store get() = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
     private val metadataAlias = "$alias.metadata"
     override val enrollmentKeyAlias get() = alias
@@ -47,8 +52,9 @@ class AndroidDeviceKeyStore(context: Context, private val alias: String = "porch
     private fun decrypt(entry: String): String? {
         val encrypted = prefs.getString(entry, null) ?: return null
         if (!store.containsAlias(alias)) throw LocalTrustUnavailable()
-        val bytes = Base64.decode(encrypted, Base64.NO_WRAP)
-        require(bytes.size > 12)
+        val bytes = try { Base64.decode(encrypted, Base64.NO_WRAP) }
+            catch (_: IllegalArgumentException) { throw LocalTrustUnavailable() }
+        if (bytes.size <= 12) throw LocalTrustUnavailable()
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, metadataKey(false), GCMParameterSpec(128, bytes.copyOfRange(0, 12)))
         cipher.updateAAD((if (entry == "encrypted") prefsName else "$prefsName:$entry").toByteArray())
@@ -66,7 +72,7 @@ class AndroidDeviceKeyStore(context: Context, private val alias: String = "porch
     private fun pendingEnrollments(): PendingEnrollments = try {
         val pending = decrypt("enrollment-attempt")
             ?.let { WireJson.decodeFromString<PendingEnrollments>(it) } ?: PendingEnrollments()
-        check(pending.attempts.all { it.keyAlias == alias })
+        if (pending.attempts.any { it.keyAlias != alias }) throw LocalTrustUnavailable()
         pending
     } catch (e: Exception) {
         // A transient Keystore/provider error must keep the stored attempt and surface as retryable.
@@ -105,6 +111,14 @@ class AndroidDeviceKeyStore(context: Context, private val alias: String = "porch
         check(prefs.edit().putString("encrypted", encrypt("encrypted", WireJson.encodeToString(trust)))
             .remove("enrollment-attempt").commit()) { "Could not commit device trust" }
     }
+    override suspend fun clearSession(logoutPending: Boolean): DeviceTrust? = withContext(Dispatchers.IO) {
+        val saved = load() ?: return@withContext null
+        val cleared = saved.withSession(null, null).withLogoutPending(logoutPending)
+        check(prefs.edit().putString("encrypted", encrypt("encrypted", WireJson.encodeToString(cleared))).commit()) {
+            "Could not commit logout cleanup"
+        }
+        cleared
+    }
     override suspend fun clear() = withContext(Dispatchers.IO) {
         check(prefs.edit().clear().commit())
         val opened = store
@@ -114,6 +128,14 @@ class AndroidDeviceKeyStore(context: Context, private val alias: String = "porch
 }
 
 /** True only when the stored pending attempt can never be read again (missing key, failed authentication, malformed or foreign metadata). */
-internal fun isDefinitivelyUnreadableAttempt(e: Throwable): Boolean =
-    e is LocalTrustUnavailable || e is javax.crypto.AEADBadTagException || e is javax.crypto.BadPaddingException ||
-        e is IllegalArgumentException || e is IllegalStateException || e is kotlinx.serialization.SerializationException
+internal fun isDefinitivelyUnreadableAttempt(e: Throwable): Boolean {
+    val seen = mutableSetOf<Throwable>()
+    var cause: Throwable? = e
+    while (cause != null && seen.add(cause)) {
+        if (cause is LocalTrustUnavailable || cause is javax.crypto.BadPaddingException ||
+            cause is android.security.keystore.KeyPermanentlyInvalidatedException ||
+            cause is UnrecoverableKeyException || cause is kotlinx.serialization.SerializationException) return true
+        cause = cause.cause
+    }
+    return false
+}

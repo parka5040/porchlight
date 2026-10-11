@@ -234,6 +234,18 @@ pub fn suggest_edf(
     from: DateTime<Utc>,
     until: DateTime<Utc>,
 ) -> ScheduleResult {
+    suggest_edf_in_zones(tasks, members, from, until, &BTreeMap::new())
+}
+
+/// Fixed tasks encode overrides in their item zone; other tasks use the member zone.
+/// Keep the existing EDF entry point for callers whose tasks all follow member time.
+pub fn suggest_edf_in_zones(
+    tasks: &[Task],
+    members: &[MemberSchedule],
+    from: DateTime<Utc>,
+    until: DateTime<Utc>,
+    override_zones: &BTreeMap<Uuid, Tz>,
+) -> ScheduleResult {
     let members: BTreeMap<_, _> = members.iter().map(|m| (m.member_id, m)).collect();
     let mut slots: BTreeMap<_, _> = members
         .iter()
@@ -296,15 +308,27 @@ pub fn suggest_edf(
         let limit = deadline.ok().flatten().unwrap_or(until).min(until);
         let duration = Duration::minutes(i64::from(task.est_minutes));
         let free = slots.get_mut(&task.member_id).expect("known member");
+        let zone = override_zones
+            .get(&task.id)
+            .copied()
+            .unwrap_or(members[&task.member_id].tz);
         let placement = free.iter().enumerate().find_map(|(i, s)| {
-            let end = s.start.checked_add_signed(duration)?;
-            (end <= s.end && end <= limit).then_some((
-                i,
-                TimeRange {
-                    start: s.start,
-                    end,
-                },
-            ))
+            let mut start = s.start;
+            loop {
+                let end = start.checked_add_signed(duration)?;
+                if end > s.end || end > limit {
+                    return None;
+                }
+                let range = TimeRange { start, end };
+                if representable_override(range, zone) {
+                    return Some((i, range));
+                }
+                // Search whole-second boundaries: availability and busy endpoints
+                // can carry seconds, and a fold can leave exactly one valid slot.
+                start = start
+                    .checked_add_signed(Duration::seconds(1))?
+                    .with_nanosecond(0)?;
+            }
         });
         if let Some((i, range)) = placement {
             result.suggestions.push(Suggestion {
@@ -312,9 +336,16 @@ pub fn suggest_edf(
                 member_id: task.member_id,
                 range,
             });
+            let prefix = (free[i].start < range.start).then_some(TimeRange {
+                start: free[i].start,
+                end: range.start,
+            });
             free[i].start = range.end;
             if free[i].start == free[i].end {
                 free.remove(i);
+            }
+            if let Some(prefix) = prefix {
+                free.insert(i, prefix);
             }
         } else {
             result.unplaced.push(UnplacedTask {
@@ -324,6 +355,16 @@ pub fn suggest_edf(
         }
     }
     result
+}
+
+/// Exact round trip through the occurrence override policy (earlier fold branch).
+/// Used both when proposing slots and when accepting them.
+pub fn representable_override(range: TimeRange, zone: Tz) -> bool {
+    let start = to_local(range.start, zone);
+    let end = to_local(range.end, zone);
+    start < end
+        && resolve_local(start, zone) == range.start
+        && resolve_local(end, zone) == range.end
 }
 
 /// `tasks_by_day` is planned minutes already attributed to the member's local

@@ -45,8 +45,19 @@ impl TestClient {
         addr: SocketAddr,
         req: Request<Full<Bytes>>,
     ) -> Result<TestStream, TestClientError> {
+        self.stream_with_prefix(addr, &[], req).await
+    }
+    pub async fn stream_with_prefix(
+        &self,
+        addr: SocketAddr,
+        prefix: &[u8],
+        req: Request<Full<Bytes>>,
+    ) -> Result<TestStream, TestClientError> {
+        let mut tcp = TcpStream::connect(addr).await?;
+        tcp.write_all(prefix).await?;
         let (mut sender, connection) =
-            hyper::client::conn::http1::handshake(TokioIo::new(self.connect(addr).await?)).await?;
+            hyper::client::conn::http1::handshake(TokioIo::new(self.connect_stream(tcp).await?))
+                .await?;
         let connection = tokio::spawn(connection);
         let response =
             tokio::time::timeout(Duration::from_secs(5), sender.send_request(req)).await??;

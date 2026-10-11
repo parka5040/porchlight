@@ -1,9 +1,10 @@
 package app.porchlight.shared.screens.item
 
+import app.porchlight.shared.theme.PorchlightTokens
+
 import kotlinx.datetime.TimeZone
 
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
@@ -28,11 +29,6 @@ import kotlinx.serialization.json.*
     if (data == null) { EmptyState("Item $context", "Sign in and sync to load household data."); return }
     val view by data.cache.view.collectAsState()
     val writer = screenWrites("item:$context")
-    remember(context, creating) {
-        // A new visit is a fresh creation, except when a pending ambiguous request must be resumed.
-        if (creating && writer.state.value.saved) writer.discard()
-        true
-    }
     val feedback by writer.state.collectAsState()
     val scope = applicationWriteScope()
     var loadError by remember { mutableStateOf<String?>(null) }
@@ -49,66 +45,134 @@ import kotlinx.serialization.json.*
             loadFinished()
         }
     }
-    val parent = view.items.find { it.id == context } ?: view.board.find { it.id == context } ?: view.agenda.find { it.id == context }
-    val occurrence = itemOccurrence(view, context, occurrenceId)
+    val fallbackSession = remember { ScreenSession().also { it.bindCache(data.cache) } }
+    val session = services.screenSession ?: fallbackSession
+    remember(context, creating, session) {
+        // Re-enter New item as a fresh creation, unless a newer draft or pending request remains.
+        if (creating && !feedback.busy && feedback.retryKey == null && session.forgetCompletedCreation(context, view)) writer.discard()
+        true
+    }
+    val retainedEditor = session.editor(context, view, creating)
+    val editor = checkNotNull(retainedEditor.current(view))
+    DisposableEffect(editor) { onDispose { if (!editor.unsaved) editor.editing = false } }
+    val itemId = editor.savedId ?: context
+    val isCreating = creating && editor.savedId == null
+    val parent = view.items.find { it.id == itemId } ?: view.board.find { it.id == itemId } ?: view.agenda.find { it.id == itemId }
+    val occurrence = itemOccurrence(view, itemId, occurrenceId)
     val row = parent?.copy(occurrence = occurrence)
-    var editing by rememberSaveable(context) { mutableStateOf(creating) }
-    var editScope by rememberSaveable(context) { mutableStateOf(EditorScope.All) }
-    var scopeChosen by rememberSaveable(context) { mutableStateOf(creating) }
-    var expectedVersion by rememberSaveable(context) { mutableIntStateOf(0) }
-    var expectedOccurrenceVersion by rememberSaveable(context) { mutableIntStateOf(0) }
-    var draft by remember(context) { mutableStateOf(services.screenSession?.drafts?.get(context) ?: EditorDraft(tzid = view.members.find { it.id == view.settings?.memberId }?.tzid ?: "UTC")) }
-    var baseline by remember(context) { mutableStateOf(services.screenSession?.drafts?.get("$context:baseline") ?: draft) }
-    fun seed(value: EditorDraft) { baseline = value; services.screenSession?.drafts?.set("$context:baseline", value) }
-    var errors by remember(context) { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var editing by editor::editing
+    var editScope by editor::editScope
+    var scopeChosen by editor::scopeChosen
+    var expectedVersion by editor::expectedVersion
+    var expectedOccurrenceVersion by editor::expectedOccurrenceVersion
+    var draft by editor::draft
+    var baseline by editor::baseline
+    fun seed(value: EditorDraft) { baseline = value }
+    var errors by remember(context, view.visibilityRevision) { mutableStateOf<Map<String, String>>(emptyMap()) }
     var deleting by remember { mutableStateOf(false) }
-    fun storeDraft(value: EditorDraft) { draft = value; services.screenSession?.drafts?.set(context, value) }
+    fun storeDraft(value: EditorDraft) { editor.store(value) }
     fun change(value: EditorDraft) { storeDraft(value.trackEdits(draft)) }
     fun beginEdit() {
         if (feedback.retryKey != null || feedback.busy) return
         row?.let { current ->
             expectedVersion = current.version; expectedOccurrenceVersion = current.occurrence?.version ?: 0
-            seed(services.screenSession?.drafts?.get("$context:baseline") ?: EditorDraft.from(current))
-            storeDraft(services.screenSession?.drafts?.get(context) ?: baseline)
-            editScope = EditorScope.All; scopeChosen = current.recurrenceMode == null || current.occurrence == null; editing = true; writer.discard()
+            seed(if (editor.present) baseline else EditorDraft.from(current))
+            storeDraft(if (editor.present) draft else baseline)
+            editScope = EditorScope.All; scopeChosen = current.recurrenceMode == null
+            editor.scopeOccurrenceId = null; editing = true; writer.discard()
         }
     }
     fun save(version: Int = expectedVersion, occurrenceVersion: Int = expectedOccurrenceVersion) {
-        if (!creating && row?.recurrenceMode != null && !scopeChosen) { errors = mapOf("scope" to "Choose a recurring edit scope before saving."); return }
+        if (editor.needsSavedVersion) { errors = mapOf("scope" to "Saved without a version. Keep these newer edits and open the saved item before saving again."); return }
+        if (!isCreating && !editor.hasValidScope(row)) { errors = mapOf("scope" to "Choose a recurring edit scope before saving."); return }
         errors = draft.errors()
         if (editScope == EditorScope.ThisOccurrence) errors = errors.filterKeys { it in setOf("due_date", "due_at", "starts_at", "ends_at", "local_due", "local_start", "local_end", "tzid") }
         if (errors.isNotEmpty()) return
         val frozen = draft
+        val submittedBaseline = baseline
         val chosen = editScope
         val item = row
         val member = view.settings?.memberId
-        if (creating && member == null) { errors = mapOf("title" to "Wait for initial sync before creating."); return }
-        if (!creating && (item == null || "edit" !in item.capabilities)) return
-        val edit = if (chosen == EditorScope.ThisOccurrence) occurrenceEdit(frozen, baseline) else ItemEdit(JsonObject(frozen.edit(if (creating) null else baseline).body.filterKeys { field ->
+        if (isCreating && member == null) { errors = mapOf("title" to "Wait for initial sync before creating."); return }
+        if (!isCreating && (item == null || "edit" !in item.capabilities)) return
+        val edit = if (chosen == EditorScope.ThisOccurrence) occurrenceEdit(frozen, baseline) else ItemEdit(JsonObject(frozen.edit(if (isCreating) null else baseline).body.filterKeys { field ->
             (field != "visibility" || item == null || "change_visibility" in item.capabilities) &&
                 (field != "subject_member_id" || item == null || "reassign" in item.capabilities)
         }))
-        if (!creating && edit.body.isEmpty()) { errors = mapOf("scope" to "No changes to save."); return }
-        val session = services.screenSession
-        val savedBaseline = baseline
+        // A creation may finish while its relationship controls are still being edited. Keep those
+        // fields in this editor and commit them through their own versioned endpoints, never PATCH.
+        val relationships = creating && !isCreating && chosen == EditorScope.All
+        val assigneesChanged = relationships && frozen.assignees != baseline.assignees
+        val viewersChanged = relationships && frozen.viewers != baseline.viewers
+        val remindersChanged = relationships && frozen.reminders != baseline.reminders
+        if (!isCreating && edit.body.isEmpty() && !assigneesChanged && !viewersChanged && !remindersChanged) { errors = mapOf("scope" to "No changes to save."); return }
+        val submitted = editor.generation
+        var committed = baseline
+        var nextVersion = version
+        var step = 0
+        val steps = buildList {
+            if (edit.body.isNotEmpty()) add("item")
+            if (assigneesChanged) add("assignees")
+            if (viewersChanged) add("viewers")
+            if (remindersChanged) add("reminders")
+        }
+        // ScreenWrites may report the active step's key after relock; it is not a new plan root.
+        val submissionKey = randomOperationKey()
+        val stepKeys = steps.associateWith { part -> "$submissionKey-$part" }
+        fun completed(result: WriteResult<JsonElement>) {
+            if (result is WriteResult.Success) retainedEditor.current(data.cache.view.value)?.let { current ->
+                current.saved(submitted, frozen, result.value, data.cache.view.value, chosen, submittedBaseline)
+                current.savedId?.let { id -> retainedEditor.bindResources(data.cache.view.value, setOf(CacheResource("Item", id))) }
+            }
+        }
         scope.launch { writer.submit { key ->
-            when {
-                creating -> data.items.create(frozen.create(member!!), key).feedback()
+            if (relationships && (assigneesChanged || viewersChanged || remindersChanged)) {
+                var last: WriteResult<JsonElement> = WriteResult.Success(JsonNull)
+                while (step < steps.size) {
+                    val current = retainedEditor.current(data.cache.view.value) ?: throw CancellationException("Editor visibility changed")
+                    val part = steps[step]
+                    val stepKey = stepKeys.getValue(part)
+                    val result = when (part) {
+                        "assignees" -> data.items.setAssignees(itemId, nextVersion, frozen.assignees, stepKey)
+                        "viewers" -> data.items.setViewers(itemId, nextVersion, frozen.viewers, stepKey)
+                        "reminders" -> data.items.setReminders(itemId, nextVersion, frozen.reminders.split(',').mapNotNull { it.trim().toIntOrNull() }.distinct(), stepKey)
+                        else -> data.items.edit(itemId, nextVersion, edit, key = stepKey)
+                    }
+                    if (result !is WriteResult.Success) return@submit result.feedback()
+                    last = result.feedback()
+                    committed = when (part) {
+                        "assignees" -> committed.copy(assignees = frozen.assignees)
+                        "viewers" -> committed.copy(viewers = frozen.viewers)
+                        "reminders" -> committed.copy(reminders = frozen.reminders)
+                        else -> frozen.copy(assignees = committed.assignees, viewers = committed.viewers, reminders = committed.reminders)
+                    }
+                    // A later rejection/retry cannot make already-committed fields unsaved again or
+                    // discard fields whose endpoint has not succeeded. Retry resumes this exact step plan.
+                    step++
+                    current.baseline = committed
+                    current.needsSavedVersion = result.value == null
+                    current.expectedVersion = result.value?.version ?: nextVersion
+                    nextVersion = current.expectedVersion
+                    if (result.value == null) { current.unsaved = true; return@submit last }
+                }
+                completed(last)
+                last
+            } else when {
+                isCreating -> data.items.create(frozen.create(member!!), key).feedback()
                 chosen == EditorScope.ThisOccurrence && item?.occurrence != null -> data.occurrences.patch(item.occurrence.id, occurrenceVersion, edit, key).feedback()
-                chosen == EditorScope.ThisAndFuture && item?.occurrence != null -> data.items.edit(context, version, edit, EditScope.ThisAndFuture, item.occurrence.id, key).feedback()
-                else -> data.items.edit(context, version, edit, key = key).feedback()
-            }.also { if (it is WriteResult.Success) session?.retireSavedDraft(context, savedBaseline) }
+                chosen == EditorScope.ThisAndFuture && item?.occurrence != null -> data.items.edit(itemId, version, edit, EditScope.ThisAndFuture, item.occurrence.id, key).feedback()
+                else -> data.items.edit(itemId, version, edit, key = key).feedback()
+            }.also(::completed)
         } }
     }
     LaunchedEffect(feedback.saved, editing) {
-        if (feedback.saved && editing) {
-            editing = false; services.screenSession?.drafts?.remove(context); services.screenSession?.drafts?.remove("$context:baseline")
+        if (feedback.saved && !editing) {
             if (creating && feedback.warning == null && !feedback.refreshPending) (feedback.savedValue as? JsonObject)?.get("id")?.jsonPrimitive?.contentOrNull?.let {
                 navigate(app.porchlight.shared.navigation.AppRoute.Item(it))
             }
         }
     }
-    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(Modifier.fillMaxSize().padding(PorchlightTokens.spaceMd.dp), verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceSm.dp)) {
         DataStatus(data, loadError, { reload++ })
         ShellButton("Refetch item", onClick = { reload++ })
         if (editing) DesignPending("Item editor and version compare")
@@ -123,27 +187,30 @@ import kotlinx.serialization.json.*
                 else { expectedVersion = version; save(version = version) }
             } else { errors = mapOf("title" to "Current is unavailable or cannot be edited. Discard and refetch.") }
         }) else null, comparison = if (editing) fieldComparisons(if (editScope == EditorScope.ThisOccurrence) occurrenceEdit(draft, baseline).body else draft.edit(baseline).body, feedback.current) else emptyList(), onDiscard = {
-            editing = false; services.screenSession?.drafts?.remove(context); services.screenSession?.drafts?.remove("$context:baseline"); errors = emptyMap(); reload++
+            editor.clear(); errors = emptyMap(); reload++
         })
         if (!creating && row == null) Text("Item unavailable. Refetch or return to Today.")
         else if (editing) {
             if (!creating && row != null && "edit" !in row.capabilities) Text("Editing is no longer permitted.")
             else {
+                if (editor.unsaved) Text("Unsaved changes")
                 Row(Modifier.horizontalScroll(rememberScrollState())) {
                     if (!feedback.busy && feedback.retryKey == null) ShellButton("Save item", onClick = { save() })
-                    ShellButton("Cancel editor", onClick = { editing = false; if (feedback.retryKey == null) { writer.discard(); services.screenSession?.drafts?.remove(context); services.screenSession?.drafts?.remove("$context:baseline") } })
+                    ShellButton("Cancel editor", onClick = { editing = false; if (feedback.retryKey == null) { writer.discard(); editor.clear() } })
                 }
                 EditorForm(draft, ::change, errors + editorFieldErrors(feedback.fieldErrors, editScope, draft.timeMode), view.members, creating, editScope, { chosen ->
                     // A restored draft may be tail-seeded although editScope starts at All.
                     // Its first explicit scope choice must establish a known timing baseline.
-                    val resetTiming = !scopeChosen || chosen != editScope
-                    editScope = chosen; scopeChosen = true
+                    val resetTiming = !editor.hasValidScope(row) || chosen != editScope
+                    editScope = chosen; scopeChosen = true; editor.scopeOccurrenceId = row?.occurrence?.id
                     row?.let { current ->
                         val next = scopeSeed(current, chosen)
+                        expectedOccurrenceVersion = current.occurrence?.version ?: 0
                         val preserved = draft.rebase(baseline, next, resetTiming)
                         seed(next); storeDraft(preserved); errors = emptyMap()
                     }
-                }, Modifier.weight(1f), editorScopes(row?.recurrenceMode != null, row?.occurrence?.id, row?.recurrenceMode), row?.capabilities ?: listOf("edit", "reassign", "change_visibility", "edit_reminders"))
+                }, Modifier.weight(1f), editorScopes(row?.recurrenceMode != null, row?.occurrence?.id, row?.recurrenceMode),
+                    row?.capabilities ?: listOf("edit", "reassign", "change_visibility", "edit_reminders"), scopeChosen = isCreating || editor.hasValidScope(row))
             }
         } else if (creating && feedback.saved) {
             Text("Item created. Review the warnings above before continuing.")
@@ -151,7 +218,7 @@ import kotlinx.serialization.json.*
                 ShellButton("Open created item", onClick = { navigate(app.porchlight.shared.navigation.AppRoute.Item(id)) })
             }
         } else if (row == null) Text("Item unavailable. Refetch or return to Today.")
-        else Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        else Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceMd.dp)) {
             ItemDetailContent(row, view.members, ::beginEdit, {
                 row.occurrence?.let { o -> scope.launch { writer.submit { data.occurrences.complete(o.id, o.version, it).feedback() } } }
             }, { status -> row.occurrence?.let { o -> scope.launch { writer.submit { data.occurrences.status(o.id, o.version, OccurrenceStatus.valueOf(status), it).feedback() } } } }, {
@@ -179,16 +246,6 @@ import kotlinx.serialization.json.*
         dismissButton = { ShellButton("Keep item", onClick = { deleting = false }) })
 }
 
-/**
- * c3a-rr1 N3: runs inside the application-scoped write (also on an identical retry), so a save that completes after
- * the editor left the screen still retires its draft. Only the edit generation this save diffed against is retired:
- * a baseline re-seeded since then belongs to a newer edit and is kept.
- */
-internal fun ScreenSession.retireSavedDraft(context: String, savedBaseline: EditorDraft) {
-    val stored = drafts["$context:baseline"]
-    if (stored == null || stored === savedBaseline) { drafts.remove(context); drafts.remove("$context:baseline") }
-}
-
 fun EditorDraft.withOccurrence(o: OccurrenceRead?, resolveFixed: Boolean = true): EditorDraft {
     val effective = o?.effective(if (resolveFixed) timeMode else "floating", runCatching { TimeZone.of(tzid) }.getOrDefault(TimeZone.UTC)) ?: return this
     return copy(dueDate = effective.dueDate?.toString().orEmpty(), dueAt = effective.dueAt?.toString().orEmpty(),
@@ -199,7 +256,7 @@ fun EditorDraft.withOccurrence(o: OccurrenceRead?, resolveFixed: Boolean = true)
 @Composable fun ItemDetailContent(row: ItemRead, members: List<MemberRead>, edit: () -> Unit, complete: () -> Unit, status: (String) -> Unit, take: () -> Unit, delete: () -> Unit) {
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceSm.dp)) {
         ItemSummary(row, members)
         Text(row.notes)
         Text("Priority ${row.priority} · ${row.estMinutes?.let { "$it minutes" } ?: "No estimate"}")

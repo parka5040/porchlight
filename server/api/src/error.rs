@@ -54,9 +54,11 @@ problem_catalog! {
     AccountLocked => ("account-locked",429,"Account locked"),
     PurgeDependencyUnhandled => ("purge-dependency-unhandled",409,"Purge requires a retention migration"),
     Internal => ("internal",500,"Internal server error"),
+    Maintenance => ("maintenance",503,"Server is updating"),
     // s7b: collaboration/ingest problems
     CommentEditExpired => ("comment-edit-expired",403,"Comment edit window expired"),
     AttachmentTooLarge => ("attachment-too-large",413,"Attachment exceeds 25 MiB limit"),
+    StorageFull => ("storage-full",507,"Attachment storage is full"),
     AttachmentTypeUnsupported => ("attachment-type-unsupported",415,"Unsupported attachment type or WebP main meta-Huffman profile"),
     AttachmentTypeMismatch => ("attachment-type-mismatch",422,"Attachment type mismatch"),
     AttachmentInvalid => ("attachment-invalid",422,"Invalid attachment"),
@@ -87,6 +89,7 @@ impl Problem {
         }
         doc.push_str("\nExtensions: `upgrade-required` includes `min_client_version`; `version-conflict` includes `current`; `validation-failed` includes `errors: [{field, message, code?}]`. Body references use `validation-failed` (422), with `invalid-reference` or `stale-neighbour` field codes for board bounds; 404 is reserved for hidden/missing path resources. Idempotency keys cover method, path/query and body, **not If-Match**: rotate the key after `version-conflict`, otherwise the stored response replays. All bodies retain `type`, `title`, `status`, `detail`; internal errors never reveal details.\n");
         doc.push_str("\nA sealed 422 (including `stale-neighbour`) replays for its original key. After refetching neighbours or correcting validation, a retry with a changed body needs a **NEW Idempotency-Key**; reusing the old key returns `idempotency-key-reused`.\n");
+        doc.push_str("\n`maintenance` (503) rejects mutations before authentication, body reads and idempotency while the installer write fence exists. `Retry-After: 1`; retry the identical request after waiting. Reads and healthchecks remain available.\n");
         doc
     }
 }
@@ -160,14 +163,13 @@ impl ApiError {
     }
     /// A retryable domain failure: the mutation wrapper rolls back all effects and
     /// the claim, without sealing this response. Retry-After alone does not do this.
-    pub fn transient(problem: Problem) -> Self {
-        assert_eq!(problem, Problem::Conflict, "only conflict may be transient");
-        let mut error = Self::new(problem);
+    pub fn transient_conflict() -> Self {
+        let mut error = Self::new(Problem::Conflict);
         error.transient = true;
         error
     }
     pub fn calendar_apply_timeout() -> Self {
-        let mut error = Self::transient(Problem::Conflict);
+        let mut error = Self::transient_conflict();
         error.apply_timeout = true;
         error
     }
@@ -233,7 +235,7 @@ impl From<sqlx::Error> for ApiError {
                     sqlstate = db.code().as_deref().unwrap_or("unknown"),
                     "retryable API transaction failure"
                 );
-                return Self::transient(Problem::Conflict).retry(1);
+                return Self::transient_conflict().retry(1);
             }
             tracing::error!(
                 kind = "database",

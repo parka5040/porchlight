@@ -5,12 +5,15 @@ use std::{fmt, net::SocketAddr, path::PathBuf, time::Duration};
 
 #[derive(Clone, Debug)]
 pub struct Settings {
+    pub maintenance_file: PathBuf,
     pub backup_dir: PathBuf,
     pub release_repo: Option<String>,
     pub release_public_key: Option<String>,
     pub release_dir: Option<PathBuf>,
     pub upgrade_command: Option<String>,
     pub data_dir: PathBuf,
+    pub attachment_quota_bytes: u64,
+    pub disk_reserve_bytes: u64,
     _test_data_guard: Option<std::sync::Arc<tempfile::TempDir>>,
     pub min_client_version: crate::protocol::ClientVersion,
     pub device_cert_days: u32,
@@ -35,6 +38,9 @@ impl Settings {
             upgrade_command: None,
             data_dir: temp.path().to_owned(),
             backup_dir: temp.path().join("backups"),
+            attachment_quota_bytes: 10 * 1024 * 1024 * 1024,
+            disk_reserve_bytes: 2 * 1024 * 1024 * 1024,
+            maintenance_file: temp.path().join("maintenance"),
             _test_data_guard: Some(std::sync::Arc::new(temp)),
             min_client_version: "0.1.0".parse().expect("default version"),
             device_cert_days: 365,
@@ -62,6 +68,10 @@ pub struct ServeArgs {
     pub min_client_version: crate::protocol::ClientVersion,
     #[arg(long, env = "PORCHLIGHT_DATA_DIR", default_value = "/data")]
     pub data_dir: PathBuf,
+    #[arg(long, env = "PORCHLIGHT_ATTACHMENT_QUOTA_BYTES", default_value_t = 10 * 1024 * 1024 * 1024)]
+    pub attachment_quota_bytes: u64,
+    #[arg(long, env = "PORCHLIGHT_DISK_RESERVE_BYTES", default_value_t = 2 * 1024 * 1024 * 1024)]
+    pub disk_reserve_bytes: u64,
     #[arg(long, env = "PORCHLIGHT_DATABASE_URL", hide_env_values = true)]
     pub database_url: String,
     #[arg(long, env = "PORCHLIGHT_DB_POOL_SIZE", default_value_t = 16)]
@@ -94,6 +104,9 @@ pub struct ServeArgs {
         default_value = "/run/porchlight/agent.sock"
     )]
     pub agent_socket: PathBuf,
+    /// Defaults to `maintenance` beside the agent socket, in the shared run directory.
+    #[arg(long, env = "PORCHLIGHT_MAINTENANCE_FILE")]
+    pub maintenance_file: Option<PathBuf>,
     #[arg(long, env = "PORCHLIGHT_DEVICE_CERT_DAYS", default_value_t = 365)]
     pub device_cert_days: u32,
     #[arg(long, env = "PORCHLIGHT_DEVICE_RENEW_DAYS", default_value_t = 30)]
@@ -130,6 +143,12 @@ impl ServeArgs {
             upgrade_command: self.upgrade_command.clone().filter(|v| !v.is_empty()),
             data_dir: self.data_dir.clone(),
             backup_dir: self.backup_dir.clone(),
+            attachment_quota_bytes: self.attachment_quota_bytes,
+            disk_reserve_bytes: self.disk_reserve_bytes,
+            maintenance_file: self
+                .maintenance_file
+                .clone()
+                .unwrap_or_else(|| self.agent_socket.with_file_name("maintenance")),
             _test_data_guard: None,
             min_client_version: self.min_client_version,
             device_cert_days: self.device_cert_days,

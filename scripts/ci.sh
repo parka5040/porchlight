@@ -30,6 +30,10 @@ step "machine-specific values stay in .env, out of committed files"
 PYTHONDONTWRITEBYTECODE=1 python3 -I "$root/scripts/test-check-private-values.py"
 python3 -I "$root/scripts/check-private-values.py"
 
+step "Rust source reachability and release/dependency contracts"
+PYTHONDONTWRITEBYTECODE=1 python3 -I "$root/scripts/test-audit-rust.py"
+python3 -I "$root/scripts/check-rust-modules.py"
+
 step "dev database up, test environment"
 if (( sandbox )); then
   [[ -S $root/var/pgsock/.s.PGSQL.5432 ]] || { echo "dev Postgres socket missing: ask the owner to run scripts/dev-db.sh up" >&2; exit 1; }
@@ -51,7 +55,10 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 
 step "sqlx offline query cache is current"
 SQLX_OFFLINE=false DATABASE_URL="$PORCHLIGHT_SUPERUSER_URL" \
-  cargo sqlx prepare --workspace --check -- --all-targets
+  cargo sqlx prepare --workspace --check -- --all-targets --locked
+
+step "installer timezone preflight matches server storage zones"
+cargo run -q --locked -p porchlight-core --example storage-zones -- --check
 
 step "cargo test"
 cargo test --workspace --locked
@@ -93,6 +100,10 @@ if [[ -n $begin_sites ]]; then
   exit 1
 fi
 
+step "mutation callbacks use their IdemTx connection"
+python3 -I "$root/scripts/check-mutation-context.py" --self-test
+python3 -I "$root/scripts/check-mutation-context.py"
+
 # s1: OpenAPI document is current
 step "OpenAPI document is current"
 cargo run -q -p porchlight-api --bin porchlight --locked -- openapi | diff -u "$root/docs/openapi.json" -
@@ -101,15 +112,18 @@ cargo run -q -p porchlight-api --bin porchlight --locked -- openapi | diff -u "$
 step "endpoint permissions matrix is current"
 cargo run -q -p porchlight-api --example endpoint-matrix --locked -- --check
 python3 "$root/scripts/check-items-reads.py"
+python3 -I "$root/deploy/tests/audit-items-reads.py"
 
 # s6a: workspace tests cover routing/notifier/TLS matrix/CLI; keep docs and demo syntax current.
 step "notification contracts and server demo syntax"
 python3 "$root/scripts/check-notifications.py"
 bash -n "$root/deploy/scripts/m5-demo.sh"
 python3 -I "$root/deploy/tests/notifications-stream.py"
+python3 -I "$root/deploy/tests/audit-bl-tests-notifications-stream.py"
 
-# s6b: stream tests run once in the workspace step; keep only controller syntax checks here.
-step "stream controller gate syntax"
+# s6b: stream tests run in the workspace step; exercise the controller's isolated SQL helper too.
+step "stream controller helper and gate syntax"
+python3 -I "$root/deploy/tests/stream-db.py"
 bash -n "$root/deploy/scripts/m5-demo-stream.sh"
 python3 - "$root/deploy/scripts/m5-demo-stream.sh" <<'PY'
 import ast, pathlib, sys
@@ -152,6 +166,14 @@ gradle_flags=(-Pkotlin.incremental=false)
   :androidApp:assembleDebug :androidApp:assembleDebugAndroidTest :desktopApp:jar :androidApp:lintDebug :shared:lintAndroidMain \
   :androidApp:assembleRelease) # unsigned: release-only classpath/R8/task-wiring gaps (signed APKs: scripts/release.sh)
 
+step "shrunk Android release artifacts and runtime dependency hygiene"
+python3 -I "$root/deploy/tests/audit-apk.py"
+# Compile the isolated release-like smoke here; only the controller runs it on managed devices.
+(cd "$root/client" && ./gradlew --max-workers=4 "${gradle_flags[@]}" --console=plain -q -Pporchlight.minifiedSmoke=true \
+  :androidApp:assembleMinified :androidApp:assembleMinifiedAndroidTest :androidApp:lintMinified)
+python3 -I "$root/deploy/tests/audit-apk-fix1.py"
+python3 -I "$root/deploy/tests/audit-managed-results.py"
+
 # c5: offline recordings and private binary-cache/picker boundary, in addition to common/JVM/host suites above.
 step "C5 collaboration client contract boundaries"
 python3 -I "$root/scripts/check-c5-client.py"
@@ -168,7 +190,7 @@ fi
 grep -q 'Managed-device runs must exclude @ControllerOnly' "$root/var/c2a-filter-negative.log"
 "$root/scripts/check-c2a-wiring.sh"
 
-# c2b: the real item/agenda/board/snapshot recording equality test (api/tests/client_item_fixtures.rs) runs in
+# c2b: the real item/agenda/board/snapshot recording equality test (api/tests/items/client_item_fixtures.rs) runs in
 # `cargo test` above; :shared generates directly from docs/openapi.json with C2a's conventions; ItemFixtureTest,
 # repository/cache common tests and DesktopCacheTest run in the shared host suites above.
 
@@ -195,6 +217,20 @@ python3 "$root/deploy/tests/compose-env.py"
 step "development LAN discovery (offline fake ip)"
 python3 -I "$root/scripts/test-dev-lan.py"
 for script in operations desktop github-upgrade backup release publish; do bash "$root/deploy/tests/$script.sh"; done
+PYTHONDONTWRITEBYTECODE=1 python3 -I "$root/deploy/tests/audit-installer.py"
+PYTHONDONTWRITEBYTECODE=1 python3 -I "$root/deploy/tests/audit-installer-fix1.py"
+PYTHONDONTWRITEBYTECODE=1 python3 -I "$root/deploy/tests/audit-installer-fix2.py"
+PYTHONDONTWRITEBYTECODE=1 python3 -I "$root/deploy/tests/audit-final-deploy.py"
+# The real quiesce/resume SQL on a private throwaway cluster (mocked Docker cannot see predicate order).
+PYTHONDONTWRITEBYTECODE=1 python3 -I "$root/deploy/tests/agent-quiesce.py"
+step "backlog deploy phases, viewer handoff and Funnel controller contracts"
+for test in audit-bl-deploy audit-bl-deploy-funnel audit-bl-deploy-controller; do
+  PYTHONDONTWRITEBYTECODE=1 python3 -I "$root/deploy/tests/$test.py"
+done
+step "audit operations resource, recovery and build footprint contracts"
+PYTHONDONTWRITEBYTECODE=1 python3 -I "$root/deploy/tests/audit-ops.py"
+bash -n "$root/deploy/backup/client-tools.sh" "$root/deploy/scripts/update-gate-build.sh" \
+  "$root/scripts/c1b-desktop-e2e.sh" "$root/scripts/c1b-emulator-e2e.sh" "$root/deploy/scripts/m3-demo.sh"
 
 # M9.3 LAN deployment controller: offline shims in both host and sandbox modes.
 step "M9 deploy-server shell checks and offline transport contracts"
@@ -209,6 +245,10 @@ step "M9 desktop launcher wrapper contract"
 sh -n "$root/client/desktopApp/launcher/porchlight.sh"
 PYTHONDONTWRITEBYTECODE=1 python3 -I "$root/deploy/tests/desktop-launcher.py"
 
+step "F1-02 Linux-x64 SQLite packaging and bundled desktop JVM smoke"
+(cd "$root/client" && ./gradlew --max-workers=4 "${gradle_flags[@]}" --console=plain -q :shared:packagedDesktopSmoke)
+PYTHONDONTWRITEBYTECODE=1 python3 -I "$root/deploy/tests/audit-desktop.py"
+
 # o2a: DB/HTTP/CLI/stream/lease tests run above; cheap server and offline producer contracts.
 step "O2 server data-out and backup lease contracts"
 PYTHONDONTWRITEBYTECODE=1 python3 -I "$root/scripts/check-data-out.py"
@@ -222,6 +262,15 @@ if grep -nE '(^|[^[:alnum:]_/])python3([[:space:]]|$)' "$root/deploy/install.sh"
   echo "installer Python must run with -I (see m8fix B1)" >&2; exit 1
 fi
 # Serving-process + pinned TLS readiness regressions run in cargo test above.
+# Audit trust: quota/cache/recovery regressions run in workspace tests; never mint credentials in a help gate.
+step "Trust recovery and token expiry CLI surfaces"
+cargo run -q -p porchlight-api --bin porchlight --locked -- admin-token --help > /dev/null
+cargo run -q -p porchlight-cli --bin porch --locked -- tokens list --help > /dev/null
+
+# Audit log: real mutation/retention/export/reply-loss regressions run in workspace tests above.
+step "Security history, durable renewal budget and enrollment recovery contracts"
+PYTHONDONTWRITEBYTECODE=1 python3 -I "$root/scripts/check-security-events.py"
+cargo run -q -p porchlight-cli --bin porch --locked -- security-events --help > /dev/null
 
 # o2b: fake-server pull tests run in shared:jvmTest above; live M8 gate stays controller-only.
 step "O2 desktop passive pull, export completeness and M8 controller contracts"
@@ -292,19 +341,16 @@ if (( sandbox )); then
   exit 0
 fi
 
-step "client build (Android debug APK + desktop jar)"
-(cd "$root/client" && . "$root/scripts/env.sh" && ./gradlew --max-workers=4 -Pkotlin.incremental=false --console=plain -q :androidApp:assembleDebug :desktopApp:jar)
-
 if (( full )); then
   step "M3a opt-in randomized carry model (prints replay seed)"
-  PORCHLIGHT_MODEL_SEED=random cargo test --locked -p porchlight-core --test items_carry_model r63_contract_over_operation_sequences_second_fixed_seed -- --nocapture
+  PORCHLIGHT_MODEL_SEED=random cargo test --locked -p porchlight-core --test domain items_carry_model::r63_contract_over_operation_sequences_second_fixed_seed -- --nocapture
   step "M7 measured full-cap calendar apply under production deadline and large parse fixture"
-  cargo test --locked -p porchlight-api --test calendar_m7fix fix2_full_cap_production_deadline -- --ignored --nocapture
-  cargo test --locked -p porchlight-api --test calendar_m7fix fix1_r12_ten_thousand_expanded_instances -- --ignored
-  cargo test --locked -p porchlight-api --test calendar_m7fix fix1_worked_calendar_refresh_and_clock_drift -- --ignored
-  cargo test --locked -p porchlight-api --test calendar_m7fix fix1_near_limit_calendar_admits_one_change -- --ignored
-  cargo test --locked -p porchlight-api --test calendar_m7fix fix3_full_cap_removal_apply -- --ignored --nocapture
-  cargo test --locked -p porchlight-api --test calendar_m7fix fix3_full_cap_change_apply -- --ignored --nocapture
+  cargo test --locked -p porchlight-api --test calendar_cost calendar_m7fix::fix2_full_cap_production_deadline -- --ignored --nocapture
+  cargo test --locked -p porchlight-api --test calendar_cost calendar_m7fix::fix1_r12_ten_thousand_expanded_instances -- --ignored
+  cargo test --locked -p porchlight-api --test calendar_cost calendar_m7fix::fix1_worked_calendar_refresh_and_clock_drift -- --ignored
+  cargo test --locked -p porchlight-api --test calendar_cost calendar_m7fix::fix1_near_limit_calendar_admits_one_change -- --ignored
+  cargo test --locked -p porchlight-api --test calendar_cost calendar_m7fix::fix3_full_cap_removal_apply -- --ignored --nocapture
+  cargo test --locked -p porchlight-api --test calendar_cost calendar_m7fix::fix3_full_cap_change_apply -- --ignored --nocapture
   # k6: slow release allocation probe stays out of fast workspace tests.
   step "k6: measured attachment-ingest allocation admission (release)"
   "$root/scripts/check-ingest-alloc.sh"

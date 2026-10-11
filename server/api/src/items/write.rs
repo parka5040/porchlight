@@ -143,7 +143,9 @@ pub(super) async fn execute(
             &patch,
         )?;
         validate_fields(&fields)?;
-        core::SeriesSpec::new(fields.timing.clone()).map_err(|e| validation(e.field, e.reason))?;
+        let spec = core::SeriesSpec::new(fields.timing.clone())
+            .map_err(|e| validation(e.field, e.reason))?;
+        validate_materialization(tx, c, &spec, now).await?;
         validate_members(tx, c, &fields, &sets).await?;
         if !c.sees_all() && fields.owner_id != c.member_id() {
             return Err(ApiError::new(Problem::Forbidden));
@@ -265,12 +267,13 @@ pub(super) async fn execute(
     }
     if op == Operation::Patch {
         validate_fields(&fields)?;
-        if split.is_none() && fields.timing == old.timing {
-            old.spec().map_err(domain_error)?;
+        let spec = if split.is_none() && fields.timing == old.timing {
+            old.spec().map_err(domain_error)?
         } else {
             core::SeriesSpec::new(fields.timing.clone())
-                .map_err(|e| validation(e.field, e.reason))?;
-        }
+                .map_err(|e| validation(e.field, e.reason))?
+        };
+        validate_materialization(tx, c, &spec, now).await?;
     }
     let request = ScopeRequest {
         items: vec![id],
@@ -332,4 +335,40 @@ pub(super) async fn execute(
         Err(e) if e.status() == StatusCode::NOT_FOUND => Ok(StatusCode::NO_CONTENT.into_response()),
         Err(e) => Err(e),
     }
+}
+
+async fn validate_materialization(
+    tx: &mut Transaction<'_, Postgres>,
+    c: &Caller,
+    spec: &core::SeriesSpec,
+    now: DateTime<Utc>,
+) -> Result<(), ApiError> {
+    if spec.input().recurrence_mode != Some(core::RecurrenceMode::Calendar) {
+        return Ok(());
+    }
+    let zone = match spec.zone() {
+        Some(zone) => zone,
+        None => {
+            let name: String =
+                sqlx::query_scalar("select tzid from porchlight.households where id=$1")
+                    .bind(c.household_id())
+                    .fetch_one(&mut **tx)
+                    .await?;
+            porchlight_core::time::parse_tz(&name)
+                .ok_or_else(|| ApiError::internal("household_zone"))?
+        }
+    };
+    let until = porchlight_core::time::to_local(
+        core::horizon_end(now, zone).map_err(|e| validation(e.field, e.reason))?,
+        zone,
+    );
+    let count = core::bounded_occurrence_count(spec, until, core::MAX_MATERIALIZED_OCCURRENCES)
+        .map_err(|e| validation(e.field, e.reason))?;
+    if count > core::MAX_MATERIALIZED_OCCURRENCES {
+        return Err(validation(
+            "rrule",
+            "Series exceeds the 10000-occurrence materialization budget",
+        ));
+    }
+    Ok(())
 }

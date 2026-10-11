@@ -101,7 +101,7 @@ val TODAY_WALL_CLOCK_RECHECK = 60.seconds
 }
 @Composable fun TodayContent(groups: List<TodayGroup>, days: Int, members: List<MemberRead>, open: (ItemRead) -> Unit,
     complete: (ItemRead) -> Unit, modifier: Modifier = Modifier, take: (ItemRead) -> Unit = {}, snooze: ((ItemRead) -> Unit)? = null, canSnooze: (ItemRead) -> Boolean = { true }, pinned: @Composable (String?) -> Unit = { Text("No pinned list available.") }) {
-    Column(modifier.fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    Column(modifier.fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceMd.dp)) {
         if (groups.isEmpty()) EmptyState("Today", "No sections enabled. Change Today settings to show sections.")
         groups.forEach { group ->
             Text(group.kind.label(days), style = MaterialTheme.typography.titleLarge)

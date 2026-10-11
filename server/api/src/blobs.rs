@@ -29,6 +29,8 @@ use std::{
 use utoipa::ToSchema;
 use uuid::Uuid;
 pub const MAX_UPLOAD: usize = 25 * 1024 * 1024;
+mod budget;
+pub use budget::{DiskBudget, DiskReservation};
 mod filename_categories;
 mod gc;
 mod storage;
@@ -71,6 +73,7 @@ pub async fn attachment(
         .await?
         .ok_or_else(|| ApiError::new(Problem::NotFound))
 }
+
 pub async fn upload(
     state: &AppState,
     c: Caller,
@@ -109,6 +112,9 @@ pub async fn upload(
         }
         blobs.sort_by_key(|(hash, _, _)| *hash);
         blobs.dedup_by_key(|(hash, _, _)| *hash);
+        sqlx::query(budget::LOCK_BUDGET)
+            .execute(&mut *domain)
+            .await?;
         // Fixed filesystem shards in ascending order, before metadata hashes.
         let shards: std::collections::BTreeSet<_> =
             blobs.iter().map(|(hash, _, _)| &hash[..2]).collect();
@@ -124,7 +130,8 @@ pub async fn upload(
         if let Some(comment) = &comment {
             collab::editable(comment, &c, now)?;
         }
-        for (hash, mime, bytes) in blobs {
+        let reservation = budget::admit(&mut domain, state, c.household_id(), &blobs).await?;
+        for (hash, mime, bytes) in &blobs {
             // Metadata lock precedes FS work, serializing upload and GC. Upsert is idempotent.
             sqlx::query(UPSERT_BLOB_METADATA)
                 .bind(c.household_id())
@@ -134,13 +141,22 @@ pub async fn upload(
                 .bind(now)
                 .execute(&mut *domain)
                 .await?;
-            let root = state.settings.data_dir.clone();
-            let hash = hash.clone();
-            let bytes = bytes.clone();
-            tokio::task::spawn_blocking(move || durable_write(&root, &hash, &bytes))
-                .await
-                .map_err(|_| ApiError::internal("blob_task"))??;
         }
+        let root = state.settings.data_dir.clone();
+        let files: Vec<_> = blobs
+            .into_iter()
+            .map(|(hash, _, bytes)| (hash.clone(), bytes.clone()))
+            .collect();
+        let budget = state.disk_budget.clone();
+        tokio::task::spawn_blocking(move || {
+            let _reservation = reservation;
+            for (hash, bytes) in files {
+                budget.durable_write(&root, &hash, &bytes)?;
+            }
+            Ok::<_, ApiError>(())
+        })
+        .await
+        .map_err(|_| ApiError::internal("blob_task"))??;
         let (member, token) = collab::identities(&c);
         let attachment_id: Uuid = sqlx::query_scalar(INSERT_ATTACHMENT)
             .bind(c.household_id())
@@ -178,6 +194,7 @@ pub async fn upload(
         }
     }
 }
+
 pub async fn download(
     state: &AppState,
     c: Caller,
@@ -186,7 +203,6 @@ pub async fn download(
 ) -> Result<Response, ApiError> {
     let mut conn = state.pool.acquire().await?;
     let r = attachment(&mut conn, &c, id).await?;
-
     let blob: Option<(String, String, i64)> = sqlx::query_as(DOWNLOAD_BLOB)
         .bind(c.household_id())
         .bind(id)
@@ -225,6 +241,7 @@ pub async fn download(
         .body(Body::from_stream(tokio_util::io::ReaderStream::new(file)))
         .map_err(|_| ApiError::internal("blob_response"))
 }
+
 pub async fn delete(state: &AppState, c: Caller, tx: &mut IdemTx) -> Result<Response, ApiError> {
     let id = collab::target(tx)?;
     let now = (state.item_clock)();
@@ -232,12 +249,10 @@ pub async fn delete(state: &AppState, c: Caller, tx: &mut IdemTx) -> Result<Resp
     let mut domain = tx.tx.begin().await?;
     let result = async {
         let r = attachment(&mut domain, &c, id).await?;
-
         collab::scope(&mut domain, &c, r.item_id, now).await?;
         // A comment attachment's edit deadline is decided with the clock read after the scope wait.
         let now = (state.item_clock)();
         let r = attachment(&mut domain, &c, id).await?;
-
         if let Some(comment_id) = r.comment_id {
             let comment = collab::comment(&mut domain, &c, comment_id).await?;
             if !collab::super_admin(&c) {
@@ -279,6 +294,7 @@ pub async fn delete(state: &AppState, c: Caller, tx: &mut IdemTx) -> Result<Resp
         }
     }
 }
+
 /// Transaction-local metadata contribution to the shared repeatable-read snapshot.
 pub async fn snapshot_attachments_s4b(
     conn: &mut PgConnection,

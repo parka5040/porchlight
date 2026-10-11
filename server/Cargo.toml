@@ -3,12 +3,13 @@ resolver = "3"
 members = ["core", "pki", "db", "api", "cli"]
 
 [workspace.package]
-version = "0.1.6"
+version = "0.1.7"
 edition = "2024"
 rust-version = "1.99"
 publish = false
 
 [workspace.dependencies]
+rustix = { version = "1.1.5", default-features = false, features = ["std", "fs"] }
 porchlight-core = { path = "core" }
 porchlight-db = { path = "db" }
 porchlight-pki = { path = "pki" }
@@ -51,6 +52,7 @@ zeroize = "1"
 qrcode = { version = "0.14", default-features = false }
 rpassword = "7"
 tempfile = "3"
+libc = "0.2"
 # M3–M8 (items, collaboration, calendar, ship). Added by the controller before the pass: sandboxed implementers
 # have no network and may only use crates declared here.
 rrule = "0.14"
@@ -76,6 +78,13 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+
+# Shipped binaries favor size; unwind preserves attachment-ingest panic containment.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "unwind"
 
 # Dev/test builds keep line tables only (file:line in backtraces): full debuginfo made each integration-test binary
 # ~280 MB and a tree copy's target dir 40–70 GB. Dependencies carry no debuginfo at all.

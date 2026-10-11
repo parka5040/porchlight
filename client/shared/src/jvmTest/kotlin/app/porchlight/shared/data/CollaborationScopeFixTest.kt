@@ -48,7 +48,7 @@ class CollaborationScopeFixTest {
                 val mark = cache.receiptMark()
                 cache.putList(stale); cache.putList(live); cache.putList(template); cache.putList(unrelated)
                 repo(transport, cache).refetchByIds(linkedSetOf(stale.id, unrelated.id))
-                assertEquals(4, queries.size)
+                assertEquals(if (status.value == 404) 5 else 4, queries.size) // 404 probes template visibility.
                 assertEquals(setOf(null, live.occurrenceId), cache.view.value.lists.filter { it.id == stale.id }.map { it.occurrenceId }.toSet())
                 assertTrue(cache.view.value.lists.all { it.version == 2 })
                 assertTrue(q.allEntrys().executeAsList().none { it.occurrence_id == stale.occurrenceId })

@@ -34,9 +34,9 @@ import kotlinx.serialization.json.*
     if (data == null) { EmptyState("Lists", "Sign in and sync to load lists."); return }
     val view by data.cache.view.collectAsState()
     var selected by remember(context) { mutableStateOf(context.takeUnless { it == "Lists" }) }
-    val selectedMode = view.lists.find { it.id == selected }?.mode
-    val listOccurrence = if (selectedMode == ListMode.persistent) null else occurrenceId
-    val row = view.lists.find { it.id == selected && (it.mode == ListMode.persistent || it.occurrenceId == listOccurrence) }
+    val selectedList = view.lists.find { it.id == selected }
+    val listOccurrence = if (selectedList?.mode == ListMode.persistent || selectedList?.cleanupOnly == true) null else occurrenceId
+    val row = view.lists.find { it.id == selected && (it.cleanupOnly || it.mode == ListMode.persistent || it.occurrenceId == listOccurrence) }
     val writer = screenWrites("lists:${selected.orEmpty()}")
     val scope = applicationWriteScope()
     var error by remember { mutableStateOf<String?>(null) }
@@ -45,32 +45,50 @@ import kotlinx.serialization.json.*
     val keyboard = LocalSoftwareKeyboardController.current
     var searchError by remember { mutableStateOf<String?>(null) }
     var query by remember { mutableStateOf("") }
-    var hits by remember { mutableStateOf<List<ListResponse>>(emptyList()) }
-    LaunchedEffect(view.evictedListIds, view.evictedItemIds) { hits = hits.filter { it.id !in view.evictedListIds && it.itemId !in view.evictedItemIds } }
-    var editing by remember { mutableStateOf<EntryResponse?>(null) }
+    var hits by remember { mutableStateOf<RetainedCacheValue<List<ListResponse>>?>(null) }
+    var editing by remember { mutableStateOf<RetainedCacheValue<EntryResponse>?>(null) }
+    LaunchedEffect(view.visibilityRevision) {
+        if (hits?.current(view) == null) hits = null
+        if (editing?.current(view) == null) editing = null
+    }
     var rename by remember(row?.id, row?.version) { mutableStateOf(row?.name.orEmpty()) }
     var deleteList by remember { mutableStateOf(false) }
-    val refreshing: () -> Unit = { scope.launch { try { data.lists.refresh(); selected?.let { data.lists.get(it, listOccurrence) }; error = null } catch (e: CancellationException) { throw e } catch (_: Exception) { error = "Could not refresh lists. Cached rows may be stale." } } }
-    LaunchedEffect(selected, listOccurrence) { try { if (selected == null) data.lists.refresh() else data.lists.get(selected!!, listOccurrence) } catch (e: CancellationException) { throw e } catch (_: Exception) { error = "List unavailable; refetch when connected." } }
+    val refreshing: () -> Unit = { scope.launch { try {
+        val rows = data.lists.refresh(includeOrphaned = true)
+        selected?.takeUnless { id -> rows.any { it.id == id && it.cleanupOnly } }?.let { data.lists.get(it, listOccurrence) }
+        error = null
+    } catch (e: CancellationException) { throw e } catch (_: Exception) { error = "Could not refresh lists. Cached rows may be stale." } } }
+    LaunchedEffect(data, selected, occurrenceId) {
+        // Mode discovery may change listOccurrence; it must not restart this authoritative GET.
+        data.cache.keepListScope(selected.orEmpty(), occurrenceId) {
+            try {
+                if (selected == null || row?.cleanupOnly == true) data.lists.refresh(includeOrphaned = true)
+                else data.lists.get(selected!!, listOccurrence)
+            } catch (e: CancellationException) { throw e } catch (_: Exception) { error = "List unavailable; refetch when connected." }
+            awaitCancellation() // release the pin when navigation/identity disposes this editor
+        }
+    }
     val search: () -> Unit = { keyboard?.hide(); val q = query; scope.launch { try {
-        hits = allSearchLists(data, q); searchError = null; error = null
+        hits = allSearchLists(data, q)
+        searchError = null; error = null
     } catch (e: CancellationException) { throw e } catch (_: Exception) { searchError = "Search needs a connection to your household server." } } }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(PorchlightTokens.spaceMd.dp),
         verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceInset.dp)) {
         if (services.platform.kind == app.porchlight.shared.PlatformKind.Desktop) DesignPending("Desktop Lists adaptation")
         SecondaryAction("Refresh lists", onClick = refreshing)
         error?.let { Text(it) }
-        SegmentedChoice(view.lists.filter { it.itemId == null }.sortedWith(compareBy<ListResponse> { it.name.lowercase() }.thenBy { it.id })
-            .map { ScopeOption(it.id, it.name) }, selected, { selected = it })
+        SegmentedChoice(view.lists.filter { it.itemId == null || it.cleanupOnly }.distinctBy { it.id }
+            .sortedWith(compareBy<ListResponse> { it.displayName.lowercase() }.thenBy { it.id })
+            .map { ScopeOption(it.id, it.displayName) }, selected, { selected = it })
         OutlinedTextField(query, { query = it; searchError = null }, label = { Text("Search lists") }, modifier = Modifier.fillMaxWidth(),
             singleLine = true, keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             keyboardActions = KeyboardActions(onSearch = { search() }),
             trailingIcon = { IconAction("Search lists", ActionIcon.Search, search, outlined = false) })
         searchError?.let { Text(it, color = app.porchlight.shared.theme.LocalPorchlightPalette.current.errorText) }
-        hits.filter { it.id !in view.evictedListIds && it.itemId !in view.evictedItemIds }.forEach { hit -> ActionListRow("Open ${hit.name}", onClick = { scope.launch {
+        hits?.current(view).orEmpty().forEach { hit -> ActionListRow("Open ${hit.name}", onClick = { scope.launch {
             try { data.lists.get(hit.id, occurrenceId); selected = hit.id; error = null }
             catch (e: CancellationException) { throw e }
-            catch (_: Exception) { hits = hits.filterNot { it.id == hit.id }; error = "List unavailable; refetch when connected." }
+            catch (_: Exception) { hits = null; error = "List unavailable; refetch when connected." }
         } }) }
         OutlinedTextField(name, { name = it }, label = { Text("New list name") }, modifier = Modifier.fillMaxWidth())
         PrimaryAction("Create list", enabled = name.isNotBlank(), onClick = { val body = CreateList(name.trim(), mode = ListMode.persistent); scope.launch { writer.submit { key ->
@@ -80,9 +98,12 @@ import kotlinx.serialization.json.*
         val state by writer.state.collectAsState()
         if (state.conflict) { Text("Current server value: ${state.current}"); Text("Refetch and compare with your draft before submitting a corrected new request.") }
         row?.let { list ->
-            if (list.mode == ListMode.per_occurrence && list.occurrenceId == null) Text("Template entries. Open from an item occurrence to check this instance.")
+            if (!list.cleanupOnly && list.mode == ListMode.per_occurrence && list.occurrenceId == null) Text("Template entries. Open from an item occurrence to check this instance.")
             ListContent(list, view.members, { entry, checked -> scope.launch { writer.submit { data.lists.check(entry.id, entry.version, checked, list.occurrenceId, it).feedback() } } },
-                { editing = it }, { entry, index -> val replay = ListMoveReplay(); scope.launch { writer.submit(activeKey = { replay.activeKey }) { data.lists.move(list, entry, index, replay, it).feedback() } } },
+                { entry -> editing = data.cache.view.value.retainCurrent {
+                    lists.find { it.id == entry.listId && it.occurrenceId == entry.occurrenceId && !it.cleanupOnly && "manage" in it.capabilities }
+                        ?.let { it.propertyEntries + it.gotIt }?.find { it.id == entry.id }
+                } }, { entry, index -> val replay = ListMoveReplay(); scope.launch { writer.submit(activeKey = { replay.activeKey }) { data.lists.move(list, entry, index, replay, it).feedback() } } },
                 { entry -> scope.launch { writer.submit { data.lists.archive(entry, list.occurrenceId, it).feedback() } } },
                 { scope.launch { writer.submit { data.lists.clear(list, it).feedback() } } })
             if ("manage" in list.capabilities) {
@@ -101,24 +122,32 @@ import kotlinx.serialization.json.*
                 }) }
             }
             if ("delete" in list.capabilities) ShellButton("Delete list", onClick = { deleteList = true })
-            view.settings?.let { saved -> ShellButton("Pin ${list.name} on Today", onClick = { scope.launch { writer.submit { data.household.putSettings(saved.version, saved.settings.copy(pinnedListId = list.id, todaySections = (saved.settings.todaySections + TodaySection.pinned_list).distinct()), it).feedback() } } }) }
-            list.itemId?.let { id -> ShellButton("Open attached item", onClick = { navigate(AppRoute.Item(id, occurrenceId)) }) }
+            if (!list.cleanupOnly) view.settings?.let { saved -> ShellButton("Pin ${list.displayName} on Today", onClick = { scope.launch { writer.submit { data.household.putSettings(saved.version, saved.settings.copy(pinnedListId = list.id, todaySections = (saved.settings.todaySections + TodaySection.pinned_list).distinct()), it).feedback() } } }) }
+            if (!list.cleanupOnly) list.itemId?.let { id -> ShellButton("Open attached item", onClick = { navigate(AppRoute.Item(id, occurrenceId)) }) }
         } ?: Text(if (selected == null) "Choose a list, or create one." else "Selected list is not cached for this occurrence.")
     }
-    editing?.let { entry -> EntryEditor(entry, { editing = null }) { body -> scope.launch { writer.submit { data.lists.editEntry(entry, body, row?.occurrenceId, it).also { result -> if (result is WriteResult.Success) editing = null }.feedback() } } } }
-    if (deleteList && row != null) AlertDialog(onDismissRequest = { deleteList = false }, title = { Text("Delete ${row.name}?") }, text = { Text("Entries and checks will be removed.") }, confirmButton = { ShellButton("Confirm delete list", onClick = { deleteList = false; scope.launch { writer.submit { data.lists.delete(row, it).feedback() } } }) }, dismissButton = { ShellButton("Keep list", onClick = { deleteList = false }) })
+    editing?.current(view)?.let { entry -> EntryEditor(entry, { editing = null }) { body -> scope.launch { writer.submit { data.lists.editEntry(entry, body, row?.occurrenceId, it).also { result -> if (result is WriteResult.Success) editing = null }.feedback() } } } }
+    if (deleteList && row != null) AlertDialog(onDismissRequest = { deleteList = false }, title = { Text("Delete ${row.displayName}?") }, text = { Text("Entries and checks will be removed.") }, confirmButton = { ShellButton("Confirm delete list", onClick = { deleteList = false; scope.launch { writer.submit { data.lists.delete(row, it).feedback() } } }) }, dismissButton = { ShellButton("Keep list", onClick = { deleteList = false }) })
 }
-private suspend fun allSearchLists(data: HouseholdData, query: String): List<ListResponse> = allPages { cursor ->
-    val page = data.search.search(query, cursor, 200)
-    page.hits.mapNotNull { hit -> if (hit is SearchHit.Other && hit.entityType == "list") runCatching { app.porchlight.shared.transport.WireJson.decodeFromJsonElement<ListResponse>(hit.json) }.getOrNull() else null } to page.nextCursor
+private suspend fun allSearchLists(data: HouseholdData, query: String): RetainedCacheValue<List<ListResponse>> = data.cache.inSession { fence ->
+    val rows = allPages { cursor ->
+        val page = data.search.search(query, cursor, 200)
+        page.hits.mapNotNull { hit -> if (hit is SearchHit.Other && hit.entityType == "list") runCatching { app.porchlight.shared.transport.WireJson.decodeFromJsonElement<ListResponse>(hit.json) }.getOrNull() else null } to page.nextCursor
+    }
+    val visible = data.cache.visibleSearchLists(fence, rows)
+    data.cache.retain(fence, visible, visible.flatMap { listOfNotNull(CacheResource("List", it.id), it.itemId?.let { id -> CacheResource("Item", id) }) })
 }
 @Composable fun ListContent(row: ListResponse, members: List<MemberRead>, check: (EntryResponse, Boolean) -> Unit,
     edit: (EntryResponse) -> Unit, move: (EntryResponse, Int) -> Unit, archive: (EntryResponse) -> Unit, clear: () -> Unit) {
+    if (row.redacted == true) {
+        Text("Private list", style = MaterialTheme.typography.titleLarge)
+        return
+    }
     val uri = LocalUriHandler.current
     val checkable = "check" in row.capabilities && (row.mode == ListMode.persistent || row.occurrenceId != null)
     val manageable = "manage" in row.capabilities
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(row.name, style = MaterialTheme.typography.titleLarge)
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceInset.dp)) {
+        Text(row.displayName, style = MaterialTheme.typography.titleLarge)
         funListEntries(row.propertyEntries, manageable, checkable, members, check, edit, move, archive) { link -> runCatching { uri.openUri(link) } }
         if (row.gotIt.isNotEmpty()) {
             Text("Got it · ${row.gotIt.size}", style = MaterialTheme.typography.titleMedium)
@@ -165,7 +194,7 @@ private suspend fun allSearchLists(data: HouseholdData, query: String): List<Lis
 @Composable private fun EntryEditor(entry: EntryResponse, dismiss: () -> Unit, save: (JsonObject) -> Unit) {
     var label by remember(entry.id) { mutableStateOf(entry.label) }; var qty by remember(entry.id) { mutableStateOf(entry.qty?.toString().orEmpty()) }
     var unit by remember(entry.id) { mutableStateOf(entry.unit) }; var notes by remember(entry.id) { mutableStateOf(entry.notes) }; var url by remember(entry.id) { mutableStateOf(entry.url.orEmpty()) }
-    AlertDialog(onDismissRequest = dismiss, title = { Text("Edit entry") }, text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    AlertDialog(onDismissRequest = dismiss, title = { Text("Edit entry") }, text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceInset.dp)) {
         OutlinedTextField(label, { label = it }, label = { Text("Label") }); OutlinedTextField(qty, { qty = it }, label = { Text("Quantity") }); OutlinedTextField(unit, { unit = it }, label = { Text("Unit") }); OutlinedTextField(url, { url = it }, label = { Text("Product URL") }); OutlinedTextField(notes, { notes = it }, label = { Text("Notes") })
     } }, confirmButton = { ShellButton("Save entry", enabled = label.isNotBlank() && (qty.isBlank() || qty.toDoubleOrNull() != null), onClick = { save(buildJsonObject {
         put("label", label); put("qty", qty.toDoubleOrNull()?.let(::JsonPrimitive) ?: JsonNull); put("unit", unit); put("notes", notes); put("url", url.takeIf { it.isNotBlank() }?.let(::JsonPrimitive) ?: JsonNull)

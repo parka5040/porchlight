@@ -1,0 +1,10 @@
+-- Disposable projections: a schema upgrade requests a fresh authoritative snapshot.
+ALTER TABLE Staging ADD COLUMN occurrence_id TEXT;
+ALTER TABLE CacheAgenda ADD COLUMN occurrence_id TEXT;
+ALTER TABLE CacheReminder ADD COLUMN occurrence_id TEXT;
+CREATE INDEX cache_agenda_occurrence ON CacheAgenda(occurrence_id);
+CREATE INDEX cache_reminder_occurrence ON CacheReminder(occurrence_id);
+DELETE FROM Staging;
+DELETE FROM CacheAgenda;
+DELETE FROM CacheReminder;
+DELETE FROM SyncState;

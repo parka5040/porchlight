@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
+mod verify;
 
 #[derive(Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct Bundle {
@@ -108,44 +109,10 @@ pub async fn download(
     }
     let size = bundle.size as u64;
     let sha = bundle.sha256.clone();
-    let file = tokio::task::spawn_blocking(move || -> Result<std::fs::File, ApiError> {
-        use sha2::{Digest, Sha256};
-        use std::{
-            io::{Read, Seek},
-            os::unix::fs::OpenOptionsExt,
-        };
-        // Never follow the final symlink. The root is operator-owned, never writable by callers.
-        let mut file = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(path)
-            .map_err(|_| ApiError::new(Problem::NotFound))?;
-        let meta = file
-            .metadata()
-            .map_err(|_| ApiError::internal("backup_metadata"))?;
-        if !meta.is_file() || meta.len() != size {
-            return Err(ApiError::new(Problem::Conflict));
-        }
-        let mut hash = Sha256::new();
-        let mut buf = [0u8; 65536];
-        loop {
-            let n = file
-                .read(&mut buf)
-                .map_err(|_| ApiError::internal("backup_read"))?;
-            if n == 0 {
-                break;
-            }
-            hash.update(&buf[..n]);
-        }
-        if hex::encode(hash.finalize()) != sha {
-            return Err(ApiError::new(Problem::Conflict));
-        }
-        file.rewind()
-            .map_err(|_| ApiError::internal("backup_seek"))?;
-        Ok(file)
-    })
-    .await
-    .map_err(|_| ApiError::internal("backup_worker"))??;
+    let publication = bundle.id;
+    let file = tokio::task::spawn_blocking(move || verify::open(&path, publication, size, &sha))
+        .await
+        .map_err(|_| ApiError::internal("backup_worker"))??;
     crate::download::stream(
         file,
         size,

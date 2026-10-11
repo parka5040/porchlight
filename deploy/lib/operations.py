@@ -2,6 +2,10 @@
 """Offline deployment helpers: standard library only, never log secret input."""
 import datetime as dt
 import hashlib
+import ipaddress
+import gzip
+import shutil
+import tempfile
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -160,24 +164,200 @@ def fetch_release(repo, override, testing, release, asset, destination):
                 raise ValueError('incomplete release response')
 
 
-def extract(archive, destination):
-    # Validate the entire archive before writing anything, including links and duplicate members.
-    with tarfile.open(archive) as t:
-        seen = set()
-        for m in t.getmembers():
-            name = m.name.rstrip('/')
-            if name == '.':
-                if m.isdir():
-                    continue
-                raise ValueError('unsafe archive root')
-            if name.startswith('./'):
-                name = name[2:]
-            member_path(name)
-            if name in seen or not (m.isfile() or m.isdir()):
-                raise ValueError('unsafe or duplicate archive member')
-            seen.add(name)
-        destination.mkdir(mode=0o700, parents=True, exist_ok=False)
-        t.extractall(destination, filter='data')
+def valid_dns(value):
+    return (len(value) <= 253 and not re.fullmatch(r'[0-9.]+', value)
+            and all(re.fullmatch(r'[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?', label)
+                    for label in value.split('.')))
+
+
+def validate_restore_target(env_path, *pairs):
+    values = dict(line.split('=', 1) for line in Path(env_path).read_text().splitlines() if '=' in line)
+    overrides = dict(zip(pairs[::2], pairs[1::2], strict=True))
+    for key, value in overrides.items():
+        if not value or any(c in value for c in '\r\n$#\"\''):
+            raise ValueError('invalid restore target setting')
+        if key in ('PG_PORT', 'LAN_PORT', 'ENROLL_PORT'):
+            if not re.fullmatch(r'[0-9]{1,5}', value) or not 1 <= int(value) <= 65535:
+                raise ValueError('invalid restore port')
+        elif key == 'LAN_BIND':
+            ipaddress.ip_address(value)
+        elif key in ('BACKEND_SUBNET', 'INGRESS_SUBNET'):
+            ipaddress.ip_network(value)
+        elif key == 'ENROLL_CIDRS':
+            for cidr in value.split(','):
+                ipaddress.ip_network(cidr.strip(), strict=False)
+        elif key in ('ENROLL_HOST', 'PORCHLIGHT_ENDPOINTS'):
+            for endpoint in value.split(','):
+                url = urllib.parse.urlsplit(('https://' if key == 'ENROLL_HOST' else '') + endpoint)
+                if (url.scheme != 'https' or not url.hostname or url.username or url.password
+                        or url.path not in ('', '/') or url.query or url.fragment or url.port == 0):
+                    raise ValueError('invalid restore endpoint')
+                try:
+                    ipaddress.ip_address(url.hostname)
+                except ValueError:
+                    if not valid_dns(url.hostname):
+                        raise ValueError('invalid restore host') from None
+        else:
+            raise ValueError('unknown restore target setting')
+    values.update(overrides)
+    backend = ipaddress.ip_network(values.get('BACKEND_SUBNET', '172.29.250.0/24'))
+    ingress = ipaddress.ip_network(values.get('INGRESS_SUBNET', '172.29.251.0/24'))
+    if backend.overlaps(ingress):
+        raise ValueError('overlapping restore networks')
+
+
+def validate_init(password_file, username, display, household, zone, recipient, *sans):
+    with open(password_file) as password_input:
+        password = password_input.readline(8193).removesuffix('\n').removesuffix('\r')
+    breached = set('@BREACHED_PASSWORD_HASHES@'.split())
+    if not 12 <= len(password) <= 1024 or hashlib.sha256(password.lower().encode()).hexdigest() in breached:
+        raise ValueError('admin password rejected')
+    if not re.fullmatch(r'[a-z0-9][a-z0-9._-]{1,31}', username) or not 1 <= len(display.strip()) <= 60 or not 1 <= len(household.strip()) <= 100:
+        raise ValueError('invalid initial admin or household')
+    if not re.fullmatch(r'age1[023456789acdefghjklmnpqrstuvwxyz]{58}', recipient):
+        raise ValueError('invalid age recipient')
+    if zone not in '@STORAGE_ZONES@'.split():
+        raise ValueError('invalid storage timezone')
+    for kind, value in zip(sans[::2], sans[1::2], strict=True):
+        if kind == '--san-ip':
+            ipaddress.ip_address(value)
+        elif kind != '--san-dns' or not valid_dns(value):
+            raise ValueError('invalid DNS SAN')
+    for cidr in os.environ.get('ENROLL_CIDRS', '').split(','):
+        ipaddress.ip_network(cidr.strip(), strict=False)
+    for key in ('PG_PORT', 'LAN_PORT', 'ENROLL_PORT'):
+        if not 1 <= int(os.environ.get(key, '8443')) <= 65535:
+            raise ValueError('invalid port')
+
+
+def atomic_text(path, text):
+    fd, name = tempfile.mkstemp(prefix='.' + path.name + '.', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as output:
+            output.write(text); output.flush(); os.fsync(output.fileno())
+        os.replace(name, path)
+        fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+def extract(archive, destination, inventory=None):
+    # Bound raw headers too: TarFile.getmembers/next can allocate hidden PAX/sparse payloads.
+    expected = None
+    directories = None
+    count_limit, byte_limit = (100000, 4 * 1024**3) if inventory == '--desktop' else (1000000, 1024**4)
+    if inventory is not None and inventory != '--desktop':
+        manifest_path = Path(inventory)
+        data = json.loads(manifest_path.read_text())
+        if data.get('format_version') != 1 or not isinstance(data.get('files'), dict) or not data['files']:
+            raise ValueError('invalid manifest')
+        expected = {}
+        directories = {'.'}
+        for name, info in data['files'].items():
+            path = member_path(name)
+            if name in ('manifest.json', 'manifest.json.minisig') or type(info['size']) is not int or info['size'] < 0:
+                raise ValueError('invalid inventory')
+            expected[name] = info['size']
+            directories.update(str(p) for p in path.parents)
+        for name in ('manifest.json', 'manifest.json.minisig'):
+            expected[name] = manifest_path.with_name(name).stat().st_size
+        count_limit = len(expected) + len(directories)
+        byte_limit = sum(expected.values())
+
+    def scan(write=False):
+        seen = set(); total = 0; headers = 0; extended = {}; extensions = 0
+        with open(archive, 'rb') as raw:
+            magic = raw.read(2); raw.seek(0)
+            stream = gzip.GzipFile(fileobj=raw) if magic == b'\x1f\x8b' else raw
+            try:
+                while True:
+                    block = stream.read(512)
+                    if block == bytes(512):
+                        if extended or stream.read(512) != bytes(512):
+                            raise ValueError('invalid tar terminator')
+                        padding = stream.read(65537)
+                        if len(padding) > 65536 or any(padding):
+                            raise ValueError('invalid tar padding')
+                        break
+                    if len(block) != 512:
+                        raise ValueError('truncated archive')
+                    headers += 1
+                    if headers > 3 * count_limit:
+                        raise ValueError('too many archive headers')
+                    entry = tarfile.TarInfo.frombuf(block, 'utf-8', 'strict')
+                    if entry.type in (tarfile.XHDTYPE, tarfile.GNUTYPE_LONGNAME):
+                        extensions += 1
+                        if extensions > 2 or not 0 < entry.size <= 16384:
+                            raise ValueError('oversize or repeated extended header')
+                        body = stream.read((entry.size + 511) // 512 * 512)
+                        if len(body) != (entry.size + 511) // 512 * 512:
+                            raise ValueError('truncated extended header')
+                        body = body[:entry.size]
+                        if entry.type == tarfile.GNUTYPE_LONGNAME:
+                            extended['path'] = body.rstrip(b'\0').decode('utf-8')
+                        else:
+                            while body:
+                                length, sep, _ = body.partition(b' ')
+                                if not sep or not length.isdigit() or not len(length) + 3 <= int(length) <= len(body):
+                                    raise ValueError('invalid PAX record')
+                                record, body = body[len(length)+1:int(length)], body[int(length):]
+                                key, sep, value = record[:-1].partition(b'=')
+                                if not sep or not record.endswith(b'\n') or key not in (b'path', b'size', b'mtime', b'atime', b'ctime', b'uid', b'gid', b'uname', b'gname'):
+                                    raise ValueError('unsupported PAX record')
+                                extended[key.decode()] = value.decode('utf-8')
+                        continue
+                    name = extended.get('path', entry.name).rstrip('/')
+                    size = int(extended.get('size', entry.size))
+                    extended = {}; extensions = 0
+                    if name.startswith('./'): name = name[2:]
+                    member_path(name)
+                    directory = entry.type == tarfile.DIRTYPE
+                    if entry.type not in (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.DIRTYPE) or name in seen or size < 0 or (directory and size):
+                        raise ValueError('unsafe or duplicate archive member')
+                    seen.add(name); total += size
+                    if len(seen) > count_limit or total > byte_limit:
+                        raise ValueError('archive expansion budget exceeded')
+                    if expected is not None:
+                        if (directory and name not in directories) or (not directory and expected.get(name) != size):
+                            raise ValueError('unlisted member or size/type mismatch')
+                    target = destination / name
+                    output = None
+                    if write:
+                        if directory:
+                            target.mkdir(mode=0o700, parents=True, exist_ok=True)
+                        else:
+                            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                            output = open(target, 'xb')
+                    try:
+                        remaining = size
+                        while remaining:
+                            chunk = stream.read(min(1024**2, remaining))
+                            if not chunk: raise ValueError('truncated member')
+                            if output: output.write(chunk)
+                            remaining -= len(chunk)
+                        padding = (-size) % 512
+                        if len(stream.read(padding)) != padding: raise ValueError('truncated member padding')
+                    finally:
+                        if output:
+                            output.close()
+                            target.chmod(entry.mode & 0o777 & ~0o022)
+                if expected is not None and expected.keys() - seen:
+                    raise ValueError('missing inventory member')
+            finally:
+                if stream is not raw: stream.close()
+
+    scan()  # No destination exists until ALL headers, sizes and names have passed.
+    destination.mkdir(mode=0o700, parents=True, exist_ok=False)
+    try:
+        scan(write=True)
+    except BaseException:
+        shutil.rmtree(destination)
+        raise
 
 
 def retained(names):
@@ -245,8 +425,41 @@ def main():
         value = json.loads(path.read_text())['source']['github'] if path.exists() else None
         if value is not None:
             print(release_repo(value))
+    elif cmd == 'validate-init':
+        validate_init(*args)
+    elif cmd == 'validate-restore-target':
+        validate_restore_target(*args)
+    elif cmd == 'init-output-valid':
+        output = json.loads(Path(args[0]).read_text())
+        if not output.get('household_id') or not output.get('bootstrap_token'):
+            raise ValueError('incomplete init delivery')
+    elif cmd == 'provision-env-check':
+        expected, saved = (dict(line.split('=', 1) for line in Path(path).read_text().splitlines() if '=' in line) for path in args)
+        public = {key: value for key, value in expected.items() if not key.endswith('_PASSWORD')}
+        if any(saved.get(key) != value for key, value in public.items()):
+            raise ValueError('provisioning deployment inputs differ')
+    elif cmd == 'provision-marker':
+        path = Path(args[0])
+        text = json.dumps(args[1:], separators=(',', ':')) + '\n'
+        if path.is_symlink() or (path.exists() and path.read_text() != text):
+            raise ValueError('provisioning inputs differ; retry the original release and settings')
+        if not path.exists(): atomic_text(path, text)
+    elif cmd == 'same-tree':
+        def tree(path):
+            result = members(path)
+            for node in path.rglob('*'):
+                name = node.relative_to(path).as_posix()
+                if node.is_dir(): result[name] = {'directory': True}
+                else: result[name]['execute'] = node.stat().st_mode & 0o111
+            return result
+        if tree(Path(args[0])) != tree(Path(args[1])):
+            raise ValueError('incomplete desktop tree')
+    elif cmd == 'atomic-copy':
+        atomic_text(Path(args[1]), Path(args[0]).read_text())
+    elif cmd == 'atomic-text':
+        atomic_text(Path(args[0]), args[1] + '\n')
     elif cmd == 'extract':
-        extract(Path(args[0]), Path(args[1]))
+        extract(Path(args[0]), Path(args[1]), args[2] if len(args) > 2 else None)
     elif cmd == 'retention-selection':
         print('\n'.join(retained(args)))
     elif cmd == 'retain':

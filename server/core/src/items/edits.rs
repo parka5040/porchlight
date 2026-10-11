@@ -20,6 +20,8 @@ pub struct OccurrenceOverride {
 /// override columns (resolved instant fields are ignored; never persisted as overrides).
 /// Calendar seq existence is checked; completion seq existence belongs to persistence.
 /// This is a complete timing override, not a sparse patch or a way to clear a due date.
+/// Local appointment bounds must satisfy [`crate::time::resolve_span`]: increasing wall
+/// times, canonical earlier-offset folds and forward gaps with collapsed-span correction.
 pub fn this_occurrence(
     spec: &SeriesSpec,
     seq: u32,
@@ -37,6 +39,23 @@ pub fn this_occurrence(
 /// the occurrence's parent and version before using this function. Timing validation is
 /// identical to [`this_occurrence`]; only current-rule membership is not checked.
 pub fn persisted_occurrence_override(
+    spec: &SeriesSpec,
+    seq: u32,
+    replacement: &OccurrenceAnchor,
+) -> Result<OccurrenceOverride, ValidationError> {
+    validate_override(spec, seq, replacement).map_err(|mut error| {
+        error.field = match error.field {
+            "local_start" | "starts_at" => "override_local_start",
+            "local_end" | "ends_at" => "override_local_end",
+            "local_due" | "due_at" => "override_local_due",
+            "due_date" => "override_due_date",
+            field => field,
+        };
+        error
+    })
+}
+
+fn validate_override(
     spec: &SeriesSpec,
     seq: u32,
     replacement: &OccurrenceAnchor,
@@ -127,6 +146,9 @@ pub fn persisted_occurrence_override(
 /// split, including at seq 0. Head COUNT=at_seq (or date UNTIL for >9999 instances),
 /// tail COUNT is reduced and DTSTART is the split instance. Only fixed tails whose
 /// nominal anchors do not round-trip through their instants need [`CalendarCursor`].
+/// Persist each returned input and its [`SeriesSpec::calendar_cursor`] exactly as returned,
+/// including `None`; reconstruct with [`SeriesSpec::new_with_calendar_cursor`]. Recomputing
+/// a cursor from resolved instants loses nominal gap/skipped-date anchors.
 /// Seqs in both specs start at 0; add at_seq to tail seqs to compare to the original.
 pub fn this_and_future(
     spec: &SeriesSpec,

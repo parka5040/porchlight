@@ -35,8 +35,10 @@ class RebaseCacheTest {
             assertTrue(cache.view.value.comments.isEmpty())
             assertTrue(cache.view.value.attachments.isEmpty())
             assertEquals(listOf(availability), cache.view.value.availability)
+            val priorRevision = cache.view.value.visibilityRevision
             cache.clear()
-            assertEquals(CacheView(), cache.view.value)
+            assertEquals(CacheView(), cache.view.value.copy(visibilityRevision = 0))
+            assertTrue(cache.view.value.visibilityRevision > priorRevision, "clear must invalidate retained UI copies")
         } finally { cache.close() }
     }
 }

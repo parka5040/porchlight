@@ -12,6 +12,8 @@ cp -a "$root/deploy/lib/." "$fixture/deploy/lib/"
 cp "$root/deploy/install.sh" "$root/deploy/compose.yml" "$root/deploy/compose.funnel.yml" "$root/deploy/env.example" "$fixture/deploy/"
 cp -a "$root/deploy/postgres" "$fixture/deploy/"
 cp "$root/design/icon/porchlight-icon.svg" "$fixture/design/icon/"
+mkdir -p "$fixture/server/core/data"
+cp "$root/server/core/data/breached-passwords.txt" "$fixture/server/core/data/"
 printf '0.1.0\n' > "$fixture/VERSION"
 printf 'SELECT 1;\n' > "$fixture/server/db/migrations/0001_fixture.sql"
 cat > "$fixture/scripts/env.sh" <<'SH'

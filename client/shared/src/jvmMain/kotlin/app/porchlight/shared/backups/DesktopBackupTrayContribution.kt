@@ -25,5 +25,5 @@ fun desktopTrayActions(view: BackupView, onOpen: () -> Unit, onQuit: () -> Unit)
 fun app.porchlight.shared.live.DesktopTrayActions.registerBackupStatus(view: BackupView) {
     val label = desktopTrayActions(view, {}, {}).backupStatus
     if (label == null) unregister("backup-status")
-    else register("backup-status", label, enabled = false) {}
+    else if (entry("backup-status")?.label != label) register("backup-status", label, enabled = false) {}
 }

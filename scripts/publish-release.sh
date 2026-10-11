@@ -129,6 +129,11 @@ try:
  lines=[f"# Porchlight {release['version']}",'',f"Commit: `{release['commit']}`",f'APK SHA-256: `{sha}`']
  lines += [f'APK signer SHA-256: `{signer}`' for signer in sorted(set(release['android']['signer_sha256']))]
  lines += [f'Minisign public key SHA-256: `{fingerprint}`','','Verify the signature and hashes as described in `docs/operations/install.md`.','']
+ lines += ['## Upgrading from 0.1.6', '',
+           'Use `scripts/deploy-server.sh upgrade <new-version>` with a laptop-verified signed dist and the new installer.',
+           'Do not use the 0.1.6 porchlight-upgrade wrapper: it extracts unsigned archives before handoff.',
+           'Never run an old installer with upgrade --source; it retains the old rollback code.',
+           'The hardened porchlight-upgrade is safe from the next release onward. See docs/operations/upgrade.md.', '']
  pathlib.Path(sys.argv[3]).write_text('\n'.join(lines))
 except (OSError,ValueError,KeyError,TypeError,IndexError):
  print('cannot prepare release archive or notes',file=sys.stderr);sys.exit(2)
@@ -149,9 +154,12 @@ gh release download "v$version" --dir "$check" >/dev/null || die 1 'published re
 for name in manifest.json manifest.json.minisig "porchlight-$version.apk" install.sh; do
   cmp -s "$out/$name" "$check/$name" || die 1 'published asset differs from local dist'
 done
-ops_python extract "$check/porchlight-$version-dist.tar" "$check/extracted" || die 1 'published archive extraction failed'
+ops_python extract "$check/porchlight-$version-dist.tar" "$check/extracted" "$out/manifest.json" || die 1 'published archive extraction failed'
 verify_release "$check/extracted" "$public" || die 1 'published archive verification failed'
 # The tar must carry the same signed release, not another valid signed version.
 cmp -s "$out/manifest.json" "$check/extracted/manifest.json" || die 1 'published archive manifest differs from local dist'
 cmp -s "$out/manifest.json.minisig" "$check/extracted/manifest.json.minisig" || die 1 'published archive signature differs from local dist'
+# Only this verified round trip is disposable. Failures keep their download/extraction for diagnosis;
+# signed dist and the publish archive remain available for rollback or a retry.
+rm -rf -- "$check"
 printf 'PASS published v%s\n' "$version"

@@ -94,10 +94,22 @@ impl ReleaseWatch {
         checked.checked_at = Some(Utc::now());
         match result {
             Ok(manifest) => {
-                checked.latest = Some(LatestRelease {
-                    version: manifest.version,
-                });
-                checked.last_error = None;
+                let version: ClientVersion = manifest.version.parse().expect("verified version");
+                if checked.latest.as_ref().is_some_and(|latest| {
+                    version
+                        <= latest
+                            .version
+                            .parse::<ClientVersion>()
+                            .expect("verified version")
+                }) {
+                    checked.last_error = Some("release-regressed".into());
+                    tracing::warn!(reason = "release-regressed", "release check failed");
+                } else {
+                    checked.latest = Some(LatestRelease {
+                        version: manifest.version,
+                    });
+                    checked.last_error = None;
+                }
             }
             Err(reason) => {
                 checked.last_error = Some(reason.into());

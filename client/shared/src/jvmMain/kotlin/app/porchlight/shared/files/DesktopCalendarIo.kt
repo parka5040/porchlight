@@ -42,6 +42,9 @@ internal fun desktopExportWarning(
     return if (private) null else EXPORT_NOT_PRIVATE_WARNING
 }
 
+/** Open and inspect the same descriptor. A pathname stat before open would race symlink/FIFO replacement. */
+internal fun readDesktopCalendar(file: File): ByteArray = LinuxCalendarInput.read(file)
+
 /** Never trust stat size: a file can grow, be replaced, or name a size-zero stream. */
 internal fun readDesktopCalendar(input: InputStream): ByteArray {
     val limit = 5 * 1024 * 1024

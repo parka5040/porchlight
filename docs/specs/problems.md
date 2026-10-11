@@ -33,8 +33,10 @@ Generated from `server/api/src/error.rs`; RFC 9457 bodies use `urn:porchlight:pr
 | `account-locked` | 429 | Account locked |
 | `purge-dependency-unhandled` | 409 | Purge requires a retention migration |
 | `internal` | 500 | Internal server error |
+| `maintenance` | 503 | Server is updating |
 | `comment-edit-expired` | 403 | Comment edit window expired |
 | `attachment-too-large` | 413 | Attachment exceeds 25 MiB limit |
+| `storage-full` | 507 | Attachment storage is full |
 | `attachment-type-unsupported` | 415 | Unsupported attachment type or WebP main meta-Huffman profile |
 | `attachment-type-mismatch` | 422 | Attachment type mismatch |
 | `attachment-invalid` | 422 | Invalid attachment |
@@ -50,3 +52,5 @@ Generated from `server/api/src/error.rs`; RFC 9457 bodies use `urn:porchlight:pr
 Extensions: `upgrade-required` includes `min_client_version`; `version-conflict` includes `current`; `validation-failed` includes `errors: [{field, message, code?}]`. Body references use `validation-failed` (422), with `invalid-reference` or `stale-neighbour` field codes for board bounds; 404 is reserved for hidden/missing path resources. Idempotency keys cover method, path/query and body, **not If-Match**: rotate the key after `version-conflict`, otherwise the stored response replays. All bodies retain `type`, `title`, `status`, `detail`; internal errors never reveal details.
 
 A sealed 422 (including `stale-neighbour`) replays for its original key. After refetching neighbours or correcting validation, a retry with a changed body needs a **NEW Idempotency-Key**; reusing the old key returns `idempotency-key-reused`.
+
+`maintenance` (503) rejects mutations before authentication, body reads and idempotency while the installer write fence exists. `Retry-After: 1`; retry the identical request after waiting. Reads and healthchecks remain available.

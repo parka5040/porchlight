@@ -271,7 +271,8 @@ class NavigationArgsRegressionTest(private val width: Int, private val platform:
         request(fixture, AppRoute.Item("card-0", "occ-0"))
         assertTrue(fixture.itemReads.size > reads, "A fresh explicit open must refetch a stale tombstone")
         assertEquals(AppRoute.Item("card-0", "occ-0"), nav.currentBackStackEntry!!.toRoute<AppRoute.Item>())
-        onNodeWithContentDescription("Edit Fixture 0").assertExists()
+        // The refetched item lands through a cache transaction off the Compose dispatcher; wait (bounded) for it.
+        waitUntil(timeoutMillis = 5_000) { onAllNodesWithContentDescription("Edit Fixture 0").fetchSemanticsNodes().isNotEmpty() }
         assertFalse("card-0" in fixture.cache.view.value.evictedItemIds)
         // A successful explicit open is not a permanent bypass of subsequent visibility loss.
         fixture.evict("card-0")
@@ -301,7 +302,8 @@ class NavigationArgsRegressionTest(private val width: Int, private val platform:
         val reads = fixture.itemReads.size
         request(fixture, AppRoute.Item("card-0"))
         assertTrue(fixture.itemReads.size > reads, "An explicit open must let the server decide visibility")
-        assertTrue(nav.currentDestination!!.hasRoute<AppRoute.Board>())
+        // The server read resolves off the Compose dispatcher; wait (bounded) for the close it triggers.
+        waitUntil(timeoutMillis = 5_000) { nav.currentDestination!!.hasRoute<AppRoute.Board>() }
         onNodeWithText("This item is no longer available.").assertIsDisplayed()
     }
     @Test fun mdHiddenCollectionScrollSurvivesTabSwitchAndBack() = screen(AppRoute.Board()) { _, nav, _ ->
@@ -335,16 +337,13 @@ class NavigationArgsRegressionTest(private val width: Int, private val platform:
                 }
             } }
             waitForIdle()
-            // Obtain the actual retained root VM without adding a public production test hook.
-            val type = Class.forName("app.porchlight.shared.navigation.ShellSavedState").asSubclass(androidx.lifecycle.ViewModel::class.java)
-            val state = runOnIdle { androidx.lifecycle.ViewModelProvider.create(nav.getBackStackEntry<AppRoute.Today>())["shell-holder", type.kotlin] }
-            val fields = type.declaredFields.onEach { it.isAccessible = true }
-            assertTrue(fields.any { it.get(state) is androidx.compose.runtime.saveable.SaveableStateHolder }, "Exercise a bound holder")
+            val state = runOnIdle { androidx.lifecycle.ViewModelProvider.create(nav.getBackStackEntry<AppRoute.Today>())[
+                "shell-holder", app.porchlight.shared.navigation.ShellSavedState::class] }
+            assertTrue(state.hasBoundHolder, "Exercise a bound holder")
             runOnIdle { mounted.value = false }
             waitForIdle()
-            // No GC/sleep/weak-reference collection timing: the owner is intentionally still alive.
-            assertFalse(fields.any { it.get(state) is androidx.compose.runtime.saveable.SaveableStateHolder },
-                "A surviving ViewModel must release the disposed composition's holder")
+            // No reflection or GC timing: the owner is intentionally still alive.
+            assertFalse(state.hasBoundHolder, "A surviving ViewModel must release the disposed composition's holder")
             runOnIdle { owner.viewModelStore.clear() }
         } }
     }
@@ -391,6 +390,7 @@ class NavigationArgsRegressionTest(private val width: Int, private val platform:
             fixture.removed += "card-0"
             runBlocking {
                 fixture.cache.clear()
+                fixture.cache.initialize(CacheOwner(cacheCaFingerprint("root"), null, "self")) // Re-admit the fixture owner after identity clear.
                 fixture.cache.install(emptySnapshot(2).copy(members = fixture.members, memberSettings = fixture.settings,
                     items = fixture.rows.drop(1), occurrences = fixture.rows.drop(1).map { it.occurrence!! }, lists = fixture.lists))
                 fixture.cache.replaceBoard(fixture.rows.drop(1))

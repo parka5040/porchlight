@@ -51,11 +51,7 @@ impl Rule {
         rule.until = None;
         if rule.freq != "WEEKLY" {
             rule.by_day.clear();
-            rule.by_month_day = if matches!(rule.freq.as_str(), "MONTHLY" | "YEARLY") {
-                (1..=31).collect()
-            } else {
-                vec![]
-            };
+            rule.by_month_day.clear();
         }
         rule.to_string()
     }

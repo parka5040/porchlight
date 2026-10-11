@@ -1,10 +1,10 @@
 //! Real TLS enrollment: verify the URI's sole root pin before transmitting a password or token.
 use crate::client::{self, DEADLINE, Error, Result};
-use porchlight_core::auth::{enroll_uri::EnrollUri, session::Platform};
-use porchlight_pki::{PinnedRootVerifier, enrollment_target, generate_csr};
+use porchlight_core::auth::enroll_uri::EnrollUri;
+use porchlight_pki::{PinnedRootVerifier, enrollment_target};
 use rustls_pki_types::ServerName;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
@@ -61,13 +61,10 @@ pub fn target(uri: &EnrollUri, override_addr: Option<&str>) -> Result<(String, S
     Ok((name, override_addr.unwrap_or(&addr).to_owned()))
 }
 
-pub async fn complete(
+pub async fn connect(
     uri: &EnrollUri,
     override_addr: Option<&str>,
-    label: &str,
-    platform: Platform,
-    password: &str,
-) -> Result<(Enrollment, Zeroizing<String>)> {
+) -> Result<tokio_rustls::client::TlsStream<TcpStream>> {
     let (name, addr) = target(uri, override_addr)?;
     let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
@@ -91,19 +88,39 @@ pub async fn complete(
     .await
     .map_err(|_| Error::Local("Enrollment TLS handshake timed out"))?
     .map_err(tls_error)?;
-    // Only construct secret-bearing application data after pinned TLS verification has succeeded.
-    let (csr, key) = generate_csr(label)
-        .map_err(|_| Error::Local("Could not generate enrollment key and CSR"))?;
-    let response = client::send(tls, client::request("POST", "/v1/enrollment/complete",
-        json!({"token":uri.token, "password":password, "csr":csr, "platform":platform.as_str()}), None, &uri.host)?).await?;
-    let enrollment = serde_json::from_value(response)
-        .map_err(|_| Error::Local("Invalid enrollment response"))?;
-    Ok((enrollment, key))
+    Ok(tls)
+}
+
+pub async fn complete(
+    tls: tokio_rustls::client::TlsStream<TcpStream>,
+    uri: &EnrollUri,
+    pending: &crate::pending_enrollment::Pending,
+    password: &str,
+) -> Result<Enrollment> {
+    // Pending identity is durable, and pinned TLS succeeded before constructing application data.
+    let mut request = client::request(
+        "POST",
+        "/v1/enrollment/complete",
+        pending.body(uri, password),
+        None,
+        &uri.host,
+    )?;
+    request.headers_mut().insert(
+        "idempotency-key",
+        pending
+            .idempotency_key
+            .parse()
+            .map_err(|_| Error::Local("Invalid pending enrollment identity"))?,
+    );
+    let response = client::send(tls, request).await?;
+    serde_json::from_value(response).map_err(|_| Error::Local("Invalid enrollment response"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use porchlight_pki::generate_csr;
+    use serde_json::json;
     #[test]
     fn session_token_is_zeroizing_and_debug_redacted() {
         let session: Session =

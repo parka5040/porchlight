@@ -1,0 +1,20 @@
+{
+  "items": [
+    {
+      "actor": {
+        "db_user": "<db-role>",
+        "device_id": "<device>",
+        "member_id": "<member>",
+        "request_id": "<request>"
+      },
+      "household_id": "<household>",
+      "id": "<event>",
+      "kind": "login_failed",
+      "occurred_at": "<time>",
+      "outcome": "failed",
+      "target_id": "<member>",
+      "target_type": "member"
+    }
+  ],
+  "next_cursor": null
+}

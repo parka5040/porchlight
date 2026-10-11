@@ -472,7 +472,8 @@ Tokens are random 256-bit values stored hashed in `api_tokens`, each with a name
 - **Role:** `porchlight_agent` connects on `127.0.0.1:5432`.
 - **Grants:** SELECT on domain tables; INSERT and UPDATE on items and settings; INSERT and DELETE on relationship rows (assignees, viewers, reminders), whose history lives in revisions; UPDATE on authoritative occurrence columns only. No other DELETE (soft delete via `deleted_at`), no DDL, and no access to credentials, sessions, devices, tokens or password resets.
 - **Safety:** triggers enforce versioning, revisions, notifications and live updates for these writes too; occurrence regeneration, reminders and agendas follow asynchronously through the derivation worker (pending while `item_derivation.applied_gen < requested_gen`).
-- **Attribution:** agents set `application_name = 'agent:<name>'`, recorded in every revision and shown in the app as the actor.
+- **Attribution:** raw SQL agents set `application_name = 'agent:<name>'`, recorded in every revision and shown in the app as the actor. HTTP PAT writes intentionally use the stored token name without the `agent:` prefix, together with its authenticated owner and token ID; SQL agents cannot claim those member/device identities.
+- **Relationship locking:** before raw assignee/viewer/reminder INSERT/DELETE, prelock every affected parent item `FOR NO KEY UPDATE` in ascending UUID order. Otherwise a parent NOWAIT guard can raise `55P03`: roll back and retry the **whole transaction**, not just the statement. See [global lock order](lock-order.md).
 - **Undo:** any agent change can be reverted from its `item_revisions` snapshot (`porch revert <item> --to <rev>`).
 
 ## ICS import and data export

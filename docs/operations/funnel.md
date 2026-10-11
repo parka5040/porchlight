@@ -113,6 +113,10 @@ channel must not strand a stopped LAN API or armed auth reference.
 Investigate `docker compose ... logs --tail 30 tailscale` privately; do not paste login URLs, `.env`, container
 environments, PKI, or tailscaled state. Do not work around the host VPN; bring options to the owner.
 
+A direct `porchlight server-cert` invocation only replaces the on-disk leaf; a running server retains
+its loaded certificate until restart (there is no certificate hot reload). `--show` is read-only and
+cannot be combined with SAN replacement flags. Prefer the installer operation below for its stop/restart handling.
+
 For manual certificate replacement (complete SAN set, not an append operation):
 
 ```bash

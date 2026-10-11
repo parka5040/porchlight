@@ -17,6 +17,7 @@ async fn maintenance(pool: sqlx::PgPool, shutdown: impl Future<Output = ()>) -> 
         if purge(&pool).await.is_err() {
             tracing::warn!("idempotency purge failed; retrying next hour");
         }
+        crate::admin_recovery::warn(&pool).await;
     }
 }
 pub async fn run(
@@ -35,6 +36,7 @@ pub async fn run(
             if purge(&state.pool).await.is_err() {
                 tracing::warn!("idempotency startup purge failed; retrying next hour");
             }
+            crate::admin_recovery::warn(&state.pool).await;
             Ok::<_, anyhow::Error>(())
         };
         // Watchers drop their ready senders on shutdown. Cancellation wins over that expected close.

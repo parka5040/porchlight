@@ -1,5 +1,7 @@
 package app.porchlight.shared.backups
 
+import app.porchlight.shared.theme.PorchlightTokens
+
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -15,10 +17,10 @@ fun BackupPanel(backups: DesktopBackups) {
     val view by backups.state.collectAsState()
     val scope = rememberCoroutineScope()
     if (!view.allowed) {
-        if (view.cantReachHome) Text("Can't reach home", modifier = Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error)
+        if (view.cantReachHome) Text("Can't reach home", modifier = Modifier.padding(PorchlightTokens.spaceMd.dp), color = MaterialTheme.colorScheme.error)
         return
     }
-    Column(Modifier.fillMaxWidth().heightIn(max = 320.dp).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(Modifier.fillMaxWidth().heightIn(max = PorchlightTokens.backupPanelMaxHeight.dp).verticalScroll(rememberScrollState()).padding(PorchlightTokens.spaceMd.dp), verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceSm.dp)) {
         Text("Backups · DESIGN-PENDING", style = MaterialTheme.typography.titleLarge)
         Text("Last success: ${view.status?.lastSuccess ?: "not loaded / no backup yet"}")
         Text("Next server run: ${view.status?.nextDue ?: "not scheduled yet"}")
@@ -29,7 +31,7 @@ fun BackupPanel(backups: DesktopBackups) {
         view.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         Button(enabled = !view.pulling, onClick = {
             scope.launch { backups.pull() }
-        }, modifier = Modifier.heightIn(min = 48.dp)) { Text(if (view.pulling) "Pulling…" else "Refresh and pull newest") }
+        }, modifier = Modifier.heightIn(min = PorchlightTokens.touchTarget.dp)) { Text(if (view.pulling) "Pulling…" else "Refresh and pull newest") }
         Text("Encrypted bundles only. Keep the recovery identity in your personal backup, never on the server.")
     }
 }

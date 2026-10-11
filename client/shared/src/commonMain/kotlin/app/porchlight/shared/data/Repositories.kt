@@ -28,20 +28,20 @@ class HouseholdRepository(private val api: MembersApi, private val cache: ReadCa
                           private val version: String = BuildInfo.VERSION) {
     val members = cache.view.map { it.members }.distinctUntilChanged()
     val settings = cache.view.map { it.settings }.distinctUntilChanged()
-    suspend fun refreshMembers(): List<MemberRead> = cache.inSession {
+    suspend fun refreshMembers(): List<MemberRead> = cache.inSession { fence ->
         val mark = cache.receiptMark()
         allPages { cursor -> api.membersList(version, cursor = cursor, limit = 200).let { it.items to it.nextCursor } }
-            .also { cache.replaceMembers(it, receivedAfter = mark) }
+            .also { cache.replaceMembers(fence, it, receivedAfter = mark) }
     }
-    suspend fun refreshSettings(): SettingsRead = cache.inSession { api.membersSettingsGet(version).also { cache.putSettings(it) } }
-    suspend fun patchMember(id: String, expectedVersion: Int, patch: MemberPatch, key: String = writes.newKey()): WriteResult<MemberRead> = cache.inSession {
+    suspend fun refreshSettings(): SettingsRead = cache.inSession { fence -> api.membersSettingsGet(version).also { cache.putSettings(fence, it) } }
+    suspend fun patchMember(id: String, expectedVersion: Int, patch: MemberPatch, key: String = writes.newKey()): WriteResult<MemberRead> = cache.inSession { fence ->
         val result = writes.execute(key) { api.membersPatch(id, expectedVersion.toString(), version, it, patch) }
-        if (result is WriteResult.Success) cache.putMember(result.value)
+        if (result is WriteResult.Success) cache.putMember(fence, result.value)
         return@inSession result // R33: keep pending=true until derived/refetch. Do not immediately overwrite it with false.
     }
-    suspend fun putSettings(expectedVersion: Int, settings: TodaySettings, key: String = writes.newKey()): WriteResult<SettingsRead> = cache.inSession {
+    suspend fun putSettings(expectedVersion: Int, settings: TodaySettings, key: String = writes.newKey()): WriteResult<SettingsRead> = cache.inSession { fence ->
         val result = writes.execute(key) { api.membersSettingsPut(expectedVersion.toString(), version, it, settings) }
-        if (result is WriteResult.Success) cache.putSettings(result.value)
+        if (result is WriteResult.Success) cache.putSettings(fence, result.value)
         return@inSession result
     }
 }
@@ -52,16 +52,16 @@ class ItemRepository(private val api: ItemsApi, private val cache: ReadCache, pr
     fun observe(id: String): Flow<ItemRead?> = items.map { rows -> rows.find { it.id == id } }.distinctUntilChanged()
     /** Hooks refetch derived projections only after a sealed successful response has entered the cache. */
     internal var afterWrite: suspend (String?) -> Unit = {}
-    suspend fun get(id: String): ItemResponse = cache.inSession {
-        try { api.itemsGet(id, version).also { cache.putItem(it) } }
+    suspend fun get(id: String): ItemResponse = cache.inSession { fence ->
+        try { api.itemsGet(id, version).also { cache.putItem(fence, it) } }
         catch (p: ApiProblem) { cache.evictOnVisibilityFailure(id, p); throw p }
     }
-    suspend fun list(updatedSince: Instant? = null, kind: String? = null): List<ItemResponse> = cache.inSession { allPages { cursor ->
+    suspend fun list(updatedSince: Instant? = null, kind: String? = null): List<ItemResponse> = cache.inSession { fence -> allPages { cursor ->
         api.itemsList(cursor = cursor, limit = 200, updatedSince = updatedSince, kind = kind, includeDeleted = false,
             porchlightClientVersion = version).let { it.items to it.nextCursor }
-    }.also { cache.putItems(it) } }
+    }.also { cache.putItems(fence, it) } }
     private suspend fun mutate(key: String, id: String? = null, evictOnNoContent: Boolean = true,
-                               operation: suspend (String) -> ItemResponse): WriteResult<ItemResponse?> = cache.inSession {
+                               operation: suspend (String) -> ItemResponse): WriteResult<ItemResponse?> = cache.inSession { fence ->
         val result = writes.execute(key) { try { operation(it) } catch (_: NoContentSuccess) { null } }
         if (result !is WriteResult.Success) return@inSession result
         val value = result.value
@@ -75,7 +75,7 @@ class ItemRepository(private val api: ItemsApi, private val cache: ReadCache, pr
             catch (_: Exception) { pending = true }
             return@inSession result.copy(refreshPending = pending)
         }
-        cache.putItem(value)
+        cache.putItem(fence, value)
         var pending = false
         try { if (value.deletedAt == null) afterWrite(value.id) }
         catch (e: CancellationException) { throw e }
@@ -84,7 +84,7 @@ class ItemRepository(private val api: ItemsApi, private val cache: ReadCache, pr
     }
     suspend fun create(request: CreateRequest, key: String = writes.newKey()) = mutate(key) { api.itemsCreate(version, it, request) }
     suspend fun edit(id: String, expectedVersion: Int, edit: ItemEdit, scope: EditScope = EditScope.All,
-                     occurrenceId: String? = null, key: String = writes.newKey()): WriteResult<ItemResponse?> = cache.inSession {
+                     occurrenceId: String? = null, key: String = writes.newKey()): WriteResult<ItemResponse?> = cache.inSession { fence ->
         require((scope == EditScope.ThisAndFuture) == (occurrenceId != null))
         return@inSession mutate(key, id, evictOnNoContent = scope != EditScope.ThisAndFuture) { api.itemsPatch(id = id, scope = scope.wire, occurrenceId = occurrenceId,
             ifMatch = expectedVersion.toString(), porchlightClientVersion = version, idempotencyKey = it, jsonObject = edit.body) }
@@ -115,10 +115,10 @@ class BoardRepository(private val api: ReadsApi, private val cache: ReadCache, p
         return allPages { cursor -> api.readsBoard(version, scope = scope, cursor = cursor, limit = 200).let { it.items to it.nextCursor } }
     }
     /** Replaces the cached board only after every page arrived (one transaction). */
-    suspend fun refresh(scope: String = currentScope): List<ItemRead> = cache.inSession {
+    suspend fun refresh(scope: String = currentScope): List<ItemRead> = cache.inSession { fence ->
         val rows = fetch(scope)
         currentScope = scope
-        cache.replaceBoard(rows)
+        cache.replaceBoard(fence, rows)
         return@inSession rows
     }
     fun neighbours(mover: String, drop: BoardDrop) = boardNeighbours(cache.view.value.board, mover, drop)
@@ -133,9 +133,9 @@ class AgendaRepository(private val api: ReadsApi, private val cache: ReadCache, 
         return AgendaWindow(from, to, memberId, rows)
     }
     /** Replaces, in place, only that member's rows the window covered; other members/windows stay cached. */
-    suspend fun refresh(from: Instant, to: Instant, memberId: String? = null): List<ItemRead> = cache.inSession {
+    suspend fun refresh(from: Instant, to: Instant, memberId: String? = null): List<ItemRead> = cache.inSession { fence ->
         val window = fetch(from, to, memberId)
-        cache.replaceAgenda(window)
+        cache.replaceAgenda(fence, window)
         return@inSession window.rows
     }
 }
@@ -167,20 +167,20 @@ class OccurrenceRepository(private val api: ItemsApi, private val cache: ReadCac
     val occurrences = cache.view.map { it.occurrences }.distinctUntilChanged()
     fun forItem(id: String) = occurrences.map { rows -> rows.filter { it.itemId == id } }.distinctUntilChanged()
     internal var afterWrite: suspend (String) -> Unit = {}
-    suspend fun refresh(itemId: String, from: Instant, to: Instant, includeUndated: Boolean = false): List<OccurrenceResponse> = cache.inSession {
+    suspend fun refresh(itemId: String, from: Instant, to: Instant, includeUndated: Boolean = false): List<OccurrenceResponse> = cache.inSession { fence ->
         val mark = cache.receiptMark()
         allPages { cursor ->
             api.itemsOccurrences(itemId, undated = includeUndated, cursor = cursor, limit = 200, from = from, to = to, porchlightClientVersion = version).let { it.items to it.nextCursor }
-        }.also { cache.putOccurrences(itemId, it, from, to, includeUndated, receivedAfter = mark) }
+        }.also { cache.putOccurrences(fence, itemId, it, from, to, includeUndated, receivedAfter = mark) }
     }
-    private suspend fun mutate(key: String, id: String, operation: suspend (String) -> OccurrenceResponse): WriteResult<OccurrenceResponse?> = cache.inSession {
+    private suspend fun mutate(key: String, id: String, operation: suspend (String) -> OccurrenceResponse): WriteResult<OccurrenceResponse?> = cache.inSession { fence ->
         val parentId = cache.view.value.occurrences.find { it.id == id }?.itemId
             ?: cache.view.value.board.find { it.occurrence?.id == id }?.id
             ?: cache.view.value.agenda.find { it.occurrence?.id == id }?.id
         val result = writes.execute(key) { try { operation(it) } catch (_: NoContentSuccess) { null } }
         if (result !is WriteResult.Success) return@inSession result
         val value = result.value
-        if (value == null) cache.evictOccurrence(id) else cache.putOccurrence(value)
+        if (value == null) cache.evictOccurrence(id) else cache.putOccurrence(fence, value)
         var pending = false
         try { afterWrite(value?.itemId ?: parentId ?: error("Parent refresh required")) }
         catch (e: CancellationException) { throw e }
@@ -200,8 +200,8 @@ class OccurrenceRepository(private val api: ItemsApi, private val cache: ReadCac
     }
     /** One corrected retry after a sealed stale-neighbour/invalid-reference response, with a NEW key (R38). */
     suspend fun move(id: String, expectedVersion: Int, drop: BoardDrop, key: String = writes.newKey(),
-                     visible: (List<ItemRead>) -> List<ItemRead> = { it }, replay: BoardMoveReplay = BoardMoveReplay()): WriteResult<OccurrenceResponse?> = cache.inSession {
-        suspend fun attempt(operationKey: String): WriteResult<OccurrenceResponse?> = cache.inSession {
+                     visible: (List<ItemRead>) -> List<ItemRead> = { it }, replay: BoardMoveReplay = BoardMoveReplay()): WriteResult<OccurrenceResponse?> = cache.inSession { fence ->
+        suspend fun attempt(operationKey: String): WriteResult<OccurrenceResponse?> = cache.inSession { fence ->
             replay.activeKey = operationKey
             val body = replay.bodies.getOrPut(operationKey) {
                 val bounds = boardNeighbours(visible(cache.view.value.board), id, drop)

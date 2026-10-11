@@ -42,17 +42,17 @@ class DesktopFix3Test {
         val data = HouseholdData(cache, GeneratedCall({ error("No network") }, { null }), { now })
         val notice = MutableStateFlow<String?>(null)
         val session = FakeSessionBus()
+        val firstAlarmWait = CompletableDeferred<Instant?>()
         var runtime: DesktopLive? = null
         try {
             cache.install(emptySnapshot(1).copy(items = listOf(itemRead("i")), occurrences = listOf(occurrenceRead("o", "i")),
                 scheduledReminders = listOf(app.porchlight.shared.api.models.ScheduledReminderRead("r", "h", "self", "o", "i", "offset", now + 1.days, now))))
             runtime = DesktopLive(data, dir, backgroundScope, { now }, { _, _ -> }, {}, notice,
-                sessionFactory = { session }, alarmLoader = { error("recovery counter write failed") }, sleepBusFactory = { FakeSleepBus() })
+                sessionFactory = { session }, alarmLoader = { error("recovery counter write failed") }, sleepBusFactory = { FakeSleepBus() }, onAlarmWait = { firstAlarmWait.complete(it) })
             data.localSnooze!!("o") // await asynchronous cache initialization/recovery
             runCurrent()
             assertTrue(notice.value.orEmpty().contains("inventory recovery failed"))
-            assertNotNull(runtime.alarmWaitingUntil) // alarm loop finished initialization instead of dying
-            assertNull(runtime.alarmWaitingUntil.value)
+            assertNull(firstAlarmWait.await()) // loop completed a scheduling pass, with no unsafe deadline
             data.localSnooze!!("o") // degraded local ledger is a safe no-op, not a failed initialization Deferred
             assertTrue(data.firedOccurrences.value.isEmpty())
             assertFalse(Files.exists(dir.resolve("alarm-tickets"))) // no unsafe reset of durable codes

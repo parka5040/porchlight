@@ -1,0 +1,7 @@
+CREATE TABLE CacheVisibility (
+ kind TEXT NOT NULL,
+ id TEXT NOT NULL,
+ generation INTEGER NOT NULL,
+ evicted INTEGER NOT NULL,
+ PRIMARY KEY(kind, id)
+);

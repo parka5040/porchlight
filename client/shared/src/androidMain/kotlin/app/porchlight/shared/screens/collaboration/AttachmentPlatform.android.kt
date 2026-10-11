@@ -49,14 +49,29 @@ internal object AttachmentPickRegistry {
         override fun photo(commentId: String?) = pick("photo", commentId)
         override fun file(commentId: String?) = pick("file", commentId)
         override fun camera(commentId: String?) = pick("camera", commentId)
-        override suspend fun open(id: String, mime: String, bytes: ByteArray) {
-            val file = withContext(Dispatchers.IO) {
-                require(id.matches(Regex("[a-zA-Z0-9_-]+")))
-                val root = File(context.cacheDir, "attachments"); root.mkdirs()
-                File(root, "$id-view.${attachmentExtension(mime)}").also { it.writeBytes(bytes); it.setReadable(false, false); it.setWritable(false, false); it.setReadable(true, true); it.setWritable(true, true) }
+        override suspend fun prepareViewer(id: String, mime: String, bytes: ByteArray): app.porchlight.shared.data.PreparedAttachmentViewer {
+            var prepared: File? = null
+            try {
+                val file = withContext(Dispatchers.IO) {
+                    require(id.matches(Regex("[a-zA-Z0-9_-]+")))
+                    val root = File(context.cacheDir, "attachments"); root.mkdirs()
+                    File.createTempFile("$id-view.", ".${attachmentExtension(mime)}", root).also {
+                        prepared = it
+                        it.setReadable(false, false); it.setWritable(false, false)
+                        it.setReadable(true, true); it.setWritable(true, true); it.writeBytes(bytes)
+                    }
+                }
+                return object : app.porchlight.shared.data.PreparedAttachmentViewer {
+                    override suspend fun launch() = withContext(Dispatchers.Main.immediate) {
+                        val uri = FileProvider.getUriForFile(context, context.packageName + ".attachments", file)
+                        context.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION).apply { clipData = ClipData.newRawUri("Attachment", uri) })
+                    }
+                    override suspend fun discard() { withContext(Dispatchers.IO) { check(!file.exists() || file.delete()) } }
+                }
+            } catch (e: Exception) {
+                withContext(NonCancellable + Dispatchers.IO) { prepared?.delete() }
+                throw e
             }
-            val uri = FileProvider.getUriForFile(context, context.packageName + ".attachments", file)
-            context.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION).apply { clipData = ClipData.newRawUri("Attachment", uri) })
         }
     } }
 }

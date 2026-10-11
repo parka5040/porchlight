@@ -20,12 +20,16 @@ pub struct Cursor {
     after: Option<String>,
 }
 struct Live {
+    _permit: crate::concurrency::Permit,
     state: AppState,
     auth: SessionAuth,
     fingerprint: [u8; 32],
     session_hash: [u8; 32],
     cursor: i64,
-    epoch: i64,
+    // Scan cursor may include still-queued events. Pruning must compare against
+    // the last fully flushed (or wholly ACL-filtered) batch, not queued history.
+    delivered_cursor: i64,
+    read_failures: u8,
     pending: VecDeque<stream::Tickle>,
     opening: Option<String>,
     shutdown_sent: bool,
@@ -85,6 +89,25 @@ impl Live {
             Err(broadcast::error::RecvError::Closed) => false,
         }
     }
+    async fn retry_read(&mut self, error: &sqlx::Error) -> bool {
+        self.read_failures += 1;
+        tracing::warn!(
+            class = error_class(error),
+            attempt = self.read_failures,
+            "stream read failed"
+        );
+        if self.read_failures > 3 {
+            // End without a resnapshot claim: reconnect from the last delivered ID.
+            return false;
+        }
+        let delay = std::time::Duration::from_millis(100 << (self.read_failures - 1));
+        tokio::select! {
+            biased;
+            () = self.state.hub.draining() => true,
+            hint = self.revocations.recv() => self.revocation(hint).await,
+            () = tokio::time::sleep(delay) => true,
+        }
+    }
     async fn next(&mut self) -> Option<String> {
         loop {
             if self.state.hub.is_draining() && !self.shutdown_sent {
@@ -93,14 +116,6 @@ impl Live {
                 self.opening = None;
                 self.pending.clear();
                 return Some(control("drain", r#"{"reason":"shutdown"}"#));
-            }
-            if !self.terminal
-                && stream::retention_epoch(&self.state.pool).await.ok() != Some(self.epoch)
-            {
-                self.terminal = true;
-                self.pending.clear();
-                self.opening = None;
-                return Some(control("resnapshot", r#"{"reason":"retention_pruned"}"#));
             }
             // A queued ready/replay frame must not hide an already-received revocation.
             match self.revocations.try_recv() {
@@ -145,24 +160,28 @@ impl Live {
                     },
                     r=stream::delivery_batch(&self.state.pool,self.auth.device.household_id,self.auth.device.member_id,&seqs)=>r,
                 };
-                self.pending.clear();
                 match result {
-                    Ok(batch) if batch.epoch != self.epoch => {
+                    Ok(batch) if batch.pruned_through > self.delivered_cursor => {
                         self.terminal = true;
+                        self.pending.clear();
                         return Some(control("resnapshot", r#"{"reason":"retention_pruned"}"#));
                     }
-                    Ok(batch) if !batch.events.is_empty() => {
-                        // One flush = one recheck = one body chunk. Never cache an ACL
-                        // decision across polls (a slow socket only retains encoded bytes).
-                        return Some(tickle_chunk(batch.events));
+                    Ok(batch) => {
+                        self.read_failures = 0;
+                        self.pending.clear();
+                        self.delivered_cursor = self.cursor;
+                        if !batch.events.is_empty() {
+                            // One flush = one recheck = one body chunk. Never cache an ACL
+                            // decision across polls (a slow socket only retains encoded bytes).
+                            return Some(tickle_chunk(batch.events));
+                        }
+                        continue;
                     }
-                    Ok(_) => continue,
                     Err(error) => {
-                        tracing::warn!(
-                            class = error_class(&error),
-                            "stream delivery failed; closing"
-                        );
-                        return None;
+                        if !self.retry_read(&error).await {
+                            return None;
+                        }
+                        continue;
                     }
                 }
             }
@@ -179,17 +198,26 @@ impl Live {
                     },
                     r=stream::read(&self.state.pool,self.auth.device.household_id,self.auth.device.member_id,self.cursor)=>r,
                 };
-                let Ok(batch) = result else {
-                    tracing::warn!("stream outbox read failed; closing");
-                    return None;
+                let batch = match result {
+                    Ok(batch) => batch,
+                    Err(error) => {
+                        if !self.retry_read(&error).await {
+                            return None;
+                        }
+                        continue;
+                    }
                 };
-                if batch.epoch != self.epoch {
+                self.read_failures = 0;
+                if batch.pruned_through > self.delivered_cursor {
                     self.terminal = true;
                     return Some(control("resnapshot", r#"{"reason":"retention_pruned"}"#));
                 }
                 self.cursor = batch.cursor;
                 self.drain = batch.scanned == stream::BATCH;
                 self.pending.extend(batch.events);
+                if self.pending.is_empty() {
+                    self.delivered_cursor = self.cursor;
+                }
                 continue;
             }
             tokio::select! {
@@ -224,7 +252,7 @@ impl Live {
 #[utoipa::path(get,
     path="/v1/stream",
     params(("Last-Event-ID"=Option<i64>,Header,description="Resume after the stream cursor"),("after"=Option<i64>,Query,description="Resume cursor when Last-Event-ID is absent")),
-    responses((status=200,description="Success",body=String,content_type="text/event-stream"),crate::openapi::UniversalProblems),
+    responses((status=200,description="Success; at most three streams per device and eight per member across listeners",body=String,content_type="text/event-stream"),crate::openapi::RateLimitProblem,crate::openapi::UniversalProblems),
     security(("session" = [])))]
 pub async fn get(
     State(state): State<AppState>,
@@ -233,6 +261,20 @@ pub async fn get(
     headers: HeaderMap,
     Query(query): Query<Cursor>,
 ) -> Result<Response, ApiError> {
+    let permit = match state
+        .stream_limits
+        .acquire(auth.device.device_id, auth.device.member_id)
+    {
+        Ok(permit) => permit,
+        Err(error) => {
+            let mut response = error.into_response();
+            // Over-quota requests must not occupy listener slots as idle keepalives.
+            response
+                .headers_mut()
+                .insert("connection", "close".parse().unwrap());
+            return Ok(response);
+        }
+    };
     #[cfg(feature = "testing")]
     if !state.stream_pre_subscribe_delay.is_zero() {
         state.stream_pre_subscribe_started.notify_one();
@@ -266,12 +308,14 @@ pub async fn get(
     let mut heartbeats = tokio::time::interval_at(heartbeat_at, state.settings.heartbeat);
     heartbeats.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut live = Live {
+        _permit: permit,
         state,
         auth,
         fingerprint,
         session_hash,
         cursor: 0,
-        epoch: 0,
+        delivered_cursor: 0,
+        read_failures: 0,
         pending: VecDeque::new(),
         opening: None,
         shutdown_sent: false,
@@ -287,8 +331,8 @@ pub async fn get(
         live.terminal = true;
     } else {
         let window = stream::window_at(&live.state.pool, (live.state.item_clock)()).await?;
-        live.epoch = window.epoch;
         live.cursor = cursor.unwrap_or(window.maximum);
+        live.delivered_cursor = live.cursor;
         if live.cursor > window.maximum || cursor.is_some_and(|after| window.expired(after)) {
             live.terminal = true;
             let reason = if live.cursor > window.maximum {

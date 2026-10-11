@@ -75,11 +75,15 @@ snapshot on a quiet household must not enter a resnapshot loop. O2's nightly `pl
 published rows strictly older than seven days below the first recent published sequence, retaining the
 quiet maximum and every unpublished row. Deletion and singleton `stream_retention` epoch/pruned_through
 advance commit atomically under `stream_assign_mutex`.
-Every live scan and batched queued delivery reads the epoch in the SAME statement snapshot as its rows.
-An epoch change sends terminal `resnapshot` with `{reason:"retention_pruned"}`, including slow/unpolled
-readers; no pruned prefix can silently disappear. Idle reads also check the generation. Reconnect performs
-normal window validation. `window_at` still aggregates outbox bounds per open; the constant-size generation
-protects held clients, not a claim of an indexed initial-window query. See [O2 contracts](data-out.md).
+Every live scan and batched queued delivery reads `pruned_through` in the SAME statement snapshot as its rows.
+Only pruning beyond the last fully flushed or wholly ACL-filtered scan cursor sends terminal `resnapshot`
+with `{reason:"retention_pruned"}`. A queued batch is not yet flushed: slow/unpolled readers cannot lose
+its prefix silently. Pruning already-consumed history leaves held streams alive. Idle wake/heartbeat scans
+perform the same check, without an extra per-frame generation query. Stream read/delivery SQL failures retry
+at 100/200/400 ms, retaining queued IDs for fresh ACL revalidation; exhaustion closes the body without falsely
+claiming pruning. Auth revalidation remains fail-closed. Reconnect performs normal window validation.
+`window_at` still aggregates outbox bounds per open; this is not a claim of an indexed initial-window query.
+See [O2 contracts](data-out.md).
 
 ## Session sliding and shutdown
 

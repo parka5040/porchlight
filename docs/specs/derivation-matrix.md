@@ -25,7 +25,8 @@ arrived meanwhile stays pending.
 | `item_assignees` DELETE | yes | yes (`unassigned`) | yes | `item.changed` + `item.access_changed` (removed member) |
 | `item_viewers` INSERT | no | revision only | yes | `item.changed` |
 | `item_viewers` DELETE | no | revision only | yes | `item.changed` + `item.access_changed` (removed member, only when visibility is `selected`) |
-| `item_reminders` INSERT / DELETE | yes | revision only | yes | `item.changed` |
+| `item_reminders` INSERT / DELETE (including copied `delivery_id`, immutable with the row; 0068) | yes | revision only | yes | `item.changed` |
+| `items` · `reminder_origin_id` (0068, insert-only split metadata; NULL means own ID) | through item creation | included in full item snapshot | — | `item.changed` |
 | `item_occurrences` · `status`, `completed_by`, `completed_at` | yes (reminders/agenda drop done instances; completion-based series get their next instance from `completed_at`) | `task_events` on `status` changes (`completed` / `reopened` / `status_changed`); a `completed_at`/`completed_by` correction alone writes none | no | `occurrence.changed` |
 | `item_occurrences` · `skipped_at` (status-recording metadata, maintained by trigger, not directly writable by agents) | through `status`, not independently | included in the status event snapshot | no | through `status` |
 | `item_occurrences` · `closed_at`, `board_moved` (trigger bookkeeping, not agent-writable) | through status/board writes only | no independent event | no | through status/key changes |
@@ -35,13 +36,52 @@ arrived meanwhile stays pending.
 | `household_members` · `tzid` | yes, for every non-deleted item the member owns, is the subject of, or is assigned to | no | no | `member.changed` |
 | `household_members` · `tz_source`, `tz_authority_device_id` | no (unless `tzid` changes too) | no | no | `member.changed` |
 
+Effective member zones share the pure, inlineable SQL function
+`pl_effective_member_zone(member_role, member_zone, household_zone)` (0073): dependents
+use the household zone; other roles use their own. It reads no tables and introduces no
+new stored/derived state. Callers retain authoritative member/household joins; existing
+role/member-zone/household-zone enqueue triggers remain the only dependencies.
+
+### Security history and renewal budget (0070)
+
+| Table · authoritative columns | Enqueue derivation | Audit | Bumps parent `version` | Outbox event |
+| --- | --- | --- | --- | --- |
+| `security_events` · `id`, `household_id`, `occurred_at`, `kind`, `actor`, `target_type`, `target_id`, `outcome` | no | this append-only record captures transaction attribution; no secrets; maintenance-only DELETE after one year | no | explicitly exempt: admin-only history, no device SSE or notifications |
+| `device_certificates` · `created_at` insertion clock + `(device_id,created_at,id)` index | no | renewal handler writes `certificate_renewed`; max three issuances/device/24h (including revoked leaves), no fresh issuance from leaves with a used successor | no | none; original-key reply replay retained |
+
+`device_certificates.first_seen_at` and `device_certificates.revoked_at` (0071) are monotonic per-leaf metadata;
+issuance fields, including `usage_tracked`, remain immutable. Usage has three states: used (`first_seen_at` set),
+confirmed unused (`usage_tracked=true` and never seen), and legacy unknown (`usage_tracked=false` and never seen).
+0071 marks existing rows untracked, then defaults new issuances to tracked. First successful mTLS authentication
+records `first_seen_at`, including for legacy leaves. Renewal may revoke only confirmed-unused successors; an
+unknown successor permits bounded issuance without revoking it, so both pre-upgrade use and lost replies are safe.
+The legacy leaf remains valid until expiry or explicit revocation; presenting it makes it used and fences older
+leaves' fresh issuance. All legacy and revoked issuances still count toward the daily budget.
+Revocation sends the existing `porchlight_revocation` hint; handshake reload and HTTP revalidation both reject that
+leaf, without revoking its device or sessions. No business outbox/derivation: trust metadata is not device-visible
+business state. The enclosing renewal retains its actor and `certificate_renewed` security event. Export's
+certificate allowlist and full backup include all three metadata columns.
+
+State-transition triggers cover device/session/PAT revocations, enrollment, reset issuance, role changes and
+member removal inside the handler's transaction. Semantic auth/renewal/recovery events are explicit writes.
+Household export and DB dump/restore include this history; member export and direct agent SQL exclude it.
+Full event/retention/grant inventory: [security-events.md](security-events.md). Server-only scope is owner-approved.
+
+### Admin token issuance (0066)
+
+`api_tokens` INSERT emits `token.created` via a definer trigger, with the transaction actor, owner member id and
+expiry only (never token material/hashes). Local recovery uses `agent:local-recovery` and the issued token id;
+normal issuance keeps its calling actor. This administrative attribution event follows ordinary outbox retention
+and is not a device SSE tickle. No derivation, parent bump or domain notification is enqueued. Existing grants,
+backup/restore coverage and token exclusion from household exports are unchanged.
+
 ### S7b collaboration (0035–0036)
 
 | Table · authoritative columns | Enqueue derivation | Audit | Bumps parent `version` | Outbox event |
 | --- | --- | --- | --- | --- |
 | `comments` · `id`, `household_id`, `item_id`, `author_id`, `author_token_id`, `body`, `mentions`, `edited_at`, `deleted_at` | no | append-only `collaboration_audit` with transaction actor on INSERT/UPDATE | no; own version only | `comment.changed` (`item_id` scope) |
 | `attachments` · `id`, `household_id`, `item_id`, `comment_id`, `blob_sha256`, `thumbnail_sha256`, `original_name`, `uploader_id`, `uploader_token_id`, `deleted_at` | no | append-only `collaboration_audit` with transaction actor on INSERT/UPDATE | no; own version only | `attachment.changed` (`item_id` scope) |
-| `blobs` · `household_id`, `sha256`, `size`, `content_type` | no | content-addressed metadata refreshed on dedupe; agent label required | no | none |
+| `blobs` · `household_id`, `sha256`, `size`, `content_type` | no | content-addressed metadata refreshed on dedupe; transactional household byte quota includes thumbnails and retained deleted bytes; agent label required | no | none |
 
 `comments` and `attachments` have immutable identity/parent/author/uploader keys guarded by `pl_version_guard`.
 Attachment hash/name fields cannot change after creation. Live blob links are validated under sorted blob UPDATE
@@ -59,7 +99,7 @@ dependents/deleted members and non-readers through `pl_item_can_read`. Dedupe ke
 A recipient who is both assignee and newly mentioned receives both kinds; repeated mentions and unchanged body
 patches do not emit. Domain savepoint rollback and idempotent replay do not leak/repeat events.
 `snapshot_comments_s4b` and `snapshot_attachments_s4b` contribute live metadata in the existing `/v1/snapshot`
-REPEATABLE READ transaction/cursor view. `COMMENT_SEARCH_SOURCE` shares the generated simple-language comment FTS
+REPEATABLE READ transaction/cursor view. `comment_search_source()` returns ACL-complete SQL and shares the generated simple-language comment FTS
 index used by `/v1/search`'s item/list/comment UNION in one read-only REPEATABLE READ transaction. All sources use shared SQL `VISIBLE`; Rust capability policy remains
 S4a's. Search cursors bind caller/query and the bytewise `(entity_type,id)` composite key. Soft-deleted comments,
 attachments and attachment parents are excluded. `comment.changed` and `attachment.changed` have entity IDs and
@@ -71,6 +111,9 @@ payload `{item_id}` only; the closed stream allow-list routes both with current 
 
 Relationship rows (`item_assignees`, `item_viewers`, `item_reminders`) are immutable: change them by DELETE + INSERT.
 UPDATE on them is rejected (`PL422`), so the parent bump, audit, enqueue and eviction rules above cover every change.
+Raw INSERT/DELETE writers must prelock the complete parent item set `FOR NO KEY UPDATE` in ascending UUID
+order, or roll back and retry the **whole transaction** on `55P03` from the parent NOWAIT guard. See
+[global lock order](lock-order.md); retrying just the child statement in a still-held transaction is not safe.
 
 Item-row `item.access_changed` events carry `recipients` as an ascending array of UUID strings, computed from the
 old owner/visibility and authoritative relationship rows: owner, assignees, viewers for `selected`, and all live
@@ -82,7 +125,7 @@ Relationship DELETE events keep their `member_id` payload (the removed member).
 | Table · columns | Classification / writer | Enqueue derivation | Revision / version / outbox |
 | --- | --- | --- | --- |
 | `ics_sources` · `owner_member_id`, `target_member_id`, `kind`, `import_key`, `name`, `url`, `allow_http`, `refresh_seconds`, `enabled`, `visibility`, `deleted_at` | Authoritative configuration; app service or labelled agent SQL (identity fields immutable) | source settings propagate owner/subject/visibility/badge to live feed items and derive through the retained WriteScope (raw trigger enqueues); removal soft-deletes them and retires UID maps; fetch writes ordinary appointment inputs | Every insert/update bumps `version`, records actor + `ics_source_revisions` snapshot excluding `last_warnings`; feeds emit `ics_source.changed` with source ID and recipient `member_id` only |
-| `ics_sources` · `next_fetch_at`, `last_fetch_at`, `last_status`, `last_error`, `last_warnings`, `failure_count`, `apply_timeout_count`, `etag`, `last_modified` | Generated operational fetch state; scheduler and explicit refresh enqueue | none | Same version/audit/tickle as configuration; `last_error` is a static category, including `calendar_too_large` for admission and `apply_retryable` for the first two deadline failures and `apply_timeout` for three consecutive deadline failures on identical fetched bytes. `last_warnings` contains sanitized remote UIDs/messages, capped at 50 entries × 200 total text characters per entry with an omitted count; excluded from append-only revision snapshots |
+| `ics_sources` · `next_fetch_at`, `last_fetch_at`, `last_status`, `last_error`, `last_warnings`, `failure_count`, `apply_timeout_count`, `etag`, `last_modified` | Generated operational fetch state; scheduler and explicit refresh enqueue | none | Same version/audit/tickle as configuration; `last_error` is a static category, including `calendar_too_large` for admission and `apply_retryable` for the first two deadline failures and `apply_timeout` for three consecutive deadline failures per source regardless of fetched content. `last_warnings` contains sanitized remote UIDs/messages, capped at 50 entries × 200 total text characters per entry with an omitted count; excluded from append-only revision snapshots |
 | `items` · `ics_source_id` | Authoritative feed marker (household-scoped source FK), set by the retained import WriteScope. Existing raw-agent item grants permit administrative correction; one-off imports keep NULL | no (capabilities, not timing) | Existing full item revision/version and `item.changed`; never infer read-only from editable `source` badge text |
 | `ics_uid_map` · `source_id`, `uid`, `recurrence_key`, `item_id`, `occurrence_id`, `expanded_start`, `content_hash` | Generated adapter identity bookkeeping (app insert/update/delete, agent read-only) | none | Source-local typed key, no independent version/revision/outbox. Domain writes retain normal item/occurrence bookkeeping and actor; removed exceptions relinquish source ownership |
 | `ics_source_revisions` · `source_id`, `source_version`, `snapshot`, `actor`, `created_at` | Generated append-only definer-trigger history | none | No recursive bookkeeping; maintenance-only physical delete |
@@ -103,11 +146,14 @@ A complete representation change reassigns keys without editing an old master as
 Before acquiring domain/member locks, imports and feeds enforce a cumulative **4 000-unit work budget**
 (controller R76 supersedes R67 sizing; R67 counting remains): one unit per parsed event, plus projected rows
 and EXDATE anchors only for new/changed items, plus existing occurrence rows only for changed/restored/removed
-items (deduplicated by item ID), plus **2 units per removed item** (R80/M3, see below). Mappings of items that earlier refreshes already soft-deleted are retained but charge nothing (I-new-3). Independently changed/removed retained exceptions charge their master's
+items (deduplicated by item ID), plus **2 units per removed item** (R76 work budget, see below; R80 governs deadline-failure streaks). Mappings of items that earlier refreshes already soft-deleted are retained but charge nothing (I-new-3). Independently changed/removed retained exceptions charge their master's
 projection/history; unchanged hashes do not charge mappings, stored rows or a moving horizon. A per-UID
 changed-exception set is built once, avoiding a quadratic scan across all masters. Retained projections count
-from DTSTART with an allocation-free bounded visitor and explicit operation clock. R12's 10 000-instance limit
-is **parse/expansion only**, not an apply guarantee. The review's 12 weekly series + 200 one-offs cost 3 244
+from DTSTART with an allocation-free bounded visitor and explicit operation clock. The window extends through
+all retained EXDATE/override identities, including nonmatching identities beyond the horizon: their history
+walk is charged before domain writes. Exception application uses one bounded expansion per master, never one
+full traversal per exception. Candidate visits are independently capped at 500 000, even for sparse rules.
+R12's shared 10 000-instance parse/materialization limit is not an apply guarantee. The review's 12 weekly series + 200 one-offs cost 3 244
 on import and 684 on a one-series-change refresh.
 
 Removal and change at the cap (M3, same build, `--full` tests `fix3_full_cap_removal_apply` / `fix3_full_cap_change_apply`):
@@ -165,7 +211,7 @@ fetching with member_removed; recreate the source under an active admin. Normali
 | Table · columns | Written by | Outbox event |
 | --- | --- | --- |
 | `item_occurrences` · `item_id`, `seq`, `local_start`, `local_end`, `local_due`, `due_date`, `starts_at`, `ends_at`, `due_at`, `disposition` (and the generated `is_detached`, `during`) | derivation (rows inserted, updated or deleted) | `derived` (item, applied gen) |
-| `member_agenda` (all) | derivation | `derived` |
+| `member_agenda` (all, including recipient-local `disposition`; additive nullable wire field during upgrade) | derivation | `derived` |
 | `scheduled_reminders` (all) | derivation | `derived` |
 | `item_derivation` · `applied_gen`, `attempts`, `retry_at`, `last_error`, `calendar_horizon` | derivation; enqueue triggers bump `requested_gen` and reset `attempts`, `retry_at`, `last_error` | `derived` on apply or terminal error |
 | Conflict and reminder notifications | S6 (using S3 conflict outcomes/reminder rows), deduplicated per (occurrence, member, kind) | `notification.created` |
@@ -177,7 +223,7 @@ fetching with member_removed; recreate the source under an active admin. Normali
 | --- | --- | --- |
 | `comments`, `attachments` · `version`, `created_at`, `updated_at` | version guard / database defaults; clients and agent column grants cannot set them | parent row's collaboration event |
 | `collaboration_audit` · `id`, `household_id`, `entity_type`, `entity_id`, `action`, `actor`, `created_at` | definer collaboration trigger; append-only; app/agent SELECT only | none (source row emits) |
-| `blob_storage_locks` · `shard` | migration seeds 256 fixed rows; HTTP/GC lock only; no deletion or domain effect | none |
+| `blob_storage_locks` · `shard` | migration seeds 256 fixed rows; HTTP/GC lock only; shard 00 also serializes volume quota admission before the remaining shards; no deletion or domain effect | none |
 | `blobs` · `created_at`, `last_referenced_at` | database default / ingestion upsert / reference trigger; orphan-adoption function may seed old unreferenced metadata for GC | none |
 | `blob_leases` · `id`, `holder`, `created_at`, `expires_at`; `blob_lease_items` · `lease_id`, `household_id`, `sha256` | `pl_take_blob_lease` definer captures current live main/thumbnail references, max 24-hour expiry; backup role/app release, daily GC expiry cleanup | none |
 
@@ -200,8 +246,15 @@ backup-role grants are available here, but the existing O1 job has not been chan
   sequence 0 keeps the original item (no empty head/duplicate series). Composite FKs keep lineage within a household.
   Migration 0012 permits only lineage-checked reparenting of occurrence keys: head rows at/after the split move to
   tail `(item_id, seq - at_seq)`, keeping IDs, status, board position, completion and overrides. This authoritative
-  scope operation removes moved rows' agenda/reminder projections under held locks, then explicitly derives head BEFORE tail regardless of UUID order; it does not change raw enqueue trigger column lists or agent
-  grants. Occurrence version/audit guards remain active; arbitrary key edits still fail PL422.
+  scope operation captures moved agenda member/local-date pairs for finish's load recomputation under held member
+  locks, then removes those agenda rows. Reminder obligations are reparented with unchanged delivery identities:
+  0068 copies the immutable default `items.reminder_origin_id` and explicit `item_reminders.delivery_id` to the tail
+  (NULL means the row's own ID, preserving pre-upgrade witnesses without backfill). Concurrent head-snapshot
+  production and clock-rewind regeneration therefore dedupe against the same witness. Origins are values, not
+  ancestor FKs, and survive parent edits/purge. Head derives BEFORE tail, whose ordinary replacement retains only
+  unchanged due recipient/identity/fire-time tuples within retention. Timing,
+  recipient or offset edits do not resurrect invalid obligations. Raw enqueue trigger column lists and agent
+  grants do not change. Occurrence version/audit guards remain active; arbitrary key edits still fail PL422.
 - Nominal metadata is optional only for fixed **timed** calendar tails whose resolved start/due OR end loses nominal wall
   time. `nominal_wall_duration` is an exact positive **bigint microsecond length**, never a month-bearing interval;
   deadline metadata has no duration. Rehydrate every row with `SeriesSpec::new_with_calendar_cursor`. Clear BOTH
@@ -211,22 +264,35 @@ backup-role grants are available here, but the existing O1 job has not been chan
 - The 18-month horizon bounds ONLY calendar recurrence expansion. Non-recurring items always materialize seq 0,
   including undated todos and arbitrarily distant dated appointments; completion series always materialize the
   first/current successor independent of the horizon. Timing edits retain occurrence IDs.
+- Calendar materialization has a shared **10 000-occurrence** cap (including history from DTSTART) and a
+  **500 000-candidate** traversal cap. Ordinary API create/update rejects over-budget specs with a 422 `rrule`
+  field error before allocating anchors or writing the master. Legacy/raw-SQL over-budget inputs derive only a
+  bounded prefix and retain a visible `last_error` warning (without replacing an existing error). Every existing
+  occurrence outside that prefix is preserved, including doing/backlog/board state, and remains projected. General core expansion rejects exhaustion; only derivation accepts an explicitly flagged prefix.
 - `item_occurrences.skipped_at` is status-recording metadata maintained by `pl_record_skip`: synchronous app operations
   supply their injected operation time; raw-SQL status transitions record `statement_timestamp()` (not transaction
   start, derivation time or the skipped anchor). Agents cannot directly write the column. Every transition INTO
   skipped records a fresh timestamp, even after reopen; app timestamps are injected. Historical pre-0012 skipped rows
   use `skipped_at = updated_at` as an approximation because the original instant cannot be reconstructed.
+  Fixed-clock seam constraint: an explicit timestamp equal to the retained previous `skipped_at` cannot be
+  distinguished from an unchanged raw-SQL column by this trigger, so a re-skip at that exact instant uses
+  `statement_timestamp()`. Inject distinct operation instants when testing repeated skipped transitions.
   Completion successors use the LATEST closure time (max completed_at/skipped_at among closed rows, sequence as
   tie-breaker), not the highest sequence. Skips without completed_by use the household zone. Reopen retains the
   original anchor and `closed_at` marker; an open row's old closure is not considered closed history.
   **R31:** reopening the latest closed occurrence removes its untouched open successor (todo, no overrides,
   not detached, never board-moved). A touched successor retains identity/anchor, leaving two open occurrences;
   this is the explicit exception to the spec's exactly-one-open rule. `board_moved` remains true even after a move
-  back to the default key. Automatic tie-respread bystanders are NOT board-moved. Latest uses `(closed_at, seq)`
+  back to the default key. An entirely unchanged move plan is a true no-op (no version/marker/outbox
+  change). A meaningful tie-respread can retain the mover's own key but still set its marker; that marker
+  change emits an occurrence outbox event. Automatic tie-respread bystanders are NOT board-moved; app
+  WriteScope and trusted migration/owner operations may use `board_mover` to identify them. Raw SQL agents
+  cannot suppress the marker with that GUC.
+  Latest uses `(closed_at, seq)`
   for both N1 and R31, including the reopened row's retained closure instant for R31; reclosed older rows can be latest.
   An older reopened closure can coexist with its successor until reclosed.
 - **R63 carry-over contract (Ruling R63).** Carry-over guarantees are invariants over current persisted state,
-  not identity under history. `core/tests/items_carry_model.rs` checks them after every operation (P1–P8 probes;
+  not identity under history. `core/tests/domain/items_carry_model.rs` checks them after every operation (P1–P8 probes;
   256 fixed-seed and 256 random-seed operation sequences per run). The engine must also equal the rule below, ignore
   input order and be idempotent. Skip and stack stay stateless; disposition stays generated.
   - Invariants: (1) at most one open row is overdue. Exactly one is overdue while some missed open row is not
@@ -239,6 +305,9 @@ backup-role grants are available here, but the existing O1 job has not been chan
     same zone/DST/R10 resolution. Due-since is the earlier of the generated and effective boundary, with sequence
     breaking ties. Postponed means detached later than its generated boundary, once that boundary has passed.
     Retained means a missed open row persisted overdue. A claim is a retained or postponed row.
+    "Older" compares `(min(generated, effective), seq)` (use the available boundary if only one exists),
+    not row insertion time or the override alone. "Non-expired" means the persisted disposition is not
+    `expired`, before this derivation; it does not mean that the effective boundary lies in the future.
   - Coverage: missed rows that expire whatever their rank.
     - Closure: a closed row persisted overdue (closed carried work) covers rows whose boundary precedes its
       closure, refreshed or not. A closed row persisted open that was postponed at closure (moved carried work
@@ -258,6 +327,9 @@ backup-role grants are available here, but the existing O1 job has not been chan
     - Ranking claims by due-since keeps older carried work when a younger instance is postponed (P1, P6–P8, NB-1).
       It also lets the moved row win its new boundary against siblings at the same or a later boundary, with or
       without an intermediate refresh (P3, P3b).
+    - Reopening older carried work retains its persisted overdue disposition. It therefore becomes a
+      retained claim, is not closure-covered, and wins against a younger claim by oldest due-since; this
+      deliberately can replace the currently carried identity. The rule depends on persisted state, not history.
     - Non-expired before expired keeps a carried row moved forward and back (P2, P5) instead of reviving
       superseded peers.
     - The latest boundary keeps the established initial latest-only election; ties go to the lowest sequence (R63).
@@ -276,13 +348,20 @@ backup-role grants are available here, but the existing O1 job has not been chan
       intermediate derivation would have retained the earliest.
     - Round 3's identity-exact model is withdrawn. Its proof histories now reach identical inputs and carry seq0
       by rule.
+- Floating agenda/reminder expiry is computed per recipient in that recipient's effective zone (dependents use
+  the household zone), even when the owner is not an agenda member. The single board occurrence disposition retains
+  the owner/subject-zone rule. Clock refresh checks both that aggregate and recipient agenda membership, so a later
+  recipient boundary still enqueues after the board has expired. Reminder production and planning consume the
+  recipient projection, not the aggregate board expiry. Floating suggestion acceptance rechecks the same recipient
+  disposition from authoritative anchors under the retained scope locks. Fixed timed items retain their item-zone boundaries.
 - Occurrence regeneration upserts generated anchors only, preserving detached/completed/skipped anchors and all
   authoritative state. Open dispositions are recomputed even for detached rows. Local overrides resolve with the
   shared R10 `resolve_span`; collapsed/inverted gap spans keep resolved start plus nominal wall duration.
 - `board_position` defaults to `80`. Migration 0012 rebalances every household board containing any noncanonical
   legacy key in `(status, board_position COLLATE "C", id)` order. Every runtime board order is
   `(board_position COLLATE "C", id)`, so equal-key inserts remain deterministic. Runtime moves rebalance only the
-  minimal contiguous tied/exhausted run INSIDE the target status's household Board projection domain (next open
+  minimal contiguous tied run; only when its bounded spread is exhausted does the run widen outward (including
+  tied edges), planning all extra IDs before lock acquisition. The run stays INSIDE the target status's household Board projection domain (next open
   occurrence per series, plus Done completed in the last seven days). Visibility never narrows the domain; future
   occurrences and expired Done keep their keys. The free board wrapper uses its injected `now` throughout planning,
   rechecks and the move; direct WriteScope begin captures server time once (its public API is unchanged).
@@ -328,6 +407,9 @@ backup-role grants are available here, but the existing O1 job has not been chan
   effects/bookkeeping; built-in sweeps intentionally retain earlier successful items on interruption and are
   idempotent on retry. Failed jobs use min(5s × 2^attempts,15min), not every poll. `running_since` was removed because
   uncommitted job-row election made it permanently invisible; observers see committed last_run/success/error/attempts.
+  Jobs register once per runner. Each five-second tick performs one shared unlocked due-name read; only due jobs
+  open actor-attributed election transactions, rechecking due time with `FOR UPDATE SKIP LOCKED`. Startup catch-up
+  and concurrent-runner exclusion are unchanged.
 - Lineage indexes support both composite FKs. Physical purge (S5) deletes dependent occurrence/relationship/derived
   children and history, then notification_events just before items, then descendant tails before heads/roots; clear lineage on survivors if retaining them. Self-root references
   may be cleared before purge. No cascading domain deletion is granted to app/agent roles.
@@ -344,6 +426,12 @@ backup-role grants are available here, but the existing O1 job has not been chan
   is introduced here. Item revisions use `to_jsonb`, so new authoritative fields are captured automatically.
 
 ## Ordering and gaps
+
+- Migration 0067 enforces the core canonical key predicate `^([0-9a-f]{2})*80$` and 2–64 ASCII bytes
+  on board/list positions. Affected household boards and lists are respread in original `(position COLLATE "C", id)`
+  order, including historical/archived rows; valid collections stay untouched. Repair writes batch at 1,000 rows
+  and preserve ordinary version/audit/outbox effects without setting board-moved. The restartable migration commits
+  its `NOT VALID` additions before separate validation scans, avoiding an exclusive table lock during validation.
 
 - Global [lock order](lock-order.md): idempotency claim → device → session → user credentials → items → occurrences → derivation → affected `household_members` rows `FOR NO KEY UPDATE` in id order (R7; the app role cannot use advisory locks); never `households … FOR UPDATE`. Domain order remains items → item_occurrences → item_derivation (see the master plan's derivation contract).
 - `stream_seq` is publication order (assigned after commit), not producer commit order, and may have gaps.
@@ -384,6 +472,9 @@ Occurrence local start/end overrides may now schedule todo/deadline work while r
 appointment anchors keep inherited-bound partial overrides. Generated
 member_agenda then includes a buffered busy span for that task; this is the same occurrence input/output split and
 enqueue trigger, not a new item field or bypass of WriteScope. Load counts scheduled start day before deadline day.
+EDF checks positive nominal spans and exact endpoint round trips through the same earlier-fold override policy as
+acceptance, using the fixed item's zone or the floating recipient zone. Unrepresentable fold bounds are skipped
+while searching the same free window; unused prefixes remain available to later tasks.
 Notification producers use migration 0015 pl_emit_notification_event; ONE statement over enter/leave
 (member,date) transitions only in member-local [today,today + 14 days], no events for untracked members (R47).
 Full dumps/backups include all seven new tables (purge member_load_signals before members); O2 member export should include availability + suggestions, not queue/audit.
@@ -422,8 +513,11 @@ If-Match protects metadata/ACL only, not the checked-entry set; checks bump entr
 checked entries at execution time. Empty/same-value PATCH and empty clear emit nothing.
 Attached lists with deleted parents are excluded from default collection/snapshot/search callers, including agents;
 per-row Rust ACL rejections are skipped, not propagated as a page error. The dedicated `include_orphaned=true`
-collection filter exposes cleanup candidates only to their list owner/super admin, with view/delete capabilities.
-Such lists remain versioned-deletable (204); parent deletion does not cascade.
+collection filter exposes cleanup candidates only to their list owner/super admin. Content requires the parent
+item's authoritative ACL, ignoring only `deleted_at`: authorized readers receive view/delete capabilities;
+other cleaners receive only id, version, item_id, mode, owner_id, `redacted: true`, delete capability and empty
+entries/Got it/viewers (no name). Such lists remain versioned-deletable (204); parent deletion does not cascade.
+Conflict responses use the same redaction. App super-admin status never grants private parent content access.
 
 Backup's complete `pg_dump -Fc` includes all six tables; O2's export and purge integration must include viewers, checks,
 entry revisions then entries, and list revisions then lists. Shared snapshot calls `lists::snapshot_contribution`
@@ -492,7 +586,6 @@ writer's access, or a reopen that regenerates away a rule-removed historical occ
 | Purge item dependents | assignees, viewers, reminders, occurrences, agenda, scheduled reminders, derivation, revisions, task and notification events removed | No runtime DDL/GRANT (R55); notification SELECT/DELETE declared in 0016 and EXPECTED_GRANTS. |
 | Attached list dependents | lists, entries, viewers, checks (incl. occurrence-linked checks), list/entry revisions removed and counted | Children before parents; no silent cascades. Maintenance SELECT privileges are declared after 0030 in assigned migration 0060 (R58), with DELETE from 0030; EXPECTED_GRANTS lists both. Positive purge tests use these real migration grants, never a test-only fixture. |
 | Derive retry | attempts=0, retry_at=injected now, last_error=null, worker tickle | Item NKU before job write. Typed response reports queued only when an existing job has applied_gen < requested_gen; missing/acknowledged jobs report false. |
-
 | Calendar identity map (`ics_uid_map`) | Count and explicitly delete selected items' map rows before occurrences/items | Its composite item FK is NO ACTION; rows cannot be nulled (`item_id` NOT NULL). Source records and append-only source revisions are independent and retained. No occurrence FK (adapter re-resolves keys). SELECT/DELETE is reaffirmed in 0060 and EXPECTED_GRANTS. |
 | Planning proposals (`schedule_suggestions`) | Count and explicitly delete selected items' proposals (all statuses) before occurrences/items | Its composite item FK is NO ACTION; item/occurrence references are NOT NULL. No occurrence FK (regeneration may remove instances). Existing planning_audit survives; deletion triggers append a new actor-attributed DELETE audit/tickle. SELECT/DELETE is reaffirmed in 0060 and EXPECTED_GRANTS. |
 | S6b stream (`0025`) | No item/occurrence FK added; no additional purge relation/count | Transactional outbox survives item deletion as already modelled; authoritative reads filter delivery. |
@@ -500,9 +593,9 @@ writer's access, or a reopen that regenerates away a rule-removed historical occ
 ### R56b (extends R56a): purge extension procedure (O2 owner)
 
 `pl_purge_relations` is the single private retention plan: relation names, exact row selections and deletion
-order drive locks, catalog inspection, pre-delete counts and explicit deletes. The owner probe computes the
-transitive FK closure seeded by every existing deletion relation using `pg_constraint` (cycle-safe UNION), then inspects **every incoming FK
-into every relation this plan deletes from**, regardless of child schema or ON DELETE action. This covers
+order drive locks, catalog inspection, pre-delete counts and explicit deletes. The owner probe (0071) directly
+enumerates **every incoming FK into every relation this plan deletes from**, regardless of child schema or
+ON DELETE action. It does not recursively add deletion parents: an unknown selected dependent blocks the plan. This covers
 notification_events, planning proposals, list parents and deep list history, not just items/occurrences.
 Its handled set matches relation, ordered source columns and ordered referenced columns, not FK names.
 A known FK is safe only when its dependent rows are also in the explicit child deletion selection; new FK
@@ -517,13 +610,22 @@ inspection, preventing concurrent FK insertion into any deletion parent, includi
 search_path; identifier-quoted joins built from FK attributes; only maintenance has EXECUTE). This allows
 inspection of migration-owned extension relations **without** broad/default SELECT grants to maintenance or
 runtime DDL. The maintenance-owned purge definer still has only explicit grants for counted relations. All
-porchlight relations retain the project's migration ownership invariant (`porchlight_owner`).
+porchlight relations retain the project's migration ownership invariant (`porchlight_owner`). An inbound child
+without schema USAGE or SELECT for the probe owner is uninspectable and returns the same fail-closed dependency
+response, even if it might be empty; no broader grants are made automatically.
+
+Before each parent DELETE, a stage-aware probe rechecks its inbound edges. Selected children whose earlier
+planned deletion already ran must now be absent; a trigger-created dependent causes `PL409` and rolls back
+all counts/audit/deletes. Extension triggers must obey the explicit deletion order and must not create new
+references during the affected parent's own DELETE or defer dependency creation past its guard. Arbitrary
+parent-delete/deferred dependency-producing triggers are not supported; extensions need a reviewed retention
+migration, not reliance on cascades. Ordinary history generation must precede its planned cleanup stage.
 
 O2 migration 0055 extends S5's shared plan/probe once: comments, attachments, notification_sources and
 notification_event_delivery are now explicitly counted/deleted, and selected notifications item/occurrence
 references are counted/severed while recipient history and unrelated coalesced sources survive. Blob metadata,
 bytes and collaboration_audit remain for GC/history; `blob_references` counts severed main/thumbnail references.
-The FK-shape/second-order closure guard remains fail-closed for every future unknown dependency. No runtime DDL
+The FK-shape guard remains fail-closed for every future unknown dependency of a planned deletion parent. No runtime DDL
 or broad maintenance grants were introduced; PurgeCounts, EXPECTED_GRANTS and the CLI golden include every count.
 Future extensions must use the maintenance-owner migration dance, revoke CREATE again, extend the shared
 selection/order plan and verify counted deletion + unknown NO ACTION/CASCADE refusal. A helper's existence
@@ -533,7 +635,7 @@ alone never authorizes an uncounted cascade. See [O2 data-out contracts](data-ou
 
 | Table/column | Authority and maintenance | Domain derivation / revision / outbox |
 | --- | --- | --- |
-| `stream_retention` · id, epoch, pruned_through | singleton generated by committed published seven-day prefix pruning; app/agent SELECT only | none; atomic epoch forces held-stream resnapshot, porchlight_stream wake |
+| `stream_retention` · id, epoch, pruned_through | singleton generated by committed published seven-day prefix pruning; app/agent SELECT only | none; atomic pruned_through forces resnapshot only for held cursors that lost history; porchlight_stream wake |
 | `purge_log` · counts | maintenance per-table counts, nightly empty item_ids; append-only | none; no item enqueue on retention |
 | `blob_leases` · expires_at | `pl_renew_blob_lease` locks pinned blobs then renews only a live lease | none; no expired revival; GC exclusion persists until expiry/release |
 | `notification_kinds` · `backup_stale` | R53 registry INSERT only, hourly system producer/live super admins after 26h, last-success/recipient dedupe | ordinary notifier and recipient-private outbox, no domain derivation |

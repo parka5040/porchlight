@@ -114,8 +114,16 @@ async fn serving_health(socket: &std::path::Path) -> anyhow::Result<()> {
                 .body(Empty::<Bytes>::new())?,
         )
         .await?;
+    if response.status() == hyper::StatusCode::UPGRADE_REQUIRED {
+        bail!(
+            "serving-process readiness HTTP 426: client version mismatch; use the matching release healthcheck binary and check the server minimum client version"
+        );
+    }
     if response.status() != hyper::StatusCode::NOT_FOUND {
-        bail!("unexpected serving-process readiness response");
+        bail!(
+            "unexpected serving-process readiness HTTP {}",
+            response.status().as_u16()
+        );
     }
     let bytes = Limited::new(response.into_body(), 4096)
         .collect()
@@ -198,5 +206,38 @@ mod tests {
             assert_eq!((got.0.as_str(), got.1.as_str()), want);
             conn.close().await.unwrap();
         }
+    }
+}
+
+#[cfg(test)]
+mod audit_bl_server {
+    use super::*;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    #[tokio::test]
+    async fn readiness_upgrade_error_is_actionable_and_redacted() {
+        let dir = tempfile::tempdir_in(concat!(env!("CARGO_MANIFEST_DIR"), "/../../var")).unwrap();
+        let socket = dir.path().join("r");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let peer = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                assert!(reader.read_line(&mut line).await.unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            reader.get_mut().write_all(b"HTTP/1.1 426 Upgrade Required\r\nContent-Length: 13\r\nConnection: close\r\n\r\nsecret-marker").await.unwrap();
+        });
+        let error = serving_health(&socket).await.unwrap_err().to_string();
+        peer.await.unwrap();
+        assert!(
+            error.contains("426") && error.contains("version"),
+            "readiness must identify version mismatch"
+        );
+        assert!(!error.contains("secret-marker"));
     }
 }

@@ -1,7 +1,16 @@
 # Opt-in override, persisted by install.sh funnel in the stack .env.
 # Raw TCP + PROXY v2 only: household TLS still terminates in the API.
+x-logging: &bounded-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
 services:
   tailscale:
+    logging: *bounded-logging
+    mem_limit: 256m
+    cpus: "0.5"
+    pids_limit: 128
     profiles: [funnel]
     image: "tailscale/tailscale@sha256:${TAILSCALE_IMAGE_SHA256:?provide verified Tailscale image digest}"
     restart: unless-stopped
@@ -34,6 +43,8 @@ services:
       ingress: {ipv4_address: "${FUNNEL_IP:-172.29.251.10}"}
     healthcheck:
       test: ["CMD", "tailscale", "status", "--peers=false"]
-      interval: 5s
+      interval: 30s
+      start_period: 60s
+      start_interval: 5s
       timeout: 5s
       retries: 24

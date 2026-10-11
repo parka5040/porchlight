@@ -90,6 +90,7 @@ pub struct Scheduler {
     pool: PgPool,
     clock: Arc<dyn Clock>,
     jobs: Vec<Job>,
+    registered: tokio::sync::OnceCell<()>,
 }
 impl Scheduler {
     pub fn new(pool: PgPool, clock: Arc<dyn Clock>, jobs: Vec<Job>) -> anyhow::Result<Self> {
@@ -102,25 +103,44 @@ impl Scheduler {
             anyhow::ensure!(names.insert(job.name.clone()), "duplicate job name");
             job.schedule.next_after(clock.now())?;
         }
-        Ok(Self { pool, clock, jobs })
+        Ok(Self {
+            pool,
+            clock,
+            jobs,
+            registered: tokio::sync::OnceCell::new(),
+        })
     }
     /// First registration is due immediately; subsequent registrations preserve the persisted cursor.
     /// Overdue jobs run ONCE, not once per missed interval. Failures use capped exponential backoff.
     pub async fn tick(&self) -> anyhow::Result<usize> {
         let now = self.clock.now();
-        let mut count = 0;
-        for job in &self.jobs {
-            // Register outside the runner tx: a concurrent ON CONFLICT must not wait on a running job.
-            // Only insert when absent; after registration no writer touches its row before SKIP LOCKED.
-            let exists: bool = sqlx::query_scalar(
-                "select exists(select 1 from porchlight.scheduler_jobs where name=$1)",
-            )
-            .bind(&job.name)
-            .fetch_one(&self.pool)
-            .await?;
-            if !exists {
-                sqlx::query("insert into porchlight.scheduler_jobs(name,next_due_at) values($1,$2) on conflict do nothing").bind(&job.name).bind(now).execute(&self.pool).await?;
+        self.registered.get_or_try_init(|| async {
+            for job in &self.jobs {
+                // Registration is once per runner, outside election transactions.
+                // Existing locked rows are read, never conflict-updated.
+                let exists: bool = sqlx::query_scalar(
+                    "select exists(select 1 from porchlight.scheduler_jobs where name=$1)",
+                ).bind(&job.name).fetch_one(&self.pool).await?;
+                if !exists {
+                    sqlx::query("insert into porchlight.scheduler_jobs(name,next_due_at) values($1,$2) on conflict do nothing").bind(&job.name).bind(now).execute(&self.pool).await?;
+                }
             }
+            Ok::<(), sqlx::Error>(())
+        }).await?;
+        // This unlocked hint is the only idle-tick read. The election below must
+        // still recheck due time under SKIP LOCKED against other runners.
+        let names: Vec<_> = self.jobs.iter().map(|job| job.name.as_str()).collect();
+        let due: std::collections::BTreeSet<String> = sqlx::query_scalar(
+            "select name from porchlight.scheduler_jobs where name=any($1) and next_due_at<=$2",
+        )
+        .bind(&names)
+        .bind(now)
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .collect();
+        let mut count = 0;
+        for job in self.jobs.iter().filter(|job| due.contains(&job.name)) {
             let mut tx = begin_as(&self.pool, &Actor::system()).await?;
             let due:Option<i32>=sqlx::query_scalar("select attempts from porchlight.scheduler_jobs where name=$1 and next_due_at<=$2 for update skip locked").bind(&job.name).bind(now).fetch_optional(&mut *tx).await?;
             let Some(attempts) = due else {
@@ -168,16 +188,7 @@ impl Scheduler {
             tokio::select! {()=shutdown.as_mut()=>return Ok(()),result=self.tick()=>{if result.is_err(){tracing::warn!("scheduler tick failed; retrying next tick");}}}
         }
     }
-    /// S7b: add daily collection without changing the existing derivation constructor.
-    pub async fn derivation_with_blobs(
-        pool: PgPool,
-        clock: Arc<dyn Clock>,
-        root: std::path::PathBuf,
-    ) -> anyhow::Result<Self> {
-        let scheduler = Self::derivation(pool, clock).await?;
-        Ok(scheduler.with_blobs(root))
-    }
-    fn with_blobs(mut self, root: std::path::PathBuf) -> Self {
+    fn with_blobs(mut self, root: std::path::PathBuf, budget: crate::blobs::DiskBudget) -> Self {
         let pool = &self.pool;
         let gc_pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(1)
@@ -202,8 +213,9 @@ impl Scheduler {
                 let root = root.clone();
                 let pool = gc_pool.clone();
                 let metadata_pool = metadata_pool.clone();
+                let budget = budget.clone();
                 Box::pin(async move {
-                    crate::blobs::gc(&pool, &metadata_pool, &root, now).await?;
+                    budget.gc(&pool, &metadata_pool, &root, now).await?;
                     Ok(())
                 })
             },
@@ -216,7 +228,9 @@ impl Scheduler {
     ) -> anyhow::Result<Self> {
         Self::derivation_with_fetcher(state.pool.clone(), clock, state.calendar_fetcher.clone())
             .await
-            .map(|scheduler| scheduler.with_blobs(state.settings.data_dir.clone()))
+            .map(|scheduler| {
+                scheduler.with_blobs(state.settings.data_dir.clone(), state.disk_budget.clone())
+            })
     }
     pub async fn derivation(pool: PgPool, clock: Arc<dyn Clock>) -> anyhow::Result<Self> {
         Self::derivation_with_fetcher(pool, clock, crate::calendar::fetch::Fetcher::default()).await
@@ -442,7 +456,7 @@ async fn refresh_one(
     }
     let row = derive::load_item(conn, id).await?;
     let spec = row.spec()?;
-    let z: String = sqlx::query_scalar("select case when m.role='dependent' then h.tzid else m.tzid end from porchlight.household_members m join porchlight.households h on h.id=m.household_id where m.id=$1").bind(row.subject_member_id.unwrap_or(row.owner_id)).fetch_one(&mut *conn).await?;
+    let z: String = sqlx::query_scalar("select porchlight.pl_effective_member_zone(m.role,m.tzid,h.tzid) from porchlight.household_members m join porchlight.households h on h.id=m.household_id where m.id=$1").bind(row.subject_member_id.unwrap_or(row.owner_id)).fetch_one(&mut *conn).await?;
     let rows = derive::occurrences(conn, id).await?;
     let effective: Vec<core::OpenOccurrence> = rows
         .iter()
@@ -461,13 +475,39 @@ async fn refresh_one(
         now,
         spec.input().missed_policy,
         spec.zone().unwrap_or(derive::parse_zone(&z)?),
-    );
+    )?;
     if rows
         .iter()
         .zip(expected)
         .any(|(o, d)| o.status.is_open() && o.disposition != d)
     {
         enqueue_if_current(conn, id).await?;
+        return Ok(());
+    }
+    if spec.input().time_mode == core::TimeMode::Floating {
+        // The board may already be expired while a later-zone recipient is still
+        // waiting. Compare recipient eligibility too, without taking member locks.
+        let profiles: Vec<(String, Vec<uuid::Uuid>)> = sqlx::query_as("select porchlight.pl_effective_member_zone(m.role,m.tzid,h.tzid),array(select a.occurrence_id from porchlight.member_agenda a where a.item_id=$1 and a.member_id=m.id order by a.occurrence_id) from porchlight.household_members m join porchlight.households h on h.id=m.household_id where m.deleted_at is null and (m.id=$2 or exists(select 1 from porchlight.item_assignees a where a.item_id=$1 and a.member_id=m.id) or ($2::uuid is null and m.id=$3 and not exists(select 1 from porchlight.item_assignees a where a.item_id=$1)))")
+            .bind(id).bind(row.subject_member_id).bind(row.owner_id).fetch_all(&mut *conn).await?;
+        for (zone, actual) in profiles {
+            let expected = core::dispositions(
+                &effective,
+                now,
+                spec.input().missed_policy,
+                derive::parse_zone(&zone)?,
+            )?;
+            let mut eligible: Vec<_> = rows
+                .iter()
+                .zip(expected)
+                .filter(|(o, d)| o.status.is_open() && *d != core::Disposition::Expired)
+                .map(|(o, _)| o.id)
+                .collect();
+            eligible.sort();
+            if actual != eligible {
+                enqueue_if_current(conn, id).await?;
+                break;
+            }
+        }
     }
     Ok(())
 }

@@ -207,7 +207,9 @@ PY_DOCKER
 chmod 755 "$fixture/bin/docker"
 export O1_DOCKER_LOG="$fixture/docker.log"
 # Malformed IPv6 used to fail only in process substitution and silently yield no SANs.
-if ENROLL_CIDRS=127.0.0.1/32 PORCHLIGHT_ENDPOINTS='https://[broken' bash "$fixture/trusted-install.sh" server --source "$fixture/release-0.1.0" --root "$fixture/bad-sans" --run-dir "$fixture/run" --backup-recipient age1-fixture --admin-name Fixture --admin-password-file "$fixture/identity" > "$fixture/sans.log" 2>&1; then exit 1; fi
+printf 'fixture orchard river\n' > "$fixture/admin.pass"
+printf -v recipient 'age1%058d' 0
+if ENROLL_CIDRS=127.0.0.1/32 PORCHLIGHT_ENDPOINTS='https://[broken' bash "$fixture/trusted-install.sh" server --source "$fixture/release-0.1.0" --root "$fixture/bad-sans" --run-dir "$fixture/run" --backup-recipient "$recipient" --admin-name Fixture --admin-password-file "$fixture/admin.pass" > "$fixture/sans.log" 2>&1; then exit 1; fi
 [[ $(< "$fixture/sans.log") == *'Cannot derive certificate SANs'* && $(< "$fixture/sans.log") != *Traceback* ]]
 [[ $(< "$fixture/docker.log") != *'load -i'* && $(< "$fixture/docker.log") != *'--exit-code-from migrate'* ]]
 printf 'PASS SAN derivation failure refuses image load and migration\n'

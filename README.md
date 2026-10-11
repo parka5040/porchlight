@@ -18,6 +18,7 @@ only by enrolled devices over mTLS.
 
 Copy `.env.example` to `.env` and fill it in: nothing specific to a machine lives in the repo, and `ci.sh` fails if a
 value from `.env` appears in a committed file. Check everything: `scripts/ci.sh` (add `--full` for slow checks).
+Server test groups, single-test filters and isolation notes: [`server/TESTING.md`](server/TESTING.md).
 
 ## Calendar import and read-only feeds (S8a / M7 server)
 
@@ -184,6 +185,11 @@ scripts/ci.sh --full
 
 ## Signed releases and recovery (O1 / M8 laptop)
 
+ShellCheck coverage is explicitly optional in local CI (including `--full` and `--sandbox`):
+`/usr/bin/shellcheck` is used when installed; otherwise CI reports a skip. Bash syntax checks and offline
+operations tests remain mandatory, but do not replace ShellCheck. A green gate without that tool does not
+claim shell static-analysis coverage. To include it, the owner installs ShellCheck and runs `scripts/ci.sh --full`.
+
 ```bash
 . scripts/env.sh
 scripts/dev-backup-role.sh     # once for existing dev clusters, before migration 0050
@@ -193,13 +199,18 @@ scripts/release.sh             # signed dist/<VERSION>, Docker + offline Gradle
 bash dist/0.1.0/install.sh desktop --source dist/0.1.0
 porchlight-update /local/path/to/new-release
 porchlight-update --rollback
-# Restore newest dev bundle to isolated scratch stack (requires matching dist + laptop identity).
-deploy/scripts/restore-drill.sh --source dist/0.1.0
+# Restore with the newest verified recovery tool, matching bundle artifacts, and laptop identity.
+deploy/scripts/restore-drill.sh --source dist/0.1.0 --installer "dist/$recovery_version/install.sh"
 ```
 
 Signed builds include `release.json` and enforce committed minisign/APK signer pins. The owner publishes verified,
 clean, pushed builds with `scripts/publish-release.sh <V>` (dry run first); see [Releases](../../releases) and the
 [publish runbook](docs/operations/release.md#publish). Signing keys remain on the laptop.
+
+**0.1.6 → next server release:** the owner must run `scripts/deploy-server.sh upgrade <new-version>` with a
+laptop-verified signed dist, selecting the new installer. Never use old `install.sh upgrade --source`; the 0.1.6
+network wrapper also extracts unsigned archives before handoff. `porchlight-upgrade` is safe from the hardened
+next release onward. See [upgrade](docs/operations/upgrade.md) for the first-hop exception and verification.
 
 Production/laptop-release `deploy/compose.yml` is separate from the dev stack; no Funnel is enabled on the laptop.
 Runbooks: [release](docs/operations/release.md), [install](docs/operations/install.md),
@@ -235,6 +246,27 @@ For administration, prefer `porch --socket var/run/agent.sock --token-file var/b
 the file must have no group/other permissions (0600), and a trailing newline is trimmed.
 `PORCHLIGHT_TOKEN` remains supported; argv token values are not accepted. Prefer a private `--token-file`.
 
+Server administration: `porchlight admin-token --member <member-uuid-or-username> --name <label> --expires-days 365`
+is an **owner-run, local recovery** command using the API's existing database credential. It requires an initialized
+household and live super admin, and prints the new admin PAT once to stdout: redirect it to a private file, never
+logs. See the exact container procedure in [key custody](docs/operations/keys.md#admin-pat-rotation-and-local-recovery).
+`porch tokens list` (alias: `porch token list`) shows expiry and admin-token rotation health without credentials.
+`porch security-events [--since RFC3339] [--kind login_failed] [--json]` reads one-year, secret-free security history
+with an admin PAT over the agent socket. It is included in admin household exports and backups, never device streams.
+Renewal has a durable three-issuances/device/24h budget, including revoked unused leaves. An old leaf may replace
+a confirmed-unused successor (revoking it), so shipped clients recover from lost replies. Pre-upgrade successors
+have unknown usage: renewal may issue within budget but never revokes those legacy leaves. Once any successor
+authenticates under usage tracking, that old leaf may only replay its own prior renewal reply.
+New clients durably save the CSR, private-key reference
+and idempotency key in encrypted trust before sending, replay across restart/session changes, and atomically remove
+the pending attempt when saving the replacement certificate. Both platforms reuse the enrolled private key.
+`dev-init` retains a private pending attempt after reply loss: rerun the same device/user/platform with the original
+password to recover without creating another device. Completed credentials still cannot be overwritten. Keep its
+output under `var/`; if replay expired, inspect/revoke before replacing pending state. The durable identity contains
+no password or password-derived digest; passwords are re-supplied on replay. Legacy pending verifiers are removed
+on load without replacing the recovery key/CSR/idempotency identity.
+Details and scope: [security history](docs/specs/security-events.md).
+
 The Kotlin trust adapters and their integration contract are documented in
 [`docs/operations/client-trust.md`](docs/operations/client-trust.md). Controller-only real-client checks are
 `scripts/c1b-desktop-e2e.sh` (unlocked Secret Service wallet) and
@@ -243,6 +275,11 @@ URI/password inputs private under `var/` and never put them in adb arguments. C2
 the instrumented enrollment probe still tests transport separately. Managed-device suites exclude `@ControllerOnly`;
 the live emulator helper substitutes `notAnnotation=org.junit.Ignore` for its explicitly selected enrollment class. The live desktop probe asserts fresh-certificate renewal returns 409 `renewal-too-early` over real mTLS;
 local TLS tests cover actual certificate replacement/reuse. Immutable certificate history is never modified.
+
+Authenticated SSE bodies share a process-wide quota of three per device and eight per member across LAN/Funnel.
+Excess streams return 429 `rate-limited` with `Retry-After` and close the connection; disconnect releases quota.
+Listener-wide connection semaphores remain in place. Auth/write rate tables are independently capped at 4096
+buckets, incrementally expire idle entries, and aggregate IPv6 addresses at /64 (IPv4-mapped addresses normalize).
 
 Mutation bodies have a total 10-second read deadline (`--body-timeout-secs` /
 `PORCHLIGHT_BODY_TIMEOUT_SECS`): 408 `request-timeout` closes the connection. GET/SSE are unaffected.
@@ -386,7 +423,7 @@ for an existing pending generation, not merely because a retry was requested.
 CLI whole-response JSON goldens live in `server/cli/tests/goldens/`; UUID linkage
 and response shapes are retained, generated IDs/timestamps are normalized. To
 intentionally refresh them, source `scripts/env.sh` and run
-`PORCH_UPDATE_GOLDENS=1 CARGO_NET_OFFLINE=true cargo test --manifest-path server/Cargo.toml -p porchlight-cli --test domain --locked`.
+`PORCH_UPDATE_GOLDENS=1 CARGO_NET_OFFLINE=true cargo test --manifest-path server/Cargo.toml -p porchlight-cli --test commands --locked domain::`.
 Normal CI compares only and never updates snapshots.
 
 

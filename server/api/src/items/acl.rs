@@ -21,7 +21,7 @@ pub fn domain_error(e: derive::Error) -> ApiError {
         derive::Error::Sql(e) => e.into(),
         derive::Error::Validation(e) => validation(e.field, e.reason),
         derive::Error::NotFound => ApiError::new(Problem::NotFound),
-        derive::Error::RetryableScope => ApiError::transient(Problem::Conflict).retry(1),
+        derive::Error::RetryableScope => ApiError::transient_conflict().retry(1),
         derive::Error::Ordering(_) => validation("board_move", "Invalid board bounds"),
         // The mutation boundary rolls back, then attaches authorized current.
         derive::Error::VersionConflict => ApiError::new(Problem::VersionConflict),

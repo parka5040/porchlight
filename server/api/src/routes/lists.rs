@@ -12,6 +12,8 @@ use uuid::Uuid;
 pub use crate::list_types::*;
 
 #[utoipa::path(get,path="/v1/lists",params(ListsQuery),responses((status=200,description="Current resource",body=ListsPage),crate::openapi::UniversalProblems,crate::openapi::ForbiddenProblem,crate::openapi::NotFoundProblem,crate::routes::items::ReadValidationProblem))]
+/// Orphan cleanup is opt-in and restricted to list owners/admins. Without the
+/// retained parent ACL, responses are redacted delete-only descriptors, not content.
 pub async fn list(
     State(s): State<AppState>,
     c: Caller,

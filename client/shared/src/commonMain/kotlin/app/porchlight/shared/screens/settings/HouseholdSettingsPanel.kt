@@ -29,7 +29,8 @@ import kotlinx.coroutines.launch
     val cache = data?.cache?.view?.collectAsState()?.value ?: CacheView()
     val writer = services?.settingsWrites
     val state = writer?.state?.collectAsState()?.value ?: SettingsWriteState()
-    val scope = rememberCoroutineScope()
+    val fallbackScope = rememberCoroutineScope()
+    val scope = services?.screenSession?.writeScope ?: fallbackScope
     var error by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(false) }
     var refresh by remember { mutableIntStateOf(0) }
@@ -46,7 +47,7 @@ import kotlinx.coroutines.launch
     if (error) ErrorState("Can't refresh settings — showing saved values.", { refresh++ })
     val blocked = writer == null || writer.unresolved
     if (today) {
-        cache.settings?.let { base -> TodaySettingsForm(base, blocked) { body -> scope.launch { writer?.saveToday(base, body) } } }
+        cache.settings?.let { base -> TodaySettingsForm(base, blocked, { body -> scope.launch { writer?.saveToday(base, body) } }, state.fieldErrors) }
             ?: Text("Sign in and sync to edit Today settings.")
     } else {
         Text("Your color", style = MaterialTheme.typography.titleMedium)
@@ -56,9 +57,14 @@ import kotlinx.coroutines.launch
             MemberChip(member)
             if (member.pendingDerivation) StatusPill("Pending derivation")
             ColorChoices(member.color, blocked) { color -> scope.launch { writer?.saveColor(member, color) } }
+            state.fieldErrors["color"]?.let { Text(it, color = LocalPorchlightPalette.current.errorText) }
         }
     }
-    SettingsWriteFeedback(state, { scope.launch { writer?.retry() } }, { scope.launch { writer?.reapply() } }, { writer?.discard(); refresh++ })
+    val inlineFields = if (today && cache.settings != null) setOf("this_week_days", "scope", "today_sections", "pinned_list_id")
+        else if (!today && cache.members.any { it.id == cache.settings?.memberId }) setOf("color") else emptySet()
+    SettingsWriteFeedback(state.copy(fieldErrors = state.fieldErrors.filterKeys { it !in inlineFields }),
+        { scope.launch { writer?.retry() } }, { scope.launch { writer?.reapply() } }, { writer?.discard(); refresh++ },
+        retryAllowed = state.fieldErrors.isEmpty())
 }
 @OptIn(ExperimentalLayoutApi::class)
 @Composable fun ColorChoices(selected: String, blocked: Boolean, choose: (String) -> Unit) {
@@ -68,7 +74,7 @@ import kotlinx.coroutines.launch
     // Size every column for the longest label at the current font scale, not for its selection.
     val labelWidth = with(LocalDensity.current) {
         memberColorChoices.keys.maxOf { textMeasurer.measure(it, labelStyle).size.width }.toDp()
-    } + 1.dp // pixel-rounding slack: at fractional densities (e.g. 420dpi) padding rounds up by a pixel
+    } + (PorchlightTokens.selectionStroke / 2).dp // pixel-rounding slack: at fractional densities (e.g. 420dpi) padding rounds up by a pixel
     // The ring is the non-colour selection cue, so labels need no duplicated check slots.
     // Use this label's own padding, not a copy of ShellButton's internal chrome.
     val columnWidth = maxOf(PorchlightTokens.touchTarget.dp, labelWidth + (2 * PorchlightTokens.spaceInset).dp)
@@ -82,11 +88,11 @@ import kotlinx.coroutines.launch
                 horizontalAlignment = Alignment.CenterHorizontally) {
                 // Fixed 36dp box: 24dp fill, 4dp surface gap, 2dp high-contrast outer ring.
                 // The gap makes selection independent of any member fill, including Yellow.
-                Box(Modifier.size(36.dp).testTag("color-ring-box-$name"), contentAlignment = Alignment.Center) {
+                Box(Modifier.size((PorchlightTokens.iconSize + PorchlightTokens.spaceInset).dp).testTag("color-ring-box-$name"), contentAlignment = Alignment.Center) {
                     if (isSelected) Surface(Modifier.fillMaxSize().testTag("color-ring-$name"),
                         color = p.surface, shape = CircleShape,
                         border = BorderStroke(PorchlightTokens.selectionStroke.dp, p.heading)) {}
-                    Surface(Modifier.size(24.dp).testTag("color-dot-$name"), color = memberColor(color), shape = CircleShape) {}
+                    Surface(Modifier.size(PorchlightTokens.iconSize.dp).testTag("color-dot-$name"), color = memberColor(color), shape = CircleShape) {}
                 }
                 Surface(Modifier.fillMaxWidth().heightIn(min = PorchlightTokens.touchTarget.dp),
                     color = if (isSelected) p.selectedSurface else androidx.compose.ui.graphics.Color.Transparent,
@@ -104,7 +110,7 @@ import kotlinx.coroutines.launch
     if (blocked) Text("Finish the pending save before changing your color.")
 }
 @OptIn(ExperimentalLayoutApi::class)
-@Composable fun TodaySettingsForm(base: SettingsRead, blocked: Boolean, save: (TodaySettings) -> Unit) {
+@Composable fun TodaySettingsForm(base: SettingsRead, blocked: Boolean, save: (TodaySettings) -> Unit, errors: Map<String, String> = emptyMap()) {
     var draft by remember(base.memberId, base.version) { mutableStateOf(TodayDraft(base.settings)) }
     Text("Today settings", style = MaterialTheme.typography.titleMedium)
     Text("Sections, order, filter and week range sync to every device. Save explicitly when ready.")
@@ -116,20 +122,27 @@ import kotlinx.coroutines.launch
                 if (draft.order.indexOf(section) > 0) ShellButton("Move $label up", "Move $label up", { if (!blocked) draft = draft.move(section, -1) }, enabled = !blocked)
                 if (draft.order.indexOf(section) < draft.order.lastIndex) ShellButton("Move $label down", "Move $label down", { if (!blocked) draft = draft.move(section, 1) }, enabled = !blocked)
             }
-            if (section == "pinned_list") Text("Pinned list ${base.settings.pinnedListId ?: "not selected"} · list selection arrives with Lists.")
+            if (section == "pinned_list") {
+                Text("Pinned list ${base.settings.pinnedListId ?: "not selected"} · list selection arrives with Lists.")
+                errors["pinned_list_id"]?.let { Text(it, color = LocalPorchlightPalette.current.errorText) }
+            }
         }
     }
+    errors["today_sections"]?.let { Text(it, color = LocalPorchlightPalette.current.errorText) }
     FlowRow {
         ShellButton("Mine only", "Mine only", { if (!blocked) draft = draft.withScope("mine") }, selected = draft.scope == "mine", enabled = !blocked)
         ShellButton("Whole household", "Whole household", { if (!blocked) draft = draft.withScope("household") }, selected = draft.scope == "household", enabled = !blocked)
     }
+    errors["scope"]?.let { Text(it, color = LocalPorchlightPalette.current.errorText) }
+    val daysError = errors["this_week_days"] ?: if (draft.validatedValue() == null) "This week days must be a whole number from 1 to 14." else null
     OutlinedTextField(draft.days, { draft = draft.withDays(it) }, label = { Text("This week days (1–14)") }, enabled = !blocked,
-        isError = draft.validatedValue() == null, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics { contentDescription = "This week days" })
-    if (draft.validatedValue() == null) Text("This week days must be a whole number from 1 to 14.")
+        isError = daysError != null, supportingText = { daysError?.let { Text(it, color = LocalPorchlightPalette.current.errorText) } },
+        modifier = Modifier.fillMaxWidth().heightIn(min = PorchlightTokens.touchTarget.dp).semantics { contentDescription = "This week days" })
     if (!blocked && draft.validatedValue() != null) ShellButton("Save Today settings", "Save Today settings", { save(draft.value()) })
     if (blocked) Text("Finish the pending save before editing settings.")
 }
-@Composable fun SettingsWriteFeedback(state: SettingsWriteState, retry: () -> Unit, reapply: () -> Unit, discard: () -> Unit) {
+@Composable fun SettingsWriteFeedback(state: SettingsWriteState, retry: () -> Unit, reapply: () -> Unit, discard: () -> Unit,
+    retryAllowed: Boolean = state.fieldErrors.isEmpty()) {
     when (state.status) {
         SettingsWriteStatus.Idle -> Unit
         SettingsWriteStatus.Saving -> Text("Saving settings…")
@@ -148,7 +161,7 @@ import kotlinx.coroutines.launch
         SettingsWriteStatus.Error -> PorchlightCard {
             Text("Settings could not be saved.")
             state.fieldErrors.forEach { (field, message) -> Text("$field: $message") }
-            if (state.fieldErrors.isEmpty()) ShellButton("Retry same save", "Retry same save", retry)
+            if (retryAllowed) ShellButton("Retry same save", "Retry same save", retry)
             ShellButton("Edit settings", "Edit settings", discard)
         }
     }

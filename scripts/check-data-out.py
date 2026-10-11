@@ -19,7 +19,7 @@ exports = read('server/api/src/routes/exports.rs')
 allowlist = exports.split('const HOUSEHOLD_TABLES:', 1)[1].split('];', 1)[0]
 for secret in ['user_credentials', 'sessions', 'enrollment_tokens', 'password_resets', 'api_tokens', 'step_ups', 'idempotency_keys', 'ics_feed_tokens', 'install_state']:
     assert f'"{secret}"' not in allowlist, secret
-for name in ['scheduled_reminders', 'comments', 'attachments', 'notification_event_delivery']:
+for name in ['scheduled_reminders', 'comments', 'attachments', 'notification_event_delivery', 'security_events']:
     assert f'"{name}"' in allowlist, name
 for name in ['stream_retention', 'pl_renew_blob_lease', 'backup_stale', 'purge_log']:
     assert f'`{name}`' in read('docs/specs/derivation-matrix.md'), name

@@ -18,6 +18,7 @@ pub mod planning;
 pub mod read_models;
 pub mod reads;
 pub mod release;
+pub mod security_events;
 pub mod stream;
 use crate::{
     error::{ApiError, Problem},
@@ -124,6 +125,7 @@ macro_rules! registry {
     }
 }
 registry! {
+    (Agent,security_events,GET,"/v1/admin/security-events",list,None),
     (Mtls,release,GET,"/v1/client-release",client,None),
     (Mtls,release,GET,"/v1/client-release/files/{path}",download,None),
     (Mtls,release,GET,"/v1/server-release",server,None),
@@ -286,6 +288,7 @@ registry! {
     (Agent,admin,LEGACY_POST,"/v1/admin/users/{username}/password-reset",password_reset,None),
     (Agent,admin,GET,"/v1/admin/devices",list_devices,None),
     (Agent,admin,LEGACY_POST,"/v1/admin/devices/{id}/revoke",revoke_device,None),
+    (Agent,admin,GET,"/v1/admin/tokens",list_tokens,None),
     (Agent,admin,LEGACY_POST,"/v1/admin/tokens",create_token,None),
     (Agent,admin,LEGACY_POST,"/v1/admin/tokens/{id}/revoke",revoke_token,PatTarget),
 }
@@ -323,11 +326,18 @@ fn finish(router: Router<AppState>, state: AppState) -> Router {
             state.clone(),
             crate::protocol::request_headers,
         ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::maintenance::require_unfenced,
+        ))
         .with_state(state)
 }
 pub fn mtls_router(state: AppState) -> Router {
     finish(registry_router(Surface::Mtls), state)
 }
+/// Enrollment rate limiting is inside finish: maintenance, protocol headers and
+/// idempotency-key validation run first. Only protocol-valid enrollment mutations
+/// spend the Auth/IP budget; listener connection/header limits bound malformed traffic.
 pub fn enroll_router(state: AppState) -> Router {
     finish(
         registry_router(Surface::Enrollment)

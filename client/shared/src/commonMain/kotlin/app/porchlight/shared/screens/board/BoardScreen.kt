@@ -68,7 +68,8 @@ import kotlinx.coroutines.launch
     move: (ItemRead, BoardDrop) -> Unit, modifier: Modifier = Modifier, take: (ItemRead) -> Unit = {}) {
     val bounds = remember { mutableMapOf<String, Rect>() }
     val columnBounds = remember { mutableMapOf<String, Rect>() }
-    var dragged by remember { mutableStateOf<ItemRead?>(null) }
+    // Keep only identity across pointer events; resolve the row from the current visible projection at drop.
+    var dragged by remember { mutableStateOf<String?>(null) }
     var point by remember { mutableStateOf(Offset.Zero) }
     fun moveChanged(row: ItemRead, drop: BoardDrop) {
         val sameColumn = columns.find { it.status == row.occurrence?.status }
@@ -94,7 +95,7 @@ import kotlinx.coroutines.launch
                         }
                     }
                     var origin by remember(occurrence.id) { mutableStateOf(Offset.Zero) }
-                    PorchlightCard(Modifier.fillMaxWidth().alpha(if (dragged?.occurrence?.id == occurrence.id) 0.65f else 1f).testTag("board-card-${occurrence.id}").onGloballyPositioned {
+                    PorchlightCard(Modifier.fillMaxWidth().alpha(if (dragged == occurrence.id) 0.65f else 1f).testTag("board-card-${occurrence.id}").onGloballyPositioned {
                         origin = it.positionInRoot()
                         // Insertion uses the entire card, including the scrolled-off part. Only the
                         // column's hit region is clipped; clipping a card shifts its midpoint.
@@ -113,10 +114,10 @@ import kotlinx.coroutines.launch
                         }.focusable()
                         .pointerInput(occurrence.id, canMove, columns) {
                             if (canMove) detectDragGesturesAfterLongPress(
-                                onDragStart = { dragged = row; dragMoved = false; point = origin + it },
+                                onDragStart = { dragged = occurrence.id; dragMoved = false; point = origin + it },
                                 onDragCancel = { dragged = null },
                                 onDragEnd = {
-                                    val moving = dragged
+                                    val moving = latestColumns.flatMap { it.cards }.find { it.occurrence?.id == dragged && "change_status" in it.capabilities }
                                     val target = latestColumns.find { columnBounds[it.status]?.contains(point) == true }
                                     if (dragMoved && moving != null && target != null) {
                                         val without = target.cards.filter { it.occurrence?.id != moving.occurrence?.id }

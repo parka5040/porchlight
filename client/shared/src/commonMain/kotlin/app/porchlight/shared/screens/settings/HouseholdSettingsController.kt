@@ -1,7 +1,6 @@
 package app.porchlight.shared.screens.settings
 
 import app.porchlight.shared.api.models.*
-import androidx.compose.ui.graphics.toArgb
 import app.porchlight.shared.data.*
 import app.porchlight.shared.transport.*
 import kotlinx.coroutines.CancellationException
@@ -11,10 +10,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
 
-val memberColorChoices = listOf("Yellow", "Orange", "Aqua", "Blue", "Purple", "Green", "Red")
-    .zip(app.porchlight.shared.theme.PorchlightTokens.memberColors.map { color ->
-        "#" + (color.toArgb() and 0xFFFFFF).toString(16).padStart(6, '0').uppercase()
-    }).toMap()
+val memberColorChoices = app.porchlight.shared.ui.memberColorChoices
 fun sectionLabel(wire: String): String = when (wire) {
     "overdue" -> "Overdue"; "today" -> "Today"; "this_week" -> "This week"; "needs_owner" -> "Needs an owner"; else -> "Pinned list"
 }
@@ -118,7 +114,7 @@ class HouseholdSettingsController(private val newKey: () -> String,
                 val field = (obj["field"] as? kotlinx.serialization.json.JsonPrimitive)?.content ?: return@mapNotNull null
                 val message = (obj["message"] as? kotlinx.serialization.json.JsonPrimitive)?.content ?: return@mapNotNull null
                 field to message
-            }.toMap().ifEmpty { if (e.status in listOf(400, 403, 404, 422)) mapOf("settings" to (e.detail ?: e.title)) else emptyMap() }
+            }.toMap().ifEmpty { if (e.maintenanceMessage != null) mapOf("settings" to e.maintenanceMessage!!) else if (e.status in listOf(400, 403, 404, 422)) mapOf("settings" to (e.detail ?: e.title)) else emptyMap() }
             mutable.value = SettingsWriteState(SettingsWriteStatus.Error, yours = yours, fieldErrors = errors)
         } catch (_: Exception) {
             if (operationEpoch != epoch()) { checkIdentity(); return }

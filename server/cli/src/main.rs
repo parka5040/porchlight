@@ -17,6 +17,7 @@ mod notifications;
 mod occurrences;
 mod output;
 mod password;
+mod pending_enrollment;
 mod reads;
 mod release;
 mod schedule;
@@ -63,6 +64,14 @@ enum Command {
     Export(export::Export),
     /// Operational backup status (admin PAT).
     Backups,
+    /// Secret-free security history (admin PAT, one-year retention).
+    SecurityEvents {
+        /// RFC3339 lower bound (inclusive).
+        #[arg(long)]
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        #[arg(long)]
+        kind: Option<String>,
+    },
     /// Signed server updates and advertised device releases.
     Release {
         #[command(subcommand)]
@@ -150,7 +159,8 @@ enum Command {
         #[command(subcommand)]
         command: DeviceCommand,
     },
-    /// Create or revoke personal access tokens.
+    /// List expiry/rotation health, create or revoke personal access tokens.
+    #[command(visible_alias = "tokens")]
     Token {
         #[command(subcommand)]
         command: TokenCommand,
@@ -199,6 +209,8 @@ impl Scope {
 }
 #[derive(Subcommand)]
 enum TokenCommand {
+    /// List token expiry and admin-token rotation health (admin scope required).
+    List,
     Create {
         #[arg(long)]
         name: String,
@@ -218,6 +230,19 @@ async fn dispatch(client: &Client, command: &Command) -> Result<Value> {
     match command {
         Command::Export(args) => export::run(client, args).await,
         Command::Release { command } => release::run(client, command).await,
+        Command::SecurityEvents { since, kind } => {
+            domain::collection(
+                client,
+                &domain::query(
+                    "/v1/admin/security-events",
+                    &[
+                        ("since", since.map(|v| v.to_rfc3339())),
+                        ("kind", kind.clone()),
+                    ],
+                ),
+            )
+            .await
+        }
         Command::Backups => {
             client
                 .request("GET", "/v1/admin/backups", Value::Null)
@@ -280,6 +305,9 @@ async fn dispatch(client: &Client, command: &Command) -> Result<Value> {
             };
             client.request("POST", "/v1/admin/tokens", json!({"name":name, "scopes":scope.iter().map(|s| s.as_str()).collect::<Vec<_>>(), "expires_days":days, "password":password.as_ref().map(|p| p.as_str())})).await
         }
+        Command::Token {
+            command: TokenCommand::List,
+        } => client.request("GET", "/v1/admin/tokens", json!({})).await,
         Command::Token {
             command: TokenCommand::Revoke { token_id },
         } => client.revoke_token(*token_id).await,

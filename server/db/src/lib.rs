@@ -15,6 +15,7 @@ pub mod items;
 pub mod members;
 pub mod outbox;
 pub mod planning;
+pub mod security_events;
 pub mod stream;
 pub mod tokens;
 pub mod tx;

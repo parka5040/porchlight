@@ -16,10 +16,12 @@ project=${PORCHLIGHT_PROJECT:-porchlight}
 force=0 niri=0 funnel=0 no_backup=0 no_start=0 identity='' recipient='' password_file=''
 admin_username=admin admin_name='' household=Porchlight zone=America/New_York
 rollback=0 release_request='' release_repo='' source_given=0 repo_given=0
-incoming_dir='' upgrade_pending=0 upgrade_migrating=0 old_version='' rollback_dump='' rollback_bundle='' dump_created=0
+incoming_dir='' upgrade_pending=0 upgrade_migrating=0 upgrade_exposed=0 upgrade_rolling_back=0 old_version='' rollback_dump='' rollback_bundle='' dump_created=0 maintenance_owned=0
+agent_gate_owned=0
 ts_hostname='' tailscale_image='' ts_authkey_file='' no_authkey=0
 san_args=()
 enroll_host=''
+api_health_timeout=30
 while (($#)); do
   case $1 in
     --source) source=${2:?}; source_given=1; shift 2 ;;
@@ -29,6 +31,7 @@ while (($#)); do
     --run-dir) run_dir=${2:?}; shift 2 ;;
     --project) project=${2:?}; shift 2 ;;
     --host) enroll_host=${2:?}; shift 2 ;;
+    --api-health-timeout) api_health_timeout=${2:?}; shift 2 ;;
     --force) force=1; shift ;;
     --niri) niri=1; shift ;;
     --no-funnel) funnel=0; shift ;;
@@ -52,13 +55,31 @@ while (($#)); do
     *) printf 'unknown option\n' >&2; exit 2 ;;
   esac
 done
+[[ $api_health_timeout =~ ^[1-9][0-9]{0,2}$ ]] && ((api_health_timeout <= 600)) || { printf 'API health timeout must be 1-600 seconds\n' >&2; exit 2; }
 if ((funnel)); then printf 'Install LAN first, then use install.sh funnel (not server --funnel)\n' >&2; exit 2; fi
 [[ $stackroot == /* && $stackroot != / && $run_dir == /* && $run_dir != / ]] || { printf 'absolute non-root paths required\n' >&2; exit 2; }
 if [[ -n $release_request || $repo_given == 1 ]]; then
   [[ $mode == upgrade && -n $release_request && $source_given == 0 ]] || { printf 'use upgrade --release <V|latest> [--repo owner/repo], without --source\n' >&2; exit 2; }
   [[ $release_request == latest ]] || version_code "$release_request" >/dev/null || { printf 'invalid release version\n' >&2; exit 2; }
 fi
+# One lock covers installed-state reads, mutations, rollback and verified exec handoff.
+if [[ $mode != desktop ]]; then
+  if [[ $mode != server && $mode != restore && ! -d $stackroot ]]; then
+    printf 'Existing installed stack required\n' >&2; exit 2
+  fi
+  mkdir -m 700 -p "$stackroot"
+  [[ ! -L $stackroot/.installer.lock ]] || { printf 'installer lock must not be a symlink\n' >&2; exit 2; }
+  if [[ ${PORCHLIGHT_INSTALL_LOCK_ROOT:-} != "$stackroot" || ! /proc/$$/fd/9 -ef $stackroot/.installer.lock ]]; then
+    exec 9>>"$stackroot/.installer.lock"
+  fi
+  flock -n 9 || { printf 'installer already running for this stack\n' >&2; exit 2; }
+  export PORCHLIGHT_INSTALL_LOCK_ROOT=$stackroot
+  if [[ -e $run_dir/maintenance || -L $run_dir/maintenance ]]; then
+    printf 'Stale maintenance fence: %s/maintenance. Writes remain disabled; inspect upgrade logs/recovery dump before removing it (see operations runbook).\n' "$run_dir" >&2; exit 2
+  fi
+fi
 if [[ $mode == upgrade ]]; then
+  [[ ! -e $stackroot/.provisioning ]] || { printf 'initial provisioning incomplete; retry the original server command\n' >&2; exit 2; }
   [[ -s $stackroot/.env && -L $stackroot/release-current && -f $stackroot/release-current/compose.yml ]] || { printf 'Existing installed stack required\n' >&2; exit 2; }
   old_version=$(ops_python env-value "$stackroot/.env" PORCHLIGHT_VERSION)
   version_code "$old_version" >/dev/null || { printf 'invalid installed version\n' >&2; exit 2; }
@@ -125,6 +146,13 @@ if [[ $mode == funnel || $mode == server-cert || $mode == enroll-host ]]; then
     ((${#san_args[@]})) || { printf 'server-cert requires the complete SAN set (--san-dns / --san-ip)\n' >&2; exit 2; }
   fi
 fi
+# Restore alone accepts explicit target network settings, persisted before any target Compose call.
+restore_overrides=()
+if [[ $mode == restore ]]; then
+  for key in PG_PORT LAN_PORT ENROLL_PORT LAN_BIND ENROLL_CIDRS ENROLL_HOST PORCHLIGHT_ENDPOINTS BACKEND_SUBNET INGRESS_SUBNET; do
+    if [[ -v $key ]]; then restore_overrides+=("$key" "${!key}"); fi
+  done
+fi
 # Caller dev credentials must never override the installed/restored stack .env in Compose interpolation.
 unset POSTGRES_PASSWORD PORCHLIGHT_MIGRATOR_PASSWORD PORCHLIGHT_APP_PASSWORD PORCHLIGHT_AGENT_PASSWORD PORCHLIGHT_BACKUP_PASSWORD PORCHLIGHT_VERSION
 unset FUNNEL_ENABLED TS_HOSTNAME TAILSCALE_IMAGE_SHA256 TS_AUTHKEY_SPEC TS_AUTHKEY FUNNEL_IP
@@ -137,7 +165,7 @@ runtime=${XDG_STATE_HOME:-$HOME/.local/state}/porchlight
 if [[ $mode != desktop ]]; then runtime=$stackroot/tmp; fi
 mkdir -m 700 -p "$runtime"
 stage=$(mktemp -d "$runtime/install.XXXXXX")
-niri_pending='' desktop_autostart_pending='' api_stopped=0 funnel_pending=0 enroll_pending=0
+desktop_stage='' niri_pending='' desktop_autostart_pending='' api_stopped=0 funnel_pending=0 enroll_pending=0
 install_error='' cert_error_log='' cert_rotated=0 endpoints_updated=0 funnel_fqdn='' api_recreate_failed=0
 # Preserve the caller's diagnostic channel even when EXIT runs inside a logged upgrade step.
 exec {install_stderr}>&2
@@ -146,11 +174,11 @@ say() { (trap '' PIPE; printf "$@" 2>/dev/null) >&"$install_stderr" || true; }
 report() { (trap '' PIPE; "$@" 2>/dev/null || true); }
 fail_install() { install_error=$1; return 1; }
 cleanup_install() {
-  local code=$? disable_failed=0 remove_failed=0 recover_failed=0 key_retained=0 cert_error=''
+  trap '' INT TERM HUP PIPE
+  local code=$1 disable_failed=0 remove_failed=0 recover_failed=0 key_retained=0 cert_error=''
   local enroll_restore_failed=0 enroll_backup_failed=0
   # Inherit ignored signals in cleanup children too; best effort (Go clients may re-arm them).
-  # Cleanup waits are bounded (API 30 s, backup 120 s); emit diagnostics only after restoration.
-  trap '' INT TERM HUP PIPE
+  # Cleanup waits are bounded; emit diagnostics only after restoration.
   set +e
   if ((upgrade_pending)); then
     code=1
@@ -161,12 +189,17 @@ cleanup_install() {
       report_rollback
     fi
   fi
+  # Every handled exit releases the SQL login gate, after any destructive rollback has finished.
+  if ! resume_agent > "$stage/agent-resume.log" 2>&1; then
+    code=1
+    say 'Could not restore porchlight_agent LOGIN; inspect PostgreSQL privately and restore LOGIN after recovery.\n'
+  fi
   # Complete ALL state restoration before emitting anything to the caller's output channel.
   if ((enroll_pending)); then
     # Private snapshot restores even an absent key and atomically replaces the new inode.
     mv -f -- "$stage/env-before" "$stackroot/.env" > "$stage/enroll-restore.log" 2>&1 || enroll_restore_failed=1
     if (( ! enroll_restore_failed )); then
-      dc_timeout=30 dc up -d --no-deps --force-recreate --wait --wait-timeout 30 api > "$stage/enroll-api-recover.log" 2>&1 || recover_failed=1
+      dc_timeout=$api_health_timeout dc up -d --no-deps --force-recreate --wait --wait-timeout "$api_health_timeout" api > "$stage/enroll-api-recover.log" 2>&1 || recover_failed=1
       if (( ! no_backup )); then
         dc_timeout=120 dc up -d --no-deps --force-recreate --wait --wait-timeout 120 backup > "$stage/enroll-backup-recover.log" 2>&1 || enroll_backup_failed=1
       fi
@@ -179,7 +212,7 @@ cleanup_install() {
     [[ ! -f $stackroot/tailscale/authkey ]] || key_retained=1
   fi
   if ((api_stopped)); then
-    dc_timeout=30 dc up -d --no-deps --wait --wait-timeout 30 api > "$stage/api-recover.log" 2>&1 || recover_failed=1
+    dc_timeout=$api_health_timeout dc up -d --no-deps --wait --wait-timeout "$api_health_timeout" api > "$stage/api-recover.log" 2>&1 || recover_failed=1
   fi
   if [[ -n $niri_pending ]]; then
     { if [[ -e $stage/niri-before ]]; then cp -p "$stage/niri-before" "$niri_pending"; else rm -f -- "$niri_pending"; fi; } > "$stage/niri-recover.log" 2>&1
@@ -187,9 +220,34 @@ cleanup_install() {
   if [[ -n $desktop_autostart_pending ]]; then
     { if [[ -e $stage/autostart-before ]]; then cp -p "$stage/autostart-before" "$desktop_autostart_pending"; else rm -f -- "$desktop_autostart_pending"; fi; } > "$stage/autostart-recover.log" 2>&1
   fi
+  [[ -z $desktop_stage ]] || rm -rf -- "$desktop_stage"
   # Task 3's stderr contract excludes secrets. Save only that diagnostic, never Tailscale logs.
   if [[ -n $cert_error_log ]]; then cert_error=$(tail -20 "$cert_error_log" 2>/dev/null); fi
-  if (( ! upgrade_pending )); then rm -rf -- "$stage" >/dev/null 2>&1; fi
+  if ((upgrade_exposed && code)); then
+    # Never restore a pre-exposure snapshot over acknowledged writes.
+    rm -f -- "$rollback_dump"
+    if ((maintenance_owned)); then rm -f -- "$run_dir/maintenance" || say 'Could not remove maintenance fence; writes remain disabled\n'; fi
+    say 'FORWARD RECOVERY: new API is exposed; keeping release %s and its database. Inspect private logs: %s\n' "$version" "$stage"
+    report_aux_recovery_command
+  elif (( ! upgrade_pending )); then
+    if ((code)) && [[ $mode == funnel || $mode == server-cert || $mode == enroll-host ]]; then
+      # Never preserve raw command output (Tailscale can include credentials/login URLs).
+      # Keep fixed step names and outcome flags, privately, after ALL recovery attempts.
+      local diagnostic step
+      diagnostic=$(mktemp -d "$runtime/failure.XXXXXX")
+      if [[ -n $diagnostic ]]; then
+        {
+          printf 'mode=%s\nstatus=%s\napi-recovery-failed=%s\nsidecar-remove-failed=%s\n' "$mode" "$code" "$recover_failed" "$remove_failed"
+          for step in enable disable api-start api-recover tailscale-remove; do
+            if [[ -e $stage/$step.log ]]; then printf 'attempted=%s\n' "$step"; fi
+          done
+        } > "$diagnostic/summary.txt"
+        chmod 600 "$diagnostic/summary.txt"
+        say 'Private sanitized failure diagnostics: %s\n' "$diagnostic"
+      fi
+    fi
+    rm -rf -- "$stage" >/dev/null 2>&1
+  fi
   if [[ -n $incoming_dir ]]; then say 'Incoming release retained: %s\n' "$incoming_dir"; fi
   [[ -z $install_error ]] || say '%s\n' "$install_error"
   [[ -z $cert_error ]] || say '%s\n' "$cert_error"
@@ -239,7 +297,7 @@ cleanup_install() {
   fi
   return "$code"
 }
-trap cleanup_install EXIT
+trap 'cleanup_install "$?"' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -267,7 +325,10 @@ dc() {
   if funnel_enabled || [[ ${dc_force_funnel:-0} == 1 ]]; then files+=(-f "$release/compose.funnel.yml" --profile funnel); fi
   # A wedged Docker client must not extend the login budget by ignoring SIGTERM.
   if [[ -n ${dc_timeout:-} ]]; then runner=(timeout --foreground --signal=KILL "$dc_timeout"); fi
-  "${runner[@]}" docker compose -p "$project" --env-file "$stackroot/.env" "${files[@]}" "$@"
+  # Persisted interpolation is authoritative on first install, retry and later upgrades alike.
+  "${runner[@]}" env -u PORCHLIGHT_UID -u PORCHLIGHT_GID -u PG_PORT -u LAN_PORT -u ENROLL_PORT \
+    -u LAN_BIND -u ENROLL_CIDRS -u ENROLL_HOST -u PORCHLIGHT_ENDPOINTS -u BACKEND_SUBNET \
+    -u INGRESS_SUBNET -u PORCHLIGHT_MIN_CLIENT_VERSION docker compose -p "$project" --env-file "$stackroot/.env" "${files[@]}" "$@"
 }
 report_api_recovery_command() {
   # Paths/project are public, but may contain spaces; print a runnable, shell-quoted command.
@@ -275,9 +336,24 @@ report_api_recovery_command() {
   release=$(active_release)
   local -a args=(env "PORCHLIGHT_ROOT=$stackroot" "PORCHLIGHT_RUN_DIR=$run_dir" docker compose -p "$project" --env-file "$stackroot/.env" -f "$release/compose.yml")
   if funnel_enabled; then args+=(-f "$release/compose.funnel.yml" --profile funnel); fi
-  args+=(up -d --no-deps --force-recreate --wait --wait-timeout 30 api)
+  args+=(up -d --no-deps --force-recreate --wait --wait-timeout "$api_health_timeout" api)
   printf -v command '%q ' "${args[@]}"
   say 'Recovery command: %s\n' "${command% }"
+}
+report_aux_recovery_command() {
+  local release command
+  release=$(active_release)
+  local -a args=(env "PORCHLIGHT_ROOT=$stackroot" "PORCHLIGHT_RUN_DIR=$run_dir" docker compose -p "$project" --env-file "$stackroot/.env" -f "$release/compose.yml")
+  if funnel_enabled; then args+=(-f "$release/compose.funnel.yml" --profile funnel); fi
+  if ((no_backup)) && ! funnel_enabled; then
+    args+=(exec -T api /usr/local/bin/porchlight healthcheck)
+  else
+    args+=(up -d --no-deps --wait)
+    if (( ! no_backup )); then args+=(backup); fi
+    if funnel_enabled; then args+=(tailscale); fi
+  fi
+  printf -v command '%q ' "${args[@]}"
+  say 'Fix the reported backup/sidecar error, then run (do not restore the old dump):\nRecovery command: %s\n' "${command% }"
 }
 set_stack_env() {
   # Preserve unrelated settings/secrets, replacing each installer-owned key exactly once.
@@ -312,14 +388,15 @@ except ValueError: assert host.lower() in {name.lower() for name in s['dns']}
 else: assert ip in {ipaddress.ip_address(value) for value in s['ips']}
 PY_ENROLL_SANS
   then fail_install 'Enrollment host not in current server SANs (or invalid SAN metadata); use install.sh server-cert with the complete SAN set first; ENROLL_HOST unchanged'; return 1; fi
-  if python3 -I -B - "$stackroot/.env" "$enroll_host" <<'PY_ENROLL_UNCHANGED'
+  if python3 -I -B - "$stackroot/.env" "$enroll_host" "$stackroot/.enroll-host-applied" <<'PY_ENROLL_UNCHANGED'
 import pathlib,sys
-lines=pathlib.Path(sys.argv[1]).read_text().splitlines()
-sys.exit(0 if [line for line in lines if line.partition('=')[0]=='ENROLL_HOST']==['ENROLL_HOST='+sys.argv[2]] else 1)
+lines=pathlib.Path(sys.argv[1]).read_text().splitlines();applied=pathlib.Path(sys.argv[3])
+sys.exit(0 if applied.is_file() and applied.read_text()==sys.argv[2]+'\n' and [line for line in lines if line.partition('=')[0]=='ENROLL_HOST']==['ENROLL_HOST='+sys.argv[2]] else 1)
 PY_ENROLL_UNCHANGED
   then report printf 'PASS enroll-host %s\n' "$enroll_host"; return; fi
   cp -p -- "$stackroot/.env" "$stage/env-before"
   enroll_pending=1
+  rm -f -- "$stackroot/.enroll-host-applied"
   set_stack_env ENROLL_HOST "$enroll_host" > "$stage/enroll-env.log" 2>&1
   if ! dc_timeout=120 dc up -d --no-deps --force-recreate --wait --wait-timeout 120 api > "$stage/enroll-api.log" 2>&1; then
     fail_install 'enroll-host API recreate failed; restoring previous configuration'; return 1
@@ -330,6 +407,7 @@ PY_ENROLL_UNCHANGED
       fail_install 'enroll-host backup recreate failed; restoring previous configuration'; return 1
     fi
   fi
+  if (( ! no_backup )); then ops_python atomic-text "$stackroot/.enroll-host-applied" "$enroll_host"; fi
   enroll_pending=0
   report printf 'PASS enroll-host %s\n' "$enroll_host"
 }
@@ -345,7 +423,7 @@ rotate_server_cert() {
 }
 resume_api() {
   # `restart` would retain old container environment; recreate to publish new endpoints.
-  if ! dc up -d --no-deps --force-recreate --wait api > "$stage/api-start.log" 2>&1; then
+  if ! dc_timeout=$api_health_timeout dc up -d --no-deps --force-recreate --wait --wait-timeout "$api_health_timeout" api > "$stage/api-start.log" 2>&1; then
     api_recreate_failed=1
     fail_install 'Certificate rotated; API recreate failed; attempting API recovery'
     return 1
@@ -382,7 +460,7 @@ upgrade_from_release() {
   incoming_dir=$(mktemp -d "$stackroot/incoming/install.XXXXXX")
   mv "$stage/manifest.json" "$stage/manifest.json.minisig" "$incoming_dir/"
   fetch_release_asset "$version" "porchlight-$version-dist.tar" "$incoming_dir/dist.tar"
-  ops_python extract "$incoming_dir/dist.tar" "$incoming_dir/release"
+  ops_python extract "$incoming_dir/dist.tar" "$incoming_dir/release" "$incoming_dir/manifest.json"
   cmp -s "$incoming_dir/manifest.json" "$incoming_dir/release/manifest.json" || { printf 'downloaded manifest differs from verified manifest\n' >&2; return 1; }
   verify_release "$incoming_dir/release" "$PUBLIC_KEY"
   local -a args=(upgrade --source "$incoming_dir/release" --root "$stackroot" --run-dir "$run_dir" --project "$project")
@@ -428,6 +506,29 @@ load_images() {
 }
 set_version() { set_stack_env PORCHLIGHT_VERSION "${1:-$version}"; }
 migrate() { dc up -d --wait postgres || return; dc up --no-deps --force-recreate --exit-code-from migrate migrate; }
+quiesce_agent() {
+  # Arm before ALTER so a signal or lost response still restores LOGIN in EXIT.
+  agent_gate_owned=1
+  dc_timeout=60 dc exec -T postgres psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 \
+    -c 'ALTER ROLE porchlight_agent NOLOGIN;' || return
+  # NOLOGIN is committed before draining backends; wait for termination before either snapshot.
+  # Select pids first: SQL fixes no AND order, and a terminate predicate is pushed below the role join onto
+  # every backend (this session included). Re-read activity after clearing the transaction's cached snapshot.
+  dc_timeout=60 dc exec -T postgres psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 \
+    -c "DO \$\$ DECLARE target integer; BEGIN
+FOR target IN SELECT pid FROM pg_stat_activity WHERE usename = 'porchlight_agent' AND pid <> pg_backend_pid() LOOP
+PERFORM pg_terminate_backend(target, 5000); END LOOP;
+PERFORM pg_stat_clear_snapshot();
+IF EXISTS (SELECT 1 FROM pg_stat_activity WHERE usename = 'porchlight_agent') THEN RAISE EXCEPTION 'agent sessions did not terminate'; END IF;
+END \$\$;"
+}
+resume_agent() {
+  if ((agent_gate_owned)); then
+    dc_timeout=60 dc exec -T postgres psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 \
+      -c 'ALTER ROLE porchlight_agent LOGIN;' || return
+    agent_gate_owned=0
+  fi
+}
 restore_db() {
   dc up -d --wait postgres || return
   dc exec -T postgres dropdb -U postgres --if-exists --force porchlight || return
@@ -437,12 +538,13 @@ restore_db() {
 }
 report_rollback() {
   if [[ -n $rollback_bundle ]]; then
-    say 'Rollback: use the previous trusted installer restore %q --identity <laptop-age-identity> --root %q --run-dir %q --project %q --force\n' "$rollback_bundle" "$stackroot" "$run_dir" "$project"
+    say 'Rollback: use the newest verified installer restore %q --source <matching-release> --identity <laptop-age-identity> --root %q --run-dir %q --project %q --force\n' "$rollback_bundle" "$stackroot" "$run_dir" "$project"
   else
-    say 'Pre-upgrade backup did not complete; inspect private logs and restore the last verified encrypted bundle using its matching trusted installer and the owner age identity.\n'
+    say 'Pre-upgrade backup did not complete; inspect private logs and restore the last verified encrypted bundle using the newest verified installer, matching release artifacts and the owner age identity.\n'
   fi
 }
 rollback_upgrade() {
+  upgrade_rolling_back=1
   dc stop api backup || return
   ln -s "releases/$old_version" "$stackroot/.release-current.rollback.$$" || return
   mv -Tf "$stackroot/.release-current.rollback.$$" "$stackroot/release-current" || return
@@ -458,6 +560,7 @@ rollback_upgrade() {
   if ((upgrade_migrating)); then restore_db "$rollback_dump" || return; fi
   # Do not re-run a failed new migrator through Compose's dependency graph.
   start --no-deps || return
+  if ((maintenance_owned)); then rm -f -- "$run_dir/maintenance" || return; maintenance_owned=0; fi
   # The database is back on the dump; the pinned encrypted bundle stays the long-term recovery point.
   if ((dump_created)); then rm -f -- "$rollback_dump"; fi
 }
@@ -466,6 +569,15 @@ start() {
   prepare_backup_work || return
   dc up -d "$@" --wait api || return
   dc exec -T api /usr/local/bin/porchlight healthcheck || return
+  if ((upgrade_pending && ! upgrade_rolling_back)); then
+    # One simple command disarms restoration before ANY trap can remove the fence.
+    # The new API has been read-only through both health checks; only now may it accept writes.
+    upgrade_pending=0 upgrade_exposed=1
+    resume_agent || return
+    rm -f -- "$run_dir/maintenance" || return
+    maintenance_owned=0
+    rm -f -- "$rollback_dump" || return
+  fi
   if (( ! no_backup )); then dc up -d "$@" --wait backup || return; fi
   if funnel_enabled; then dc up -d "$@" --wait tailscale || return; fi
 }
@@ -654,7 +766,6 @@ PY_UNCHANGED
 }
 
 install_desktop() {
-  printf 'Device key: Porchlight uses Secret Service (any provider: GNOME Keyring, KeePassXC, KWallet) when one runs in this user D-Bus session at enrollment; otherwise it keeps the key secret in an owner-only file (keep your disk encrypted). The choice is recorded; re-enroll to change it.\n'
   local base=${XDG_DATA_HOME:-$HOME/.local/share}/porchlight
   mkdir -p "$base/releases"
   if ((rollback)); then
@@ -665,7 +776,11 @@ install_desktop() {
     ln -s "$current" "$base/.previous.$$"; mv -Tf "$base/.previous.$$" "$base/previous"
     printf 'PASS desktop rollback\n'; return
   fi
+  if [[ ! -L $base/current ]]; then
+    printf 'Device key: Porchlight uses Secret Service (any provider: GNOME Keyring, KeePassXC, KWallet) when one runs in this user D-Bus session at enrollment; otherwise it keeps the key secret in an owner-only file (keep your disk encrypted). The choice is recorded; re-enroll to change it.\n'
+  fi
   verify_source
+  local same_version=0
   if [[ -f $base/current/release-manifest.json ]]; then
     local installed new_code old_code
     installed=$(ops_python manifest-version "$base/current/release-manifest.json")
@@ -673,24 +788,30 @@ install_desktop() {
     if ((new_code < old_code)); then printf 'refusing downgrade; use porchlight-update --rollback\n' >&2; exit 2; fi
     if ((new_code == old_code)); then
       cmp -s "$base/current/release-manifest.json" "$stage/release/manifest.json" || { printf 'desktop version already installed with different content\n' >&2; return 1; }
-      printf 'PASS already installed %s\n' "$version"; return
+      same_version=1
     fi
   fi
   local datahome=${XDG_DATA_HOME:-$HOME/.local/share} confighome=${XDG_CONFIG_HOME:-$HOME/.config}
   local target=$base/releases/$version
+  # Stage on the destination filesystem: the final rename can never become a partial copy.
+  desktop_stage=$(mktemp -d "$base/releases/.install.XXXXXX")
+  ops_python extract "$stage/release/porchlight-desktop-$version-linux-x86_64.tar.gz" "$desktop_stage/extracted" --desktop
+  [[ -x $desktop_stage/extracted/porchlight/bin/porchlight ]] || { printf 'desktop app image launcher missing\n' >&2; return 1; }
+  mv "$desktop_stage/extracted/porchlight" "$desktop_stage/app"
+  rm -rf -- "$desktop_stage/extracted"
+  cp "$stage/release/manifest.json" "$desktop_stage/release-manifest.json"
+  cp "$stage/release/install.sh" "$desktop_stage/install.sh"
+  cp -a "$stage/release/lib" "$desktop_stage/lib"
   if [[ -e $target ]]; then
     cmp -s "$target/release-manifest.json" "$stage/release/manifest.json" || { printf 'desktop version already installed with different content\n' >&2; return 1; }
-  else
-    ops_python extract "$stage/release/porchlight-desktop-$version-linux-x86_64.tar.gz" "$stage/app"
-    [[ -x $stage/app/porchlight/bin/porchlight ]] || { printf 'desktop app image launcher missing\n' >&2; return 1; }
-    mkdir "$stage/desktop"
-    mv "$stage/app/porchlight" "$stage/desktop/app"
-    cp "$stage/release/manifest.json" "$stage/desktop/release-manifest.json"
-    # Keep a trusted, pinned update helper alongside each release; it verifies future artifacts itself.
-    cp "$stage/release/install.sh" "$stage/desktop/install.sh"
-    cp -a "$stage/release/lib" "$stage/desktop/lib"
-    mv "$stage/desktop" "$target"
+    if ops_python same-tree "$desktop_stage" "$target" >/dev/null 2>&1; then
+      rm -rf -- "$desktop_stage"; desktop_stage=''
+      if ((same_version)); then printf 'PASS already installed %s\n' "$version"; return; fi
+    else
+      mv -- "$target" "$base/releases/.incomplete.$version.$$"
+    fi
   fi
+  if [[ -n $desktop_stage ]]; then mv -- "$desktop_stage" "$target"; desktop_stage=''; fi
   mkdir -p "$HOME/.local/bin" "$datahome/applications" "$confighome/autostart" "$datahome/icons/hicolor/scalable/apps"
   cp "$stage/release/porchlight.svg" "$datahome/icons/hicolor/scalable/apps/porchlight.svg"
   if [[ ! -L $base/current && ! -e $base/current ]]; then
@@ -775,8 +896,10 @@ case $mode in
     ;;
   server)
     check_docker
-    [[ ! -e $stackroot/.env && ! -e $stackroot/data/pki ]] || { printf 'stack exists; use upgrade or restore\n' >&2; exit 2; }
-    [[ -z $(docker ps -a -q --filter "label=com.docker.compose.project=$project") ]] || { printf 'Compose project already exists; choose a separate project/root\n' >&2; exit 2; }
+    if [[ ! -f $stackroot/.provisioning ]]; then
+      [[ ! -e $stackroot/.env && ! -e $stackroot/data/pki ]] || { printf 'stack exists; use upgrade or restore\n' >&2; exit 2; }
+      [[ -z $(docker ps -a -q --filter "label=com.docker.compose.project=$project") ]] || { printf 'Compose project already exists; choose a separate project/root\n' >&2; exit 2; }
+    fi
     [[ $recipient == age1* ]] || { printf '--backup-recipient requires an age public recipient\n' >&2; exit 2; }
     verify_source
     [[ -n ${ENROLL_CIDRS:-} ]] || { printf 'set ENROLL_CIDRS to the actual LAN CIDR\n' >&2; exit 2; }
@@ -787,12 +910,12 @@ case $mode in
     fi
     [[ -s $password_file ]] || { printf 'password file required\n' >&2; exit 2; }
     mkdir -m 700 -p "$stackroot/data" "$stackroot/backups" "$stackroot/backup-work" "$run_dir"
-    python3 -I -B - "$stackroot/.env" "$version" <<'PY'
+    python3 -I -B - "$stage/initial.env" "$version" <<'PY'
 import os,secrets,sys
 fd=os.open(sys.argv[1],os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
 with os.fdopen(fd,'w') as f:
  for key in ('POSTGRES_PASSWORD','PORCHLIGHT_MIGRATOR_PASSWORD','PORCHLIGHT_APP_PASSWORD','PORCHLIGHT_AGENT_PASSWORD','PORCHLIGHT_BACKUP_PASSWORD'): f.write(key+'='+secrets.token_hex(32)+'\n')
- for key,default in [('PORCHLIGHT_VERSION',sys.argv[2]),('PORCHLIGHT_UID',str(os.getuid())),('PORCHLIGHT_GID',str(os.getgid())),('PG_PORT','5432'),('LAN_PORT','8443'),('ENROLL_PORT','8444'),('LAN_BIND','0.0.0.0'),('ENROLL_CIDRS',''),('ENROLL_HOST','porchlight.lan'),('PORCHLIGHT_ENDPOINTS','https://porchlight.lan:8443'),('BACKEND_SUBNET','172.29.250.0/24'),('INGRESS_SUBNET','172.29.251.0/24')]:
+ for key,default in [('PORCHLIGHT_VERSION',sys.argv[2]),('PORCHLIGHT_UID',str(os.getuid())),('PORCHLIGHT_GID',str(os.getgid())),('PORCHLIGHT_MIN_CLIENT_VERSION','0.1.0'),('PG_PORT','5432'),('LAN_PORT','8443'),('ENROLL_PORT','8444'),('LAN_BIND','0.0.0.0'),('ENROLL_CIDRS',''),('ENROLL_HOST','porchlight.lan'),('PORCHLIGHT_ENDPOINTS','https://porchlight.lan:8443'),('BACKEND_SUBNET','172.29.250.0/24'),('INGRESS_SUBNET','172.29.251.0/24')]:
   value=os.environ.get(key,default)
   if any(c in value for c in '\r\n$#\"\''): raise ValueError('invalid configuration value')
   f.write(key+'='+value+'\n')
@@ -816,13 +939,59 @@ PY_SAN
       while IFS= read -r kind && IFS= read -r host; do san_args+=("$kind" "$host"); done < "$stage/sans"
       ((${#san_args[@]})) || { printf 'No certificate SANs derived\n' >&2; exit 2; }
     fi
+    ops_python validate-init "$password_file" "$admin_username" "$admin_name" "$household" "$zone" "$recipient" "${san_args[@]}" || { printf 'initial admin/password/household/timezone/recipient/network inputs rejected; correct inputs and retry server\n' >&2; exit 2; }
+    if [[ -e $stackroot/.env ]]; then
+      ops_python provision-env-check "$stage/initial.env" "$stackroot/.env" || { printf 'provisioning deployment inputs differ; retry the original settings\n' >&2; exit 2; }
+    fi
+    manifest_sha=$(sha256sum "$stage/release/manifest.json"); manifest_sha=${manifest_sha%% *}
+    ops_python provision-marker "$stackroot/.provisioning" "$version" "$manifest_sha" "$project" "$run_dir" "$admin_username" "$admin_name" "$household" "$zone" "$recipient" "${san_args[@]}" || { printf 'provisioning inputs differ; retry the original server command/release\n' >&2; exit 2; }
+    if [[ ! -e $stackroot/.env ]]; then ops_python atomic-copy "$stage/initial.env" "$stackroot/.env"; fi
     load_images; switch_release; upgrade_settings; migrate
-    dc run --rm --no-deps -T api init --household "$household" --admin-username "$admin_username" \
-      --admin-name "$admin_name" --tz "$zone" "${san_args[@]}" \
-      --age-recipient "$recipient" --json < "$password_file" > "$stackroot/init.json" 2> "$stackroot/init.log"
-    chmod 600 "$stackroot/init.json" "$stackroot/init.log"
+    if [[ ! -f $stackroot/.provisioned-init ]]; then
+      # Complete JSON may precede interrupted acknowledgement cleanup. The attempt lives
+      # outside disposable staging so SIGKILL between output delivery and our copy is recoverable.
+      delivered=''
+      if [[ -f $stackroot/data/pki/ca.crt ]]; then
+        for candidate in "$stackroot/init.pending.json" "$stackroot/init-attempt.json"; do
+          if ops_python init-output-valid "$candidate" >/dev/null 2>&1; then delivered=$candidate; break; fi
+        done
+      fi
+      if [[ -n $delivered ]]; then
+        if [[ $delivered != "$stackroot/init.pending.json" ]]; then
+          ops_python atomic-copy "$delivered" "$stackroot/init.pending.json"
+        fi
+        # Let the server reconcile publication and acknowledge its staged copy. Never
+        # redirect this retry over our only delivery record: AlreadyInitialized emits none.
+        init_status=0
+        dc run --rm --no-deps -T api init --household "$household" --admin-username "$admin_username" \
+          --admin-name "$admin_name" --tz "$zone" "${san_args[@]}" \
+          --age-recipient "$recipient" --json < "$password_file" > /dev/null 2> "$stackroot/init.log" || init_status=$?
+        if ((init_status == 2)); then
+          # Exit 2 is the server's typed AlreadyInitialized result, including a crash
+          # after staged-output removal. Verify committed PKI before accepting it.
+          dc run --rm --no-deps -T api server-cert --show --json > "$stage/init-verified.json" 2> "$stackroot/init.log"
+        elif ((init_status != 0)); then
+          exit "$init_status"
+        fi
+        [[ ! -e $stackroot/data/.init-staging ]] || { printf 'Server initialization acknowledgement is incomplete; retry server\n' >&2; exit 1; }
+      else
+        # Never truncate a previous delivery record, even if this retry prints nothing.
+        init_status=0
+        dc run --rm --no-deps -T api init --household "$household" --admin-username "$admin_username" \
+          --admin-name "$admin_name" --tz "$zone" "${san_args[@]}" \
+          --age-recipient "$recipient" --json < "$password_file" > "$stackroot/init-attempt.json" 2> "$stackroot/init.log" || init_status=$?
+        if ops_python init-output-valid "$stackroot/init-attempt.json" >/dev/null 2>&1; then
+          ops_python atomic-copy "$stackroot/init-attempt.json" "$stackroot/init.pending.json"
+        fi
+        ((init_status == 0)) || exit "$init_status"
+      fi
+      ops_python init-output-valid "$stackroot/init.pending.json"
+      ops_python atomic-copy "$stackroot/init.pending.json" "$stackroot/init.json"
+      ops_python atomic-text "$stackroot/.provisioned-init" "$version"
+    fi
     printf 'Initialization output (bootstrap token) saved privately: %s/init.json\n' "$stackroot"
     start
+    rm -f -- "$stackroot/.provisioning" "$stackroot/.provisioned-init" "$stackroot/init.pending.json" "$stackroot/init-attempt.json"
     printf 'PASS server installed %s\n' "$version"
     ;;
   backup) check_docker; backup_now ;;
@@ -833,15 +1002,25 @@ PY_SAN
     if [[ $(dirname "$incoming_parent") == "$(readlink -f -- "$stackroot")/incoming" && ${incoming_parent##*/} == install.* && ${source##*/} == release ]]; then
       incoming_dir=$incoming_parent
     fi
-    verify_source; check_upgrade_version; check_docker
+    verify_source; check_upgrade_version
+    # Frozen bootstraps cannot gain this check; callers must still select the new trusted installer.
+    cmp -s -- "${BASH_SOURCE[0]}" "$stage/release/install.sh" || {
+      printf 'use the verified new release installer for upgrade --source; this bootstrap differs\n' >&2; exit 2;
+    }
+    check_docker
     rollback_dump=$stackroot/rollback/pre-upgrade-$old_version.dump
     # Only a failed rollback leaves this dump: it is the plain recovery point, so never stop services over it.
     [[ ! -e $rollback_dump ]] || { printf 'recovery dump from a failed rollback exists: %s; inspect it, then remove it\n' "$rollback_dump" >&2; exit 2; }
     cp -p -- "$stackroot/.env" "$stage/env-before-upgrade"
     if [[ -f $stackroot/porchlight-upgrade ]]; then cp -p -- "$stackroot/porchlight-upgrade" "$stage/upgrade-before"; fi
+    # The new process must see the fence on its first request, before health polling.
+    mkdir -m 700 -p "$run_dir"
+    (set -o noclobber; : > "$run_dir/maintenance")
+    maintenance_owned=1
     # Arm recovery before quiescing writers, including failures while making the backups.
     upgrade_pending=1
     dc stop backup api > "$stage/stop.log" 2>&1
+    quiesce_agent > "$stage/agent-quiesce.log" 2>&1
     backup_now > "$stage/pre-upgrade.log" 2>&1
     rollback_bundle=$(python3 -I -B - "$stackroot/backups" "$stage/pre-upgrade.log" <<'PY'
 import pathlib,re,sys
@@ -856,7 +1035,7 @@ PY
     [[ ! -L $stackroot/rollback ]] || { printf 'rollback directory must not be a symlink\n' >&2; exit 1; }
     mkdir -m 700 -p "$stackroot/rollback"
     chmod 700 "$stackroot/rollback"
-    # Claim the name first (a concurrent run fails here) so only this run's dump is ever deleted.
+    # Never overwrite an unexpected recovery point, even while holding the installer lock.
     (set -o noclobber; : > "$rollback_dump")
     dump_created=1
     chmod 600 "$rollback_dump"
@@ -888,6 +1067,20 @@ PY
     done
     bundle_version=$(python3 -I -B -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$stage/bundle/manifest.json")
     [[ $bundle_version == "$version" ]] || { printf 'restore requires matching release; upgrade afterwards\n' >&2; exit 2; }
+    # Deployment identity is target-local, never portable backup data. Owner-only paths stay private.
+    target_uid=${PORCHLIGHT_UID:-$(id -u)} target_gid=${PORCHLIGHT_GID:-$(id -g)}
+    if ! python3 -I -B - "$target_uid" "$target_gid" "$stackroot" "$run_dir" >/dev/null 2>&1 <<'PY_TARGET_ID'
+import os,pathlib,sys
+uid,gid=map(int,sys.argv[1:3]);root=pathlib.Path(sys.argv[3]);run=pathlib.Path(sys.argv[4])
+assert uid==os.getuid() and gid in {os.getgid(),*os.getgroups()}
+for path in (root,root/'data',root/'backups',root/'backup-work',run):
+ assert not path.is_symlink()
+ if path.exists(): assert path.is_dir() and path.stat().st_uid==uid and os.access(path,os.R_OK|os.W_OK|os.X_OK)
+PY_TARGET_ID
+    then printf 'target runtime identity cannot access private directories; run restore as the target owner, use its UID and a member GID, and repair directory ownership before retrying\n' >&2; exit 2; fi
+    ops_python validate-restore-target "$stage/bundle/.env" "${restore_overrides[@]}" > "$stage/target-validation.log" 2>&1 || {
+      printf 'invalid restore target network settings; correct overrides before retrying\n' >&2; exit 2;
+    }
     running=$(docker ps -a -q --filter "label=com.docker.compose.project=$project")
     [[ ( -z $running && ! -e $stackroot/.env ) || $force == 1 ]] || { printf 'existing stack: use --force\n' >&2; exit 2; }
     if [[ -f $stackroot/.env && -L $stackroot/release-current ]]; then
@@ -901,6 +1094,8 @@ PY
     if [[ -e $stackroot/.env ]]; then cp -p "$stackroot/.env" "$stackroot/.env.before-restore.$(date -u +%Y%m%dT%H%M%S%N)"; fi
     cp "$stage/bundle/.env" "$stackroot/.env"; chmod 600 "$stackroot/.env"
     set_version # dev bundles may predate PORCHLIGHT_VERSION in their environment file
+    set_stack_env PORCHLIGHT_UID "$target_uid" PORCHLIGHT_GID "$target_gid" "${restore_overrides[@]}"
+    rm -f -- "$stackroot/.enroll-host-applied" "$stackroot/.provisioning" "$stackroot/.provisioned-init"
     # Only an enabled restored bundle warrants re-enable guidance, not the displaced stack.
     restore_funnel=0
     if funnel_enabled; then restore_funnel=1; fi

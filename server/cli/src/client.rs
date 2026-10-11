@@ -129,7 +129,12 @@ impl Client {
     }
     /// Stream an export without the normal 4MiB JSON-response cap. The caller
     /// chose the output; no token, key or credential table is in these responses.
-    pub async fn download(&self, path: &str, out: Option<&std::path::Path>) -> Result<Value> {
+    pub async fn download(
+        &self,
+        path: &str,
+        out: Option<&std::path::Path>,
+        prepare_timeout: Duration,
+    ) -> Result<Value> {
         use std::{io::Write, os::unix::fs::OpenOptionsExt};
         let stream = tokio::time::timeout(DEADLINE, UnixStream::connect(&self.socket))
             .await
@@ -141,7 +146,7 @@ impl Client {
             .map_err(|_| Error::Local("HTTP handshake failed"))?;
         let task = tokio::spawn(connection);
         let result = async {
-            let response = tokio::time::timeout(DEADLINE, sender.send_request(req))
+            let response = tokio::time::timeout(prepare_timeout, sender.send_request(req))
                 .await
                 .map_err(|_| Error::Local("Export request timed out"))?
                 .map_err(|_| Error::Local("Export request failed"))?;

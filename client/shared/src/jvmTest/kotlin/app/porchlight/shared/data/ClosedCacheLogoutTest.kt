@@ -11,7 +11,7 @@ import java.nio.file.Path
 import kotlin.test.*
 import kotlin.time.Instant
 
-/** Operator-doc residual: a closed cache rejects both identity-end and epoch-change clears. */
+/** A closed cache rejects cleanup; logout must retain a durable obligation instead of losing it. */
 class ClosedCacheLogoutTest {
     @Test fun closedCacheClearIsNotALogoutBackstopAndRowsRemainOnDisk() = runTest {
         val now = Instant.parse("2026-10-06T12:00:00Z")
@@ -43,7 +43,8 @@ class ClosedCacheLogoutTest {
             // Same durable-clear callback installed by HouseholdData.bindTrust, with no binding scheduler race.
             controller.identityEnded = { attempted = true; cache.clear() }
             cache.close()
-            controller.logout() // identity-end swallows the closed-cache clear's CancellationException
+            assertFailsWith<CancellationException> { controller.logout() }
+            assertTrue(keys.value.logoutPending)
             assertTrue(attempted); assertEquals(TrustState.Login, controller.state.value)
             assertNull(keys.value.session)
             // The binding's epoch-change clear calls this same clear, and fails on the same closed cache.

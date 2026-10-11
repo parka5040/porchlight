@@ -26,7 +26,10 @@ class OkHttpTrustFactory(private val keys: JavaDeviceKeyStore, private val info:
                     connectionSpecs(listOf(ConnectionSpec.Builder(ConnectionSpec.MODERN_TLS).tlsVersions(TlsVersion.TLS_1_3).build()))
                     followRedirects(false); followSslRedirects(false); retryOnConnectionFailure(false)
                     readTimeout(300, java.util.concurrent.TimeUnit.SECONDS)
-                    writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS) // c5: align slow upload idle deadline
+                    writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+                    // Ktor applies socketTimeout to both directions; restore upload WRITE idle after
+                    // per-request timeout configuration, without shortening response-processing time.
+                    addInterceptor(UploadWriteIdleTimeout)
                     // Hostname verifier remains OkHttp's default, including SAN checks for IP addresses.
                 }
             }

@@ -52,6 +52,11 @@ cleanup() {
     for ((i=0; i<50; i++)); do kill -0 "$emulator_pid" 2>/dev/null || break; sleep 0.2; done
     kill -KILL "$emulator_pid" 2>/dev/null || true
     wait "$emulator_pid" 2>/dev/null || true
+    # The launcher can exit before its qemu child, and the reaper spares netsimd while any emulator process lives.
+    for ((i=0; i<75; i++)); do
+      pgrep -u "$(id -u)" -f '(^|/)(qemu-system[^ /]*|emulator)( |$)' >/dev/null 2>&1 || break
+      sleep 0.2
+    done
     reap_stale_netsimd
     if pgrep -u "$(id -u)" -x netsimd >/dev/null; then cleanup_failed=1; fi
   fi
@@ -170,12 +175,97 @@ assert sys.argv[2] in pathlib.Path(sys.argv[1]).read_text()
 PY
 }
 stage=upgrade
-private upgrade "$PORCHLIGHT_ROOT/porchlight-upgrade" 9.9.9
-expect_log upgrade 'PASS upgrade 9.9.9'
+# Probe real writes while BOTH health commands are still running, then fail and roll back.
+mkdir -m 700 "$work/health-failure-bin"
+export GATE_REAL_DOCKER=$(command -v docker) GATE_PORCH=$porch GATE_WORK=$work
+cat > "$work/health-fence-probe.py" <<'PY'
+import http.client,json,os,pathlib,socket,uuid
+work=pathlib.Path(os.environ['GATE_WORK'])
+class UnixHTTP(http.client.HTTPConnection):
+ def connect(self):
+  self.sock=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+  self.sock.settimeout(10)
+  self.sock.connect(str(pathlib.Path(os.environ['PORCHLIGHT_RUN_DIR'])/'agent.sock'))
+conn=UnixHTTP('localhost')
+conn.request('POST','/v1/items',json.dumps({'title':'Refused during health','kind':'todo','visibility':'household'}),
+ headers={'Authorization':'Bearer '+(work/'agent.token').read_text().strip(),
+          'Porchlight-Client-Version':'9.9.9','Idempotency-Key':str(uuid.uuid4()),'Content-Type':'application/json'})
+response=conn.getresponse()
+assert response.status==503 and response.getheader('Retry-After')=='1'
+assert json.loads(response.read())['type']=='urn:porchlight:problem:maintenance'
+conn.close()
+with (work/'health-fence-requests').open('a') as f: f.write('503 maintenance\n')
+PY
+cat > "$work/health-failure-bin/docker" <<'SH_HEALTH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ $1 == compose && $(readlink "$PORCHLIGHT_ROOT/release-current") == releases/9.9.9 ]] &&
+   { [[ ${*: -1} == api && " $* " == *' up '* ]] || [[ ${*: -1} == healthcheck ]]; }; then
+  "$GATE_REAL_DOCKER" "$@"
+  python3 -I "$GATE_WORK/health-fence-probe.py"
+  if [[ ${*: -1} == healthcheck ]]; then exit 1; fi
+  exit 0
+fi
+exec "$GATE_REAL_DOCKER" "$@"
+SH_HEALTH
+chmod 700 "$work/health-failure-bin/docker"
+status=0
+private health-failure env PATH="$work/health-failure-bin:$PATH" "$PORCHLIGHT_ROOT/porchlight-upgrade" 9.9.9 || status=$?
+[[ $status == 1 ]] || fail 'fenced health failure did not exit 1'
+expect_log health-failure 'ROLLED BACK to 9.9.8'
+private fence-requests python3 -I - "$work/health-fence-requests" "$PORCHLIGHT_RUN_DIR/maintenance" <<'PY'
+import pathlib,sys
+assert pathlib.Path(sys.argv[1]).read_text().splitlines()==['503 maintenance','503 maintenance']
+assert not pathlib.Path(sys.argv[2]).exists()
+PY
+cli items show "$item" > "$work/health-rollback-item.json" 2> "$work/health-rollback-item.log"
+private health-rollback-item python3 -I - "$work/health-rollback-item.json" "$item" <<'PY'
+import json,sys
+assert json.load(open(sys.argv[1]))['id']==sys.argv[2]
+PY
+printf 'PASS health-window mutations refused before destructive rollback\n'
+# Real new API acknowledges a write, then a narrowly scoped shim refuses scheduler startup.
+# This must recover forward, never restore the pre-upgrade DB over the acknowledged item.
+mkdir -m 700 "$work/aux-failure-bin"
+export GATE_REAL_DOCKER=$(command -v docker) GATE_PORCH=$porch GATE_WORK=$work
+cat > "$work/aux-failure-bin/docker" <<'SH_AUX'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ $1 == compose && ${*: -1} == backup && " $* " == *' up '* ]]; then
+  "$GATE_PORCH" --socket "$PORCHLIGHT_RUN_DIR/agent.sock" --token-file "$GATE_WORK/agent.token" --json \
+    items add --title 'Acknowledged after upgrade health' --kind todo --visibility household > "$GATE_WORK/acknowledged.json"
+  printf 'update gate: forced post-health backup failure\n' >&2
+  exit 1
+fi
+exec "$GATE_REAL_DOCKER" "$@"
+SH_AUX
+chmod 700 "$work/aux-failure-bin/docker"
+status=0
+private upgrade env PATH="$work/aux-failure-bin:$PATH" "$PORCHLIGHT_ROOT/porchlight-upgrade" 9.9.9 || status=$?
+[[ $status == 1 ]] || fail 'post-health scheduler failure did not exit 1'
+expect_log upgrade 'FORWARD RECOVERY'
+expect_log upgrade 'Recovery command:'
+unset GATE_REAL_DOCKER GATE_PORCH GATE_WORK
 porch=$new/porch-9.9.9-x86_64-linux-musl
 assert_running upgraded
+acknowledged=$(python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1]))["id"])' "$work/acknowledged.json")
+cli items show "$acknowledged" > "$work/acknowledged-after.json" 2> "$work/acknowledged-after.log"
+private acknowledged python3 -I - "$work/acknowledged-after.json" "$acknowledged" "$work/upgrade.log" <<'PY'
+import json,pathlib,sys
+row=json.load(open(sys.argv[1]));assert row['id']==sys.argv[2] and row['title']=='Acknowledged after upgrade health'
+assert 'ROLLED BACK' not in pathlib.Path(sys.argv[3]).read_text()
+PY
+private forward-backup dc up -d --no-deps --wait backup
+private clean-forward driver assert-clean-upgrade "$work" rollback
+# The failed download is deliberately retained until forward recovery has been verified.
+private forward-download-cleanup python3 -I - "$PORCHLIGHT_ROOT/incoming" <<'PY'
+import pathlib,shutil,sys
+for path in pathlib.Path(sys.argv[1]).glob('install.*'):
+ assert path.is_dir() and not path.is_symlink()
+ shutil.rmtree(path)
+PY
 private clean-upgrade driver assert-clean-upgrade "$work"
-printf 'PASS upgrade 9.9.9 and preserved item; no incoming payload or plain dump\n'
+printf 'PASS forward recovery on 9.9.9 preserves acknowledged post-health write; no plain dump\n'
 private same "$PORCHLIGHT_ROOT/porchlight-upgrade" 9.9.9
 expect_log same 'PASS already at 9.9.9'
 status=0; private downgrade "$PORCHLIGHT_ROOT/porchlight-upgrade" 9.9.8 || status=$?

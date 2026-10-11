@@ -259,6 +259,13 @@ async fn response_with_orphans(
 ) -> Result<ListResponse, ApiError> {
     let r = row(conn, c, id, deleted).await?;
     let caps = if include_orphaned && orphan_cleanup_allowed(conn, c, &r).await? {
+        // Cleanup authority is not content authority. Reuse the item ACL while
+        // ignoring only its tombstone, before loading entries, checks or viewers.
+        match crate::items::load(conn, c, r.item_id.expect("orphan parent"), true).await {
+            Ok(_) => (),
+            Err(e) if e.problem() == Problem::NotFound => return Ok(ListResponse::cleanup(r)),
+            Err(e) => return Err(e),
+        }
         vec![ListCapability::View, ListCapability::Delete]
     } else {
         capabilities(conn, c, &r).await?
@@ -300,7 +307,20 @@ async fn response_with_orphans(
         }
     }
     Ok(ListResponse {
-        fields: r,
+        fields: ListFields {
+            id: r.id,
+            item_id: r.item_id,
+            owner_id: r.owner_id,
+            mode: r.mode,
+            version: r.version,
+            redacted: None,
+            household_id: Some(r.household_id),
+            name: Some(r.name),
+            visibility: Some(r.visibility),
+            deleted_at: Some(r.deleted_at),
+            created_at: Some(r.created_at),
+            updated_at: Some(r.updated_at),
+        },
         viewers: vs,
         capabilities: caps.into_iter().map(|x| x.as_str().into()).collect(),
         entries,

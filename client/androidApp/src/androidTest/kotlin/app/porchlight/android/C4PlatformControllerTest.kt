@@ -58,7 +58,7 @@ class C4PlatformControllerTest {
 
     @Test fun exactDeniedFallbackReschedulesAcrossRecreatedAdapterAndRejectsStaleSnooze() {
         check(Build.VERSION.SDK_INT >= 31)
-        val prefs = context.getSharedPreferences("alarm-ledger", Context.MODE_PRIVATE)
+        val prefs = app.porchlight.shared.settings.privateMetadata(context, "alarm-ledger")
         val previous = prefs.all.toMap()
         val expected = InstrumentationRegistry.getArguments().getString("C4_EXACT_EXPECTED")
         check(expected in setOf("denied", "granted")) { "Set exact-alarm app-op before instrumentation; pass C4_EXACT_EXPECTED=denied or granted" }
@@ -84,10 +84,7 @@ class C4PlatformControllerTest {
         } finally {
             AndroidAlarms(context).clear()
             val edit = prefs.edit().clear()
-            previous.forEach { (key, value) -> when (value) {
-                is String -> edit.putString(key, value)
-                is Int -> edit.putInt(key, value)
-            } }
+            previous.forEach { (key, value) -> edit.putString(key, value) }
             check(edit.commit())
             AndroidAlarms(context).reloadFromDisk()
         }
@@ -104,7 +101,7 @@ class C4PlatformControllerTest {
         // Fail closed when the device is not in the state the controller declared for this run.
         if (runtimePermission) assertEquals(expected == "granted", notificationPermissionGranted())
         assertEquals(expected == "granted", notifications.areNotificationsEnabled())
-        val prefs = context.getSharedPreferences("os-delivery", Context.MODE_PRIVATE)
+        val prefs = app.porchlight.shared.settings.privateMetadata(context, "os-delivery")
         val previous = prefs.getString("table", null)
         val notificationMode = mode("POST_NOTIFICATION")
         val row = Notification("c4-controller-notification", "comment", "activity", "item", "item", 1,

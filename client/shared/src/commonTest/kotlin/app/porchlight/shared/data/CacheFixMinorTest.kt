@@ -91,11 +91,14 @@ class CacheFixMinorTest {
         } finally { cache.close() }
     }
     @Test fun cancellationAfterEvictionCommitStillAwaitsFileRemoval() = runTest {
-        val cache = memoryCache { now }; val removing = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>(); var removed = false
+        val removing = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>(); var removed = false
+        val store = object : AttachmentStore by MemoryAttachmentStore() {
+            override suspend fun removeView(id: String) { removing.complete(Unit); release.await(); removed = true }
+        }
+        val cache = memoryCache(store) { now }
         try {
             val row = attachmentFixture()
             cache.install(emptySnapshot(1).copy(items = listOf(itemRead(row.itemId)), attachments = listOf(row)))
-            cache.removeEvictedItemFiles = { removing.complete(Unit); release.await(); removed = true }
             val eviction = launch { cache.evictItem(row.itemId) }
             removing.await(); assertTrue(cache.view.value.attachments.isEmpty())
             eviction.cancel(); release.complete(Unit); eviction.join()
@@ -103,14 +106,15 @@ class CacheFixMinorTest {
         } finally { release.complete(Unit); cache.close() }
     }
     @Test fun privateViewerWriteAndEvictionCannotLeaveAResurrectedFile() = runTest {
-        val cache = memoryCache { now }; val writing = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>(); var viewerFile = false
+        val writing = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>(); var viewerFile = false
         val store = object : AttachmentStore by MemoryAttachmentStore() {
             override suspend fun read(key: String) = byteArrayOf(1)
             override suspend fun removeView(id: String) { viewerFile = false }
         }
+        val cache = memoryCache(store) { now }
         val transport = api { error("cached read only") }
         try {
-            val data = HouseholdData(cache, GeneratedCall({ transport }, { null }), { now }, attachmentStore = store)
+            val data = HouseholdData(cache, GeneratedCall({ transport }, { null }), { now })
             val row = attachmentFixture(); cache.putAttachment(row)
             val opening = async { data.attachments.open(row) { writing.complete(Unit); release.await(); viewerFile = true } }
             writing.await()
@@ -121,15 +125,18 @@ class CacheFixMinorTest {
         } finally { release.complete(Unit); transport.close(); cache.close() }
     }
     @Test fun fileFailuresPreserveOriginalProblemAndRefetchRemainingIds() = runTest {
-        val cache = memoryCache { now }; val gets = mutableListOf<String>()
+        val store = object : AttachmentStore by MemoryAttachmentStore() {
+            override suspend fun remove(key: String) { error("file removal failed") }
+        }
+        val cache = memoryCache(store) { now }; val gets = mutableListOf<String>()
         val transport = api { req ->
             if (req.url.encodedPath.startsWith("/v1/items/")) { gets += req.url.encodedPath; notFound() }
             else respond("""{"items":[],"next_cursor":null}""", headers = headersOf(HttpHeaders.ContentType, "application/json"))
         }
         try {
             val data = HouseholdData(cache, GeneratedCall({ transport }, { null }), { now })
-            cache.install(emptySnapshot(1).copy(items = listOf(itemRead("a"), itemRead("b"))))
-            cache.removeEvictedItemFiles = { throw IllegalStateException("file removal failed") }
+            cache.install(emptySnapshot(1).copy(items = listOf(itemRead("a"), itemRead("b")),
+                attachments = listOf(attachmentFixture().copy(itemId = "a"))))
             val problem = assertFailsWith<ApiProblem> { data.items.get("a") }
             assertEquals(404, problem.status); assertTrue(problem.suppressedExceptions.isNotEmpty())
             data.sync.refetchByIds(setOf("a", "b"), emptySet())

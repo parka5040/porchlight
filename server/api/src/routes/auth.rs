@@ -25,6 +25,7 @@ use porchlight_core::auth::{
 use porchlight_db::{
     auth::{self, DeviceIdentity},
     idempotency::ScopeKind,
+    security_events::{self, Kind},
 };
 use serde::Deserialize;
 
@@ -222,6 +223,8 @@ pub async fn login(
             if e.is_transient() {
                 return Err(e);
             }
+            security_events::record(&mut tx.tx, d.household_id, Kind::LoginFailed, d.member_id)
+                .await?;
             return Ok((tx, e.into_response()));
         }
         // Acquire the device lock before revoking earlier sessions or issuing a replacement.
@@ -233,7 +236,16 @@ pub async fn login(
         }
         auth::revoke_device_sessions(&mut *tx.tx, d.device_id).await?;
         let r = match session(&mut tx, &d).await {
-            Ok(r) => r,
+            Ok(r) => {
+                security_events::record(
+                    &mut tx.tx,
+                    d.household_id,
+                    Kind::LoginSucceeded,
+                    d.member_id,
+                )
+                .await?;
+                r
+            }
             Err(e) if e.is_transient() => return Err(e),
             Err(e) => e.into_response(),
         };
@@ -288,6 +300,14 @@ pub async fn password(
         }
         let phc = hash(&state, &m.body.new_password).await?;
         auth::set_password(&mut tx.tx, s.device.user_id, &phc).await?;
+        security_events::record(
+            &mut tx.tx,
+            s.device.household_id,
+            Kind::PasswordChanged,
+            s.device.member_id,
+        )
+        .await?;
+        porchlight_db::enrollment::void_resets(&mut tx.tx, s.device.user_id).await?;
         auth::revoke_user_sessions(&mut *tx.tx, s.device.user_id, Some(s.session_id)).await?;
         Ok((tx, StatusCode::NO_CONTENT.into_response()))
     })
@@ -393,6 +413,13 @@ pub async fn reset_password(
         let phc = hash(&state, &m.body.new_password).await?;
         auth::set_password(&mut tx.tx, d.user_id, &phc).await?;
         auth::consume_reset(&mut tx.tx, reset.id).await?;
+        security_events::record(
+            &mut tx.tx,
+            d.household_id,
+            Kind::PasswordResetRedeemed,
+            d.member_id,
+        )
+        .await?;
         auth::revoke_user_sessions(&mut *tx.tx, d.user_id, None).await?;
         let r = match session(&mut tx, &d).await {
             Ok(r) => r,

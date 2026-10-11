@@ -21,11 +21,9 @@ fun OccurrenceRead.effective(timeMode: String, zone: TimeZone): OccurrenceRead {
     var effectiveEnd = instant(overrideLocalEnd, endsAt)
     // R10: a gap may collapse the resolved span; preserve its positive nominal wall duration.
     if (timeMode != "floating" && (overrideLocalStart != null || overrideLocalEnd != null) && start != null && end != null) {
-        val s = resolveOccurrenceLocal(start, zone); val e = resolveOccurrenceLocal(end, zone)
-        if (s != null && e != null) {
+        resolveOccurrenceSpan(start, end, zone)?.let { (s, e) ->
             effectiveStart = s
-            val nominal = runCatching { LocalDateTime.parse(end).toInstant(TimeZone.UTC) - LocalDateTime.parse(start).toInstant(TimeZone.UTC) }.getOrNull()
-            effectiveEnd = if (e <= s && nominal != null && nominal.isPositive()) s + nominal else e
+            effectiveEnd = e
         }
     }
     return copy(dueDate = overrideDueDate ?: dueDate, localDue = due, localStart = start, localEnd = end,
@@ -44,3 +42,11 @@ internal fun resolveOccurrenceLocal(value: String, zone: TimeZone): Instant? = r
         }
     }
 }.getOrNull()
+
+/** Resolve endpoints together: a collapsed/inverted DST gap keeps the nominal wall duration (R10). */
+internal fun resolveOccurrenceSpan(start: String?, end: String?, zone: TimeZone): Pair<Instant, Instant>? {
+    val s = start?.let { resolveOccurrenceLocal(it, zone) } ?: return null
+    val e = end?.let { resolveOccurrenceLocal(it, zone) } ?: return null
+    val nominal = runCatching { LocalDateTime.parse(end).toInstant(TimeZone.UTC) - LocalDateTime.parse(start).toInstant(TimeZone.UTC) }.getOrNull()
+    return s to if (e <= s && nominal != null && nominal.isPositive()) s + nominal else e
+}

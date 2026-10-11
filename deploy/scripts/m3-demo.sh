@@ -66,7 +66,7 @@ python3 "$root/deploy/scripts/m3-demo.py" "$root" "$base" "$porch"
 if [[ -d "$root/client/contract-check" ]]; then
   # The toolchain and cache are set before Gradle; this doesn't alter Compose state.
   . "$root/scripts/env.sh"
-  (cd "$root/client" && ./gradlew --offline --console=plain :contract-check:build) >"$base/contract-check.log" 2>&1
+  (cd "$root/client" && ./gradlew --offline --max-workers=4 --console=plain :contract-check:build) >"$base/contract-check.log" 2>&1
   printf 'PASS: M3 contract-check builds\n'
 else
   printf 'SKIP: M3 contract-check module absent (controller reruns after C2 merge)\n'

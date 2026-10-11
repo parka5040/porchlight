@@ -96,8 +96,6 @@ class C6PickerRelockTest {
                 } } }
                 if (household) {
                     onNodeWithContentDescription("Export household").performClick()
-                    onNodeWithText("Password").performTextInput("fixture password")
-                    onNodeWithContentDescription("Confirm household export").performClick()
                 } else onNodeWithContentDescription("Export my data").performClick()
                 onNodeWithContentDescription(if (household) "Export household" else "Export my data").assertIsNotEnabled()
                 runOnIdle { visible.value = false }
@@ -112,7 +110,14 @@ class C6PickerRelockTest {
                     catch (e: Exception) { completed!!(Result.failure(e)) }
                 } }
                 runOnIdle { assertEquals(0, calls); visible.value = true }
-                waitUntil(timeoutMillis = 10_000) { finished }
+                if (household) {
+                    waitUntil { onAllNodes(hasText("Password") and hasSetTextAction()).fetchSemanticsNodes().size == 1 }
+                    onNode(hasText("Password") and hasSetTextAction()).performTextInput("fixture password")
+                    onNodeWithContentDescription("Confirm household export").performClick()
+                }
+                // finish() precedes the platform completion callback; wait for its visible acknowledgement.
+                waitUntil(timeoutMillis = 10_000) { onAllNodesWithText("Export saved").fetchSemanticsNodes().isNotEmpty() }
+                assertTrue(finished)
                 assertEquals(1, calls)
                 onNodeWithText("Export saved").assertExists()
             }

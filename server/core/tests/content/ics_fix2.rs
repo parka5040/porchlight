@@ -1,0 +1,289 @@
+use chrono::{DateTime, Utc};
+use porchlight_core::ics::{self, EventOrigin, IcsTime, ParseOptions, WarningCode};
+use std::{
+    collections::BTreeSet,
+    time::{Duration, Instant},
+};
+
+fn utc(s: &str) -> DateTime<Utc> {
+    s.parse().unwrap()
+}
+fn options() -> ParseOptions {
+    ParseOptions {
+        fallback_tz: chrono_tz::UTC,
+        horizon_start: utc("2026-01-01T00:00:00Z"),
+        horizon_end: utc("2027-04-05T00:00:00Z"),
+    }
+}
+fn calendar(body: &str) -> String {
+    format!("BEGIN:VCALENDAR\nVERSION:2.0\n{body}END:VCALENDAR\n")
+}
+fn keys_unique(events: &[ics::ImportedEvent]) {
+    let keys: BTreeSet<_> = events.iter().map(|e| (&e.uid, &e.recurrence_id)).collect();
+    assert_eq!(keys.len(), events.len());
+}
+
+#[test]
+fn hostile_calendar_has_one_shared_expansion_budget() {
+    let mut body = String::from("BEGIN:VEVENT\nUID:before\nDTSTART:20261005T090000Z\nEND:VEVENT\n");
+    for i in 0..200 {
+        body.push_str(&format!("BEGIN:VEVENT\nUID:hostile-{i}\nDTSTART;VALUE=DATE:00010101\nRRULE:FREQ=MINUTELY;BYMINUTE=0,30;BYMONTH=2\nEND:VEVENT\n"));
+    }
+    body.push_str("BEGIN:VEVENT\nUID:after\nDTSTART:20261005T090000Z\nEND:VEVENT\n");
+    let started = Instant::now();
+    let cal = ics::parse(
+        &calendar(&body),
+        ParseOptions {
+            horizon_start: utc("2026-04-08T00:00:00Z"),
+            ..options()
+        },
+    );
+    let elapsed = started.elapsed();
+    println!(
+        "hostile 200 events: {elapsed:?}, {} records",
+        cal.events.len()
+    );
+    assert!(elapsed < Duration::from_secs(3), "{elapsed:?}");
+    assert_eq!(
+        cal.warnings
+            .iter()
+            .filter(|w| w.code == WarningCode::ExpansionLimited)
+            .count(),
+        1
+    );
+    // The watchdog now covers normalization/reconciliation as well as expansion;
+    // unprocessed records may be omitted, but the global warning fences refresh removal.
+    assert!(
+        cal.warnings
+            .iter()
+            .any(|w| w.uid.is_none() && w.code == WarningCode::ExpansionLimited)
+    );
+    keys_unique(&cal.events);
+}
+
+#[test]
+fn amended_wkst_single_day_differs_from_dtstart() {
+    let body = "BEGIN:VEVENT\nUID:wkst\nDTSTART;VALUE=DATE:20260104\nRRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=MO;COUNT=4;WKST=SU\nEND:VEVENT\n";
+    let cal = ics::parse(&calendar(body), options());
+    let dates: Vec<_> = cal.events.iter().map(|e| e.start.clone()).collect();
+    assert_eq!(
+        dates,
+        ["2026-01-04", "2026-01-05", "2026-01-19", "2026-02-02"]
+            .map(|d| IcsTime::Date(d.parse().unwrap()))
+    );
+    assert!(cal.events.iter().all(|e| e.rrule.is_none()));
+    // Non-default WKST is inert when BYDAY is exactly DTSTART's weekday.
+    let inert = ics::parse(&calendar(&body.replace("BYDAY=MO", "BYDAY=SU")), options());
+    assert!(inert.events[0].rrule.is_some());
+    // Without DTSTART, public normalization must be conservative.
+    assert!(ics::normalize_subset("FREQ=WEEKLY;INTERVAL=2;BYDAY=MO;WKST=SU").is_none());
+}
+
+#[test]
+fn recurring_override_keeps_original_identity_and_expands_only_further_starts() {
+    let master = "BEGIN:VEVENT\nUID:m\nDTSTART:20260309T090000\nDURATION:PT1H\nRRULE:FREQ=WEEKLY;COUNT=4\nEND:VEVENT\n";
+    let moved = "BEGIN:VEVENT\nUID:m\nRECURRENCE-ID;RANGE=THISANDFUTURE:20260316T090000\nDTSTART:20260316T110000\nDURATION:PT1H\nRRULE:FREQ=WEEKLY;COUNT=3\nEND:VEVENT\n";
+    for body in [
+        format!("{master}{moved}"),
+        format!("{moved}{master}"),
+        format!(
+            "{}{moved}",
+            master.replace("FREQ=WEEKLY;COUNT=4", "FREQ=WEEKLY;BYHOUR=9;COUNT=4")
+        ),
+    ] {
+        let cal = ics::parse(&calendar(&body), options());
+        keys_unique(&cal.events);
+        let overrides: Vec<_> = cal
+            .events
+            .iter()
+            .filter(|e| e.origin == EventOrigin::Override)
+            .collect();
+        assert_eq!(overrides.len(), 1, "{:?}", cal.events);
+        let moved = overrides[0];
+        assert_eq!(
+            moved.recurrence_id,
+            Some(IcsTime::Floating(utc("2026-03-16T09:00:00Z").naive_utc()))
+        );
+        assert_eq!(
+            moved.start,
+            IcsTime::Floating(utc("2026-03-16T11:00:00Z").naive_utc())
+        );
+        assert!(moved.rrule.is_none());
+        assert!(!cal.events.iter().any(|e| e.origin == EventOrigin::Series));
+        // THISANDFUTURE supersedes the old 09:00 rule from the original RID.
+        assert!(!cal.events.iter().any(|e| matches!(e.origin, EventOrigin::Expanded { .. }) &&
+            e.start >= IcsTime::Floating(utc("2026-03-16T09:00:00Z").naive_utc()) &&
+            matches!(&e.start, IcsTime::Floating(t) if t.time() == utc("2026-03-16T09:00:00Z").naive_utc().time())));
+        assert!(!cal.events.iter().any(|e| matches!(e.origin, EventOrigin::Expanded { .. }) && e.start == moved.start));
+        for date in ["2026-03-23T11:00:00Z", "2026-03-30T11:00:00Z"] {
+            assert!(
+                cal.events
+                    .iter()
+                    .any(|e| matches!(e.origin, EventOrigin::Expanded { .. })
+                        && e.start == IcsTime::Floating(utc(date).naive_utc()))
+            );
+        }
+        assert!(
+            cal.warnings
+                .iter()
+                .any(|w| w.code == WarningCode::UnsupportedProperty)
+        );
+    }
+}
+
+#[test]
+fn unknown_timezone_set_scales_to_sixty_thousand_events() {
+    let mut body = String::new();
+    for i in 0..60_000 {
+        body.push_str(&format!(
+            "BEGIN:VEVENT\nUID:z{i}\nDTSTART;TZID=Mars:20261005T090000\nEND:VEVENT\n"
+        ));
+    }
+    let started = Instant::now();
+    let cal = ics::parse(&calendar(&body), options());
+    let elapsed = started.elapsed();
+    println!("unknown TZID 60000 events: {elapsed:?}");
+    assert_eq!(cal.events.len(), 60_000);
+    assert_eq!(cal.warnings.len(), 128); // Diagnostics, unlike admitted events, are capped.
+    assert!(
+        cal.warnings
+            .iter()
+            .all(|w| w.code == WarningCode::UnknownTimezone
+                || (w.code == WarningCode::ExpansionLimited
+                    && w.message == "Diagnostics truncated; incomplete"))
+    );
+    assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+}
+
+#[test]
+fn writer_only_emits_recurrence_id_for_overrides_with_written_series() {
+    let master = "BEGIN:VEVENT\nUID:m\nDTSTART:20260301T090000\nDURATION:PT1H\nRRULE:FREQ=DAILY;COUNT=2\nEND:VEVENT\n";
+    let moved = "BEGIN:VEVENT\nUID:m\nRECURRENCE-ID:20260302T090000\nDTSTART:20260302T110000\nDURATION:PT1H\nEND:VEVENT\n";
+    let events = ics::parse(&calendar(&format!("{master}{moved}")), options()).events;
+    let out = ics::write(&events, "test", utc("2026-10-05T00:00:00Z"));
+    assert_eq!(out.matches("RECURRENCE-ID").count(), 1);
+    let orphan = events
+        .iter()
+        .find(|e| e.origin == EventOrigin::Override)
+        .unwrap();
+    assert!(
+        !ics::write(
+            std::slice::from_ref(orphan),
+            "orphan",
+            utc("2026-10-05T00:00:00Z")
+        )
+        .contains("RECURRENCE-ID")
+    );
+    let expanded = ics::parse(
+        &calendar(&master.replace("FREQ=DAILY", "FREQ=DAILY;BYHOUR=9")),
+        options(),
+    )
+    .events;
+    let out = ics::write(&expanded, "expanded", utc("2026-10-05T00:00:00Z"));
+    assert!(!out.contains("RECURRENCE-ID"));
+    let round = ics::parse(&out, options());
+    assert_eq!(round.events, expanded);
+    // Stable distinct standard UIDs and explicit TEXT decoding of the source UID.
+    let mut escaped = expanded.clone();
+    for e in &mut escaped {
+        e.uid = "source,semicolon;slash\\\\colon:".to_owned();
+    }
+    let wire = ics::write(&escaped, "escaped", utc("2026-10-05T00:00:00Z"));
+    assert_eq!(ics::parse(&wire, options()).events, escaped);
+    let standard_uids: BTreeSet<_> = wire.lines().filter(|l| l.starts_with("UID:")).collect();
+    assert_eq!(standard_uids.len(), escaped.len());
+    keys_unique(&round.events);
+    assert!(
+        round
+            .events
+            .iter()
+            .all(|e| matches!(e.origin, EventOrigin::Expanded { .. }))
+    );
+}
+
+#[test]
+fn duplicate_kept_and_expanded_master_is_warned() {
+    let master = "BEGIN:VEVENT\nUID:dup\nDTSTART:20260301T090000\nDURATION:PT1H\nRRULE:FREQ=DAILY;COUNT=2\nEND:VEVENT\n";
+    let cal = ics::parse(
+        &calendar(&format!(
+            "{master}{}",
+            master.replace("FREQ=DAILY", "FREQ=DAILY;BYHOUR=9")
+        )),
+        options(),
+    );
+    assert!(
+        cal.warnings
+            .iter()
+            .any(|w| w.code == WarningCode::InvalidEvent && w.message.contains("master"))
+    );
+    keys_unique(&cal.events);
+}
+
+#[test]
+fn finite_until_does_not_require_an_unbudgeted_tail_rescan() {
+    for until in ["20260101T110000Z", "20260101T110000", "20260101"] {
+        let body = format!(
+            "BEGIN:VEVENT\nUID:until\nDTSTART:20260101T090000Z\nDURATION:PT1H\nRRULE:FREQ=HOURLY;UNTIL={until}\nEND:VEVENT\n"
+        );
+        let cal = ics::parse(&calendar(&body), options());
+        assert!(
+            !cal.warnings
+                .iter()
+                .any(|w| w.code == WarningCode::ExpansionLimited),
+            "{until}: {:?}",
+            cal.warnings
+        );
+        assert_eq!(cal.events.len(), if until.len() == 8 { 15 } else { 3 });
+    }
+}
+
+#[test]
+fn realistic_fixtures_and_two_thousand_event_school_feed_fit_budget() {
+    for (name, fixture) in [
+        ("google", include_str!("../fixtures/ics/google.ics")),
+        ("outlook", include_str!("../fixtures/ics/outlook.ics")),
+        ("apple", include_str!("../fixtures/ics/apple.ics")),
+        ("school", include_str!("../fixtures/ics/school.ics")),
+        ("floating", include_str!("../fixtures/ics/floating.ics")),
+        (
+            "unsupported",
+            include_str!("../fixtures/ics/unsupported.ics"),
+        ),
+        ("folded", include_str!("../fixtures/ics/folded.ics")),
+    ] {
+        let started = Instant::now();
+        let cal = ics::parse(fixture, options());
+        println!(
+            "fixture {name}: {:?}, {} records",
+            started.elapsed(),
+            cal.events.len()
+        );
+        assert!(
+            !cal.warnings
+                .iter()
+                .any(|w| w.code == WarningCode::ExpansionLimited),
+            "{name}: {:?}",
+            cal.warnings
+        );
+    }
+    // Deliberately exercise expansion, not just cheap subset-preserving masters.
+    let mut body = String::new();
+    for i in 0..2000 {
+        body.push_str(&format!("BEGIN:VEVENT\nUID:school-{i}\nDTSTART:20260105T090000\nDURATION:PT1H\nRRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9;COUNT=20\nEND:VEVENT\n"));
+    }
+    let started = Instant::now();
+    let cal = ics::parse(&calendar(&body), options());
+    println!(
+        "school 2000 expanded series: {:?}, {} records",
+        started.elapsed(),
+        cal.events.len()
+    );
+    assert_eq!(cal.events.len(), 40_000);
+    assert!(
+        !cal.warnings
+            .iter()
+            .any(|w| w.code == WarningCode::ExpansionLimited
+                && w.message != "Diagnostics truncated; incomplete")
+    );
+    keys_unique(&cal.events);
+}

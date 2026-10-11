@@ -30,19 +30,54 @@ pub async fn client(
 ) -> Result<Json<ClientRelease>, ApiError> {
     Ok(Json(store(&s)?.advertised.clone()))
 }
-#[utoipa::path(get,path="/v1/client-release/files/{path}",description="Enrolled device only, no session required. Exact allowlisted path, including nested files. Exempt from the minimum client version.",params(("path"=String,Path,description="Allowlisted relative path, possibly containing slashes"),("Range"=Option<String>,Header,description="Single byte range, suffix or open-ended"),("If-Range"=Option<String>,Header,description="Quoted sha256 ETag; mismatch restarts as 200")),responses((status=200,description="Verified bytes; ETag, Content-Length, Accept-Ranges; private, no-store",body=String,content_type="application/octet-stream"),(status=206,description="Byte range with Content-Range",body=String,content_type="application/octet-stream"),(status=416,description="range-not-satisfiable; Content-Range bytes */size",body=crate::openapi::ProblemBody,content_type="application/problem+json"),(status=404,description="client-release-unavailable or path not allowlisted",body=crate::openapi::ProblemBody,content_type="application/problem+json"),crate::openapi::UniversalProblems))]
+#[utoipa::path(get,path="/v1/client-release/files/{path}",description="Enrolled device only, no session required. Exact allowlisted path, including nested files. Exempt from the minimum client version. Two concurrent downloads per device and two hashing jobs globally; quota exhaustion returns 429 with Retry-After.",params(("path"=String,Path,description="Allowlisted relative path, possibly containing slashes"),("Range"=Option<String>,Header,description="Single byte range, suffix or open-ended"),("If-Range"=Option<String>,Header,description="Quoted sha256 ETag; mismatch restarts as 200")),responses((status=200,description="Verified bytes; ETag, Content-Length, Accept-Ranges; private, no-store",body=String,content_type="application/octet-stream"),(status=206,description="Byte range with Content-Range",body=String,content_type="application/octet-stream"),(status=416,description="range-not-satisfiable; Content-Range bytes */size",body=crate::openapi::ProblemBody,content_type="application/problem+json"),(status=404,description="client-release-unavailable or path not allowlisted",body=crate::openapi::ProblemBody,content_type="application/problem+json"),crate::openapi::RateLimitProblem,crate::openapi::UniversalProblems))]
 pub async fn download(
     State(s): State<AppState>,
-    _: DeviceAuth,
+    DeviceAuth(device, _): DeviceAuth,
     Path(path): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let store = store(&s)?;
-    let (file, size, sha) = tokio::task::spawn_blocking(move || store.open(&path))
-        .await
-        .map_err(|_| ApiError::internal("release_worker"))?
+    let info = store
+        .info(&path)
         .map_err(|_| ApiError::new(Problem::NotFound))?;
-    crate::download::stream(file, size, &sha, &headers, None).await
+    if !crate::download::valid_range(info.size, &info.sha256, &headers) {
+        return Ok(crate::download::unsatisfiable(info.size));
+    }
+    let permit = s
+        .release_downloads
+        .acquire(device.device_id, device.member_id)?;
+    let hash_permit = s
+        .release_hash_slots
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| ApiError::new(Problem::RateLimited).retry(1))?;
+    // Both permits travel into the blocking job: cancellation cannot admit replacement
+    // work until hashing actually finishes. The device permit then travels with the body.
+    #[cfg(feature = "testing")]
+    let hook = s.release_open_hook.lock().unwrap().clone();
+    let (opened, permit) = tokio::task::spawn_blocking(move || {
+        let _hash_permit = hash_permit;
+        #[cfg(feature = "testing")]
+        if let Some(hook) = hook {
+            hook();
+        }
+        (store.open(&path), permit)
+    })
+    .await
+    .map_err(|_| ApiError::internal("release_worker"))?;
+    let (file, size, sha) = opened.map_err(|_| ApiError::new(Problem::NotFound))?;
+    let response = crate::download::stream(file, size, &sha, &headers, None).await?;
+    let (parts, body) = response.into_parts();
+    use futures_util::StreamExt;
+    let stream = body.into_data_stream().map(move |chunk| {
+        let _permit = &permit;
+        chunk
+    });
+    Ok(Response::from_parts(
+        parts,
+        axum::body::Body::from_stream(stream),
+    ))
 }
 #[utoipa::path(get,path="/v1/server-release",security(("session"=[])),responses((status=200,description="Last signed release check and owner-run upgrade command",body=ServerRelease),crate::openapi::ForbiddenProblem,crate::openapi::UniversalProblems))]
 pub async fn server(State(s): State<AppState>, c: Caller) -> Result<Json<ServerRelease>, ApiError> {

@@ -3,6 +3,7 @@ use crate::{
     client::{Client, Error, Result, field},
     enroll,
     password::password,
+    pending_enrollment::{self, Pending},
 };
 use porchlight_core::auth::{enroll_uri::EnrollUri, session::Platform};
 use serde_json::{Value, json};
@@ -46,6 +47,7 @@ impl std::str::FromStr for DeviceSpec {
 struct ReservedDir {
     path: PathBuf,
     complete: bool,
+    _lock: fs::File,
 }
 impl Drop for ReservedDir {
     fn drop(&mut self) {
@@ -55,18 +57,45 @@ impl Drop for ReservedDir {
     }
 }
 fn write_file(path: &Path, contents: &[u8], mode: u32) -> Result<()> {
+    if let Ok(metadata) = fs::symlink_metadata(path) {
+        if !metadata.is_file()
+            || metadata.permissions().mode() & 0o777 != mode
+            || fs::read(path).map_err(|_| Error::Local("Could not inspect credential file"))?
+                != contents
+        {
+            return Err(Error::Local(
+                "Refusing to overwrite a different credential file",
+            ));
+        }
+        return fs::File::open(path)
+            .and_then(|f| f.sync_all())
+            .map_err(|_| Error::Local("Could not sync credential file"));
+    }
+    // The directory lock protects staging cleanup; a crash cannot publish partial credentials.
+    let staged = path.with_file_name(format!(
+        "{}.new",
+        path.file_name().unwrap().to_string_lossy()
+    ));
+    match fs::remove_file(&staged) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err(Error::Local("Could not clear credential staging file")),
+    }
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(mode)
-        .open(path)
+        .open(&staged)
         .map_err(|_| Error::Local("Could not create credential file"))?;
     // Explicit modes, independent of the caller's umask. The create mode is never more permissive.
     file.set_permissions(fs::Permissions::from_mode(mode))
         .map_err(|_| Error::Local("Could not set credential file permissions"))?;
     file.write_all(contents)
         .and_then(|_| file.sync_all())
-        .map_err(|_| Error::Local("Could not write credential file"))
+        .map_err(|_| Error::Local("Could not write credential file"))?;
+    fs::hard_link(&staged, path)
+        .and_then(|_| fs::remove_file(&staged))
+        .map_err(|_| Error::Local("Could not publish credential file"))
 }
 
 pub async fn run(
@@ -83,10 +112,16 @@ pub async fn run(
         }
         match fs::symlink_metadata(out.join(&device.label)) {
             Ok(_) => {
-                return Err(Error::Message(format!(
-                    "Refusing to overwrite existing device directory: {}",
-                    device.label
-                )));
+                if !out.join(&device.label).join("pending.json").exists() {
+                    return Err(Error::Message(format!(
+                        "Refusing to overwrite existing device directory: {}",
+                        device.label
+                    )));
+                }
+                // Loading may sanitize a legacy attempt. Do that only after the
+                // directory lock below, never during this read-only preflight.
+                pending_enrollment::private(&out.join(&device.label), true)?;
+                pending_enrollment::private(&out.join(&device.label).join("pending.json"), false)?;
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => return Err(Error::Local("Could not inspect device directory")),
@@ -98,37 +133,107 @@ pub async fn run(
         .mode(0o700)
         .create(out)
         .map_err(|_| Error::Local("Could not create output directory"))?;
+    let metadata = fs::symlink_metadata(out)
+        .map_err(|_| Error::Local("Could not inspect output directory"))?;
+    if !metadata.is_dir() || metadata.permissions().mode() & 0o022 != 0 {
+        return Err(Error::Local(
+            "Output directory must be real and not writable by other users",
+        ));
+    }
     let mut reserved = Vec::new();
     // create_dir (not create_dir_all) atomically reserves each label and rejects races/links.
     for device in devices {
         let path = out.join(&device.label);
-        DirBuilder::new().mode(0o700).create(&path).map_err(|_| {
-            Error::Message(format!(
-                "Refusing to overwrite device directory: {}",
-                device.label
-            ))
-        })?;
+        let resumed = path.exists();
+        if !resumed {
+            DirBuilder::new()
+                .mode(0o700)
+                .create(&path)
+                .map_err(|_| Error::Local("Could not reserve device directory"))?;
+        }
+        pending_enrollment::private(&path, true)?;
+        let lock =
+            fs::File::open(&path).map_err(|_| Error::Local("Could not open device directory"))?;
+        lock.try_lock()
+            .map_err(|_| Error::Local("Another enrollment is using this device directory"))?;
+        if resumed {
+            Pending::load(&path)?;
+        }
         reserved.push(ReservedDir {
             path,
-            complete: false,
+            complete: resumed,
+            _lock: lock,
         });
     }
+
     let mut output = Vec::new();
     let mut progress = Progress::new(devices);
     for (device, dir) in devices.iter().zip(&mut reserved) {
-        let token = client.enrollment_token(user, &device.label).await?;
-        let uri = EnrollUri::parse(field(&token, "uri")?)
-            .map_err(|_| Error::Local("Invalid enrollment URI"))?;
-        let (enrollment, key) = enroll::complete(
-            &uri,
-            override_addr,
-            &device.label,
-            device.platform,
-            &password,
-        )
-        .await?;
+        let resumed = dir.complete;
+        let pending = if resumed {
+            Some(Pending::load(&dir.path)?)
+        } else {
+            None
+        };
+        let uri = if let Some(ref pending) = pending {
+            EnrollUri::parse(&pending.uri)
+        } else {
+            let token = client.enrollment_token(user, &device.label).await?;
+            EnrollUri::parse(field(&token, "uri")?)
+        }
+        .map_err(|_| Error::Local("Invalid enrollment URI"))?;
+        if let Some(ref p) = pending {
+            p.validate(
+                &uri,
+                user,
+                &device.label,
+                device.platform.as_str(),
+                &password,
+            )?;
+        }
+        let tls = enroll::connect(&uri, override_addr).await?;
+        let pending = match pending {
+            Some(p) => p,
+            None => {
+                let p = Pending::new(
+                    &uri,
+                    user,
+                    &device.label,
+                    device.platform.as_str(),
+                    &password,
+                )?;
+                p.save(&dir.path)?;
+                p
+            }
+        };
+        dir.complete = true; // From now on an ambiguous outcome must retain the key and retry identity.
+        let enrollment = match enroll::complete(tls, &uri, &pending, &password).await {
+            Ok(e) => e,
+            Err(e) => {
+                // A fresh attempt with a definite rejection cannot have issued credentials.
+                // A resumed attempt may have committed earlier: never discard its identity.
+                let rejected = match &e {
+                    Error::Problem(p) | Error::RetryableProblem(p, _) => p["status"]
+                        .as_u64()
+                        .is_some_and(|s| (400..500).contains(&s)),
+                    _ => false,
+                };
+                if !resumed && rejected {
+                    dir.complete = false;
+                } else {
+                    eprintln!(
+                        "Enrollment outcome unknown for {}. Pending credentials retained; rerun the same --devices {}:{} with the original password. If replay has expired, check and revoke this device before replacing it.",
+                        device.label,
+                        device.label,
+                        device.platform.as_str()
+                    );
+                }
+                return Err(e);
+            }
+        };
         progress.enrolled.push(device.label.clone());
-        write_device(&dir.path, &enrollment, &key, uri.ca_fingerprint)?;
+        write_device(&dir.path, &enrollment, &pending.key, uri.ca_fingerprint)?;
+        Pending::finish(&dir.path)?;
         dir.complete = true;
         progress.saved.push(device.label.clone());
         output.push(json!({"label":device.label, "device_id":enrollment.device_id, "expires":enrollment.session.expires_at}));
@@ -170,7 +275,7 @@ impl<'a> Progress<'a> {
             message.push_str(&format!(" Rerun with --devices {remaining}."));
         }
         if self.enrolled != self.saved {
-            message.push_str(" Credentials for the last enrolled device were not saved; revoke it before enrolling a replacement.");
+            message.push_str(" Credentials for the last enrolled device were not saved; its pending attempt is retained. Retry that device with its original identity and password. If replay has expired, revoke it before enrolling a replacement.");
         }
         message
     }

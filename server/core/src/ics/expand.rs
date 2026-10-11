@@ -1,14 +1,14 @@
 use super::parse::{CalendarDuration, Context, add, add_duration, date, datetime};
 use super::*;
 
-fn local(t: &IcsTime, tz: Tz) -> NaiveDateTime {
+pub(super) fn local(t: &IcsTime, tz: Tz) -> NaiveDateTime {
     match t {
         IcsTime::Date(d) => d.and_hms_opt(0, 0, 0).expect("midnight"),
         IcsTime::Floating(d) => *d,
         IcsTime::Fixed(d) => to_local(*d, tz),
     }
 }
-fn instant(t: &IcsTime, tz: Tz) -> DateTime<Utc> {
+pub(super) fn instant(t: &IcsTime, tz: Tz) -> DateTime<Utc> {
     match t {
         IcsTime::Fixed(t) => *t,
         _ => resolve_local(local(t, tz), tz),
@@ -88,7 +88,7 @@ pub(super) fn expand(
                 "RRULE cannot be expanded; event retained without recurrence",
             );
             if !is_override {
-                out.events.push(event);
+                out.emit(event);
             }
             return;
         }
@@ -141,6 +141,10 @@ pub(super) fn expand(
     let mut pending = Some(event.start.clone());
     let mut limited = false;
     loop {
+        if out.scan_exhausted() {
+            limited = true;
+            break;
+        }
         let start = if let Some(start) = pending.take() {
             start
         } else {
@@ -194,7 +198,7 @@ pub(super) fn expand(
         {
             continue;
         }
-        if emitted == 10_000 {
+        if emitted == crate::items::MAX_MATERIALIZED_OCCURRENCES {
             limited = true;
             break;
         }
@@ -207,15 +211,29 @@ pub(super) fn expand(
             }
         };
         if let Some(end) = end {
-            let mut e = event.clone();
-            e.start = start.clone();
-            e.end = end;
-            e.recurrence_id = Some(start.clone());
-            e.origin = EventOrigin::Expanded {
-                rule_instance_start: start,
+            if !out.admit(&event, true) {
+                break;
+            }
+            // Do not clone EXDATE/RRULE just to discard them on each instance.
+            let e = ImportedEvent {
+                uid: event.uid.clone(),
+                summary: event.summary.clone(),
+                description: event.description.clone(),
+                location: event.location.clone(),
+                start: start.clone(),
+                end,
+                recurrence_id: Some(start.clone()),
+                origin: EventOrigin::Expanded {
+                    rule_instance_start: start,
+                },
+                rrule: None,
+                exdates: Vec::new(),
+                all_day: event.all_day,
+                time_mode: event.time_mode,
+                tzid: event.tzid.clone(),
+                sequence: event.sequence,
+                status: event.status,
             };
-            e.rrule = None;
-            e.exdates.clear();
             out.events.push(e);
             emitted += 1;
         } else {

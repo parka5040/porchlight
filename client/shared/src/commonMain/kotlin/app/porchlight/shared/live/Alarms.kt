@@ -29,6 +29,9 @@ class AlarmLedger private constructor(var nextCode: Int, private val rows: Mutab
         it.active && it.occurrenceId == occurrenceId && (it.delivered || it.fireAt <= at)
     }
     fun ticket(code: Int) = codes[code]
+    /** A split changes the parent, not the native code/generation or delivery state. */
+    internal fun reparent(key: String, itemId: String): AlarmTicket =
+        checkNotNull(rows[key]).copy(itemId = itemId).also(::put)
     fun schedule(key: String, at: Instant, itemId: String, occurrenceId: String): AlarmTicket {
         val old = rows[key]
         if (old != null && old.active && (old.fireAt == at || old.sourceFireAt == at)) return old
@@ -50,6 +53,10 @@ class AlarmLedger private constructor(var nextCode: Int, private val rows: Mutab
     fun canFire(code: Int, generation: Long): Boolean = ticket(code)?.let { it.active && !it.delivered && it.generation == generation } ?: false
     fun fired(code: Int, generation: Long) { ticket(code)?.takeIf { canFire(code, generation) }?.let { put(it.copy(delivered = true, snoozed = false)) } }
     fun cancel(key: String) { rows[key]?.takeIf { it.active }?.let { put(it.copy(active = false, generation = it.generation + 1)) } }
+    /** Identity retirement preserves allocation high-water, but no old reminder remains actionable. */
+    fun retire(): List<AlarmTicket> = all().also { old ->
+        old.forEach { rows.remove(it.key); codes.remove(it.code); dirty += it.key; revision++ }
+    }
     fun prune(at: Instant): List<AlarmTicket> {
         val expired = rows.values.filter { (!it.active || it.delivered) && it.fireAt < at - 7.days }
         expired.forEach { rows.remove(it.key); codes.remove(it.code); dirty += it.key; revision++ }
@@ -69,21 +76,28 @@ class AlarmLedger private constructor(var nextCode: Int, private val rows: Mutab
         }
     }
 }
+/** Server occurrence openness: only done and skipped close reminders. Missing occurrences are never eligible. */
+internal fun String?.isOpenForReminders(): Boolean = this != null && this != "done" && this != "skipped"
+
 fun reconcileAlarms(ledger: AlarmLedger, view: CacheView, at: Instant, preserveOverdue: Boolean = false) {
     val items = view.items.associateBy { it.id }
     val occurrences = view.occurrences.associateBy { it.id }
     val enabled = view.notificationPrefs?.prefs?.reminders != false
     val desired = view.reminders.filter { enabled && it.memberId == view.settings?.memberId && it.fireAt >= at && it.fireAt < at + 7.days
-        && items[it.itemId]?.pendingDerivation == false && occurrences[it.occurrenceId]?.status in setOf("todo", "doing") }
+        && items[it.itemId]?.pendingDerivation == false && occurrences[it.occurrenceId]?.status.isOpenForReminders() }
     val keys = desired.mapTo(hashSetOf()) { it.id }
-    for (old in ledger.all().filter { it.active }) {
+    val reminders = view.reminders.associateBy { it.id }
+    for (ticket in ledger.all().filter { it.active }) {
+        val source = reminders[ticket.key]
+        val old = if (source != null && source.occurrenceId == ticket.occurrenceId && source.fireAt == ticket.sourceFireAt)
+            ledger.reparent(ticket.key, source.itemId) else ticket
         val item = items[old.itemId]
         val occurrence = occurrences[old.occurrenceId]
         // Pending derivation preserves the known alarm, never schedules from possibly stale projections.
-        if (!enabled || item == null || occurrence == null || occurrence.status !in setOf("todo", "doing") ||
+        if (!enabled || item == null || occurrence == null || !occurrence.status.isOpenForReminders() ||
             (!item.pendingDerivation && old.key !in keys && !old.snoozed &&
                 !((old.delivered || (preserveOverdue && !old.delivered && old.fireAt <= at && at - old.fireAt < 7.days)) &&
-                    view.reminders.any { it.id == old.key && it.fireAt == old.sourceFireAt }))) ledger.cancel(old.key)
+                    source?.fireAt == old.sourceFireAt))) ledger.cancel(old.key)
     }
     desired.forEach { ledger.schedule(it.id, it.fireAt, it.itemId, it.occurrenceId) }
 }

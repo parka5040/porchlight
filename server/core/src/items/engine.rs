@@ -6,6 +6,11 @@ use rrule::{RRule, RRuleSet, Unvalidated};
 /// Calendar materialization horizon, in calendar months rather than fixed-length days.
 pub const HORIZON_MONTHS: u32 = 18;
 
+/// Shared admission and derivation ceiling, including retained history.
+pub const MAX_MATERIALIZED_OCCURRENCES: usize = 10_000;
+/// Also bound sparse or nonmatching recurrence candidates, not just emitted anchors.
+const MAX_MATERIALIZATION_CANDIDATES: usize = 500_000;
+
 /// Generated occurrence columns. Local anchors always survive gap/fold resolution.
 /// All-day appointments use midnight local start and exclusive midnight local end.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +63,27 @@ pub fn expand(
     from: NaiveDateTime,
     until: NaiveDateTime,
 ) -> Result<Vec<OccurrenceAnchor>, ValidationError> {
+    let (anchors, exhausted) = expand_capped(spec, from, until)?;
+    if exhausted {
+        return Err(materialization_error());
+    }
+    Ok(anchors)
+}
+
+fn materialization_error() -> ValidationError {
+    ValidationError::new(
+        "rrule",
+        "Series exceeds the 10000-occurrence materialization or candidate budget",
+    )
+}
+
+/// Legacy over-budget series retain a bounded prefix with stable sequence numbers.
+/// The caller must report exhaustion; only derivation may use a partial result.
+pub fn expand_capped(
+    spec: &SeriesSpec,
+    from: NaiveDateTime,
+    until: NaiveDateTime,
+) -> Result<(Vec<OccurrenceAnchor>, bool), ValidationError> {
     validate_local("from", from)?;
     validate_local("until", until)?;
     if from > until {
@@ -67,27 +93,35 @@ pub fn expand(
         ));
     }
     if from == until {
-        return Ok(vec![]);
+        return Ok((vec![], false));
     }
     if spec.rule.is_none() {
-        return match spec.start() {
-            None => Ok(vec![OccurrenceAnchor::default()]),
-            Some(t) if t >= from && t < until => Ok(vec![initial_anchor(spec, t)?]),
-            _ => Ok(vec![]),
+        let anchors = match spec.start() {
+            None => vec![OccurrenceAnchor::default()],
+            Some(t) if t >= from && t < until => vec![initial_anchor(spec, t)?],
+            _ => vec![],
         };
+        return Ok((anchors, false));
     }
     let mut result = vec![];
-    visit(spec, until, |seq, local| {
-        if local >= from {
-            result.push(if seq == 0 {
-                initial_anchor(spec, local)?
-            } else {
-                anchor_for_local(spec, local, seq)?
-            });
-        }
-        Ok(true)
-    })?;
-    Ok(result)
+    let mut exhausted = false;
+    let candidates_exhausted =
+        visit_bounded(spec, until, MAX_MATERIALIZATION_CANDIDATES, |seq, local| {
+            // Count history too, even when the requested window starts later.
+            if seq as usize >= MAX_MATERIALIZED_OCCURRENCES {
+                exhausted = true;
+                return Ok(false);
+            }
+            if local >= from {
+                result.push(if seq == 0 {
+                    initial_anchor(spec, local)?
+                } else {
+                    anchor_for_local(spec, local, seq)?
+                });
+            }
+            Ok(true)
+        })?;
+    Ok((result, exhausted || candidates_exhausted))
 }
 
 /// Counts materialized anchors from DTSTART up to `until`, stopping at `limit + 1`.
@@ -104,10 +138,12 @@ pub fn bounded_occurrence_count(
         return Ok(usize::from(spec.start().is_none_or(|start| start < until)));
     }
     let mut count = 0;
-    visit(spec, until, |_, _| {
+    if visit_bounded(spec, until, MAX_MATERIALIZATION_CANDIDATES, |_, _| {
         count += 1;
         Ok(count <= limit)
-    })?;
+    })? {
+        return Err(materialization_error());
+    }
     Ok(count)
 }
 
@@ -120,8 +156,17 @@ pub fn bounded_occurrence_count(
 fn visit(
     spec: &SeriesSpec,
     end: NaiveDateTime,
-    mut callback: impl FnMut(u32, NaiveDateTime) -> Result<bool, ValidationError>,
+    callback: impl FnMut(u32, NaiveDateTime) -> Result<bool, ValidationError>,
 ) -> Result<(), ValidationError> {
+    visit_bounded(spec, end, usize::MAX, callback).map(|_| ())
+}
+
+fn visit_bounded(
+    spec: &SeriesSpec,
+    end: NaiveDateTime,
+    candidate_limit: usize,
+    mut callback: impl FnMut(u32, NaiveDateTime) -> Result<bool, ValidationError>,
+) -> Result<bool, ValidationError> {
     let rule = spec
         .rule
         .as_ref()
@@ -130,7 +175,10 @@ fn visit(
         .start()
         .ok_or_else(|| ValidationError::new("due_date", "missing DTSTART"))?;
     if end <= dtstart {
-        return Ok(());
+        return Ok(false);
+    }
+    if matches!(rule.frequency(), "MONTHLY" | "YEARLY") {
+        return super::periods::visit(spec, end, candidate_limit, callback);
     }
     let synthetic_start = dtstart
         .with_nanosecond(0)
@@ -163,7 +211,10 @@ fn visit(
     let mut empty_periods = 0;
     let mut previous = None;
     let mut index = 0u32;
-    for instant in &set {
+    for (candidate, instant) in (&set).into_iter().enumerate() {
+        if candidate == candidate_limit {
+            return Ok(true);
+        }
         let t = instant
             .naive_utc()
             .with_nanosecond(dtstart.nanosecond())
@@ -204,7 +255,7 @@ fn visit(
             break;
         }
     }
-    Ok(())
+    Ok(false)
 }
 pub(super) fn within_until(spec: &SeriesSpec, t: NaiveDateTime) -> bool {
     match spec.rule.as_ref().and_then(|r| r.until.as_ref()) {
@@ -470,35 +521,54 @@ pub fn dispositions(
     now: DateTime<Utc>,
     policy: MissedPolicy,
     zone: Tz,
-) -> Vec<Disposition> {
+) -> Result<Vec<Disposition>, ValidationError> {
     // Use exactly the same zone/DST boundary for generated and overridden anchors.
-    let boundary = |a: &OccurrenceAnchor| {
-        a.ends_at
-            .or_else(|| {
-                a.local_end.and_then(|end| match a.local_start {
-                    Some(start) => resolve_span(start, end, zone).ok().map(|(_, end)| end),
-                    None => Some(resolve_local(end, zone)),
-                })
-            })
-            .or(a.due_at)
+    let boundary = |a: &OccurrenceAnchor| -> Result<Option<DateTime<Utc>>, ValidationError> {
+        if let Some(end) = a.ends_at {
+            return Ok(Some(end));
+        }
+        if let Some(end) = a.local_end {
+            return Ok(Some(match a.local_start {
+                Some(start) => {
+                    resolve_span(start, end, zone)
+                        .map_err(|e| ValidationError::new("local_end", e.to_string()))?
+                        .1
+                }
+                None => resolve_local(end, zone),
+            }));
+        }
+        Ok(a.due_at
             .or_else(|| a.local_due.map(|t| resolve_local(t, zone)))
             .or_else(|| {
                 a.due_date
                     .and_then(|d| d.succ_opt())
                     .map(|d| start_of_day(d, zone))
-            })
+            }))
     };
-    let effective: Vec<_> = occurrences.iter().map(|o| boundary(&o.anchor)).collect();
+    let effective: Vec<_> = occurrences
+        .iter()
+        .map(|o| boundary(&o.anchor))
+        .collect::<Result<_, _>>()?;
+    let generated: Vec<_> = occurrences
+        .iter()
+        .map(|o| {
+            o.generated_anchor
+                .as_ref()
+                .map(boundary)
+                .transpose()
+                .map(Option::flatten)
+        })
+        .collect::<Result<_, _>>()?;
     let missed: Vec<_> = occurrences
         .iter()
         .zip(&effective)
         .map(|(o, t)| t.filter(|t| o.status.is_open() && *t < now))
         .collect();
     let carried = match policy {
-        MissedPolicy::CarryOver => carry_over(occurrences, &effective, &missed, now, boundary),
+        MissedPolicy::CarryOver => carry_over(occurrences, &effective, &generated, &missed, now),
         _ => None,
     };
-    missed
+    Ok(missed
         .iter()
         .enumerate()
         .map(|(i, t)| match (t, policy) {
@@ -507,7 +577,7 @@ pub fn dispositions(
             (Some(_), MissedPolicy::CarryOver) if Some(i) == carried => Disposition::Overdue,
             _ => Disposition::Expired,
         })
-        .collect()
+        .collect())
 }
 
 /// R63 carry-over election over current persisted state (derivation-matrix.md, "R63
@@ -515,16 +585,11 @@ pub fn dispositions(
 fn carry_over(
     occurrences: &[OpenOccurrence],
     effective: &[Option<DateTime<Utc>>],
+    generated: &[Option<DateTime<Utc>>],
     missed: &[Option<DateTime<Utc>>],
     now: DateTime<Utc>,
-    boundary: impl Fn(&OccurrenceAnchor) -> Option<DateTime<Utc>>,
 ) -> Option<usize> {
     use std::cmp::Reverse;
-    // Generated boundaries use exactly the same zone/DST resolution as effective ones.
-    let generated: Vec<_> = occurrences
-        .iter()
-        .map(|o| o.generated_anchor.as_ref().and_then(&boundary))
-        .collect();
     let disposition = |i: usize| occurrences[i].disposition;
     // Postponed work: detached later than its generated boundary, which passed by `at`.
     let postponed = |i: usize, at: DateTime<Utc>| {
@@ -601,4 +666,104 @@ fn carry_over(
     (0..occurrences.len())
         .filter(|&i| missed[i].is_some() && !covered(i))
         .max_by_key(|&i| rank(i))
+}
+
+#[cfg(test)]
+mod audit_bl_server2 {
+    use super::*;
+
+    #[test]
+    fn ancient_sparse_rules_charge_periods_not_days() {
+        for (rule, limit, expected) in [("FREQ=YEARLY", 4200, 2026), ("FREQ=MONTHLY", 50000, 24312)]
+        {
+            let spec = SeriesSpec::new(SeriesInput {
+                kind: Kind::Todo,
+                time_mode: TimeMode::Floating,
+                due_date: Some("0001-01-01".parse().unwrap()),
+                recurrence_mode: Some(RecurrenceMode::Calendar),
+                rrule: Some(rule.into()),
+                ..Default::default()
+            })
+            .unwrap();
+            let mut count = 0;
+            let benchmark = std::time::Instant::now();
+            let exhausted = visit_bounded(
+                &spec,
+                "2027-01-01T00:00:00".parse().unwrap(),
+                limit,
+                |seq, _| {
+                    assert_eq!(seq, count);
+                    count += 1;
+                    Ok(true)
+                },
+            )
+            .unwrap();
+            assert!(
+                !exhausted,
+                "{rule} exhausted candidate budget scanning days"
+            );
+            assert_eq!(count, expected);
+            println!(
+                "ancient {rule}: {count} anchors in {:?}",
+                benchmark.elapsed()
+            );
+        }
+    }
+    #[test]
+    fn direct_periods_match_day_scan_with_filters_counts_and_until() {
+        let start: NaiveDateTime = "2020-02-29T09:00:00.123".parse().unwrap();
+        let end: NaiveDateTime = "2033-01-01T00:00:00".parse().unwrap();
+        for frequency in ["MONTHLY", "YEARLY"] {
+            for interval in [1, 2, 7] {
+                for filters in [
+                    "",
+                    ";BYDAY=MO,2TU,-5SA",
+                    ";BYMONTHDAY=1,-1,13,29,31",
+                    ";BYDAY=MO,2TU,-5SA;BYMONTHDAY=1,-1,13,29,31",
+                ] {
+                    for bound in ["", ";COUNT=17", ";UNTIL=20250801"] {
+                        let rule: Rule =
+                            format!("FREQ={frequency};INTERVAL={interval}{filters}{bound}")
+                                .parse()
+                                .unwrap();
+                        let spec = SeriesSpec::new(SeriesInput {
+                            kind: Kind::Appointment,
+                            time_mode: TimeMode::Floating,
+                            local_start: Some(start),
+                            local_end: Some(start + Duration::hours(1)),
+                            recurrence_mode: Some(RecurrenceMode::Calendar),
+                            rrule: Some(rule.to_string()),
+                            ..Default::default()
+                        })
+                        .unwrap();
+                        let actual = expand(&spec, start, end)
+                            .unwrap()
+                            .into_iter()
+                            .map(|a| (a.seq, a.local_start.unwrap()))
+                            .collect::<Vec<_>>();
+                        let mut expected = vec![];
+                        let mut date = start;
+                        while date < end {
+                            let period = if frequency == "YEARLY" {
+                                date.year() - start.year()
+                            } else {
+                                (date.year() - start.year()) * 12 + date.month() as i32
+                                    - start.month() as i32
+                            };
+                            if (date == start
+                                || (period % interval == 0
+                                    && rule.matches_date(date.date(), start.date())))
+                                && within_until(&spec, date)
+                                && rule.count.is_none_or(|n| expected.len() < n as usize)
+                            {
+                                expected.push((expected.len() as u32, date));
+                            }
+                            date += Duration::days(1);
+                        }
+                        assert_eq!(actual, expected, "{}", rule);
+                    }
+                }
+            }
+        }
+    }
 }

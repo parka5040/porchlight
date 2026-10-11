@@ -25,10 +25,12 @@ class MainActivity : ComponentActivity() {
         intent.getStringExtra("item_id")?.let { services.pendingOpen.value = app.porchlight.shared.navigation.AppRoute.Item(it, intent.getStringExtra("occurrence_id")) }
         lifecycleScope.launch { repeatOnLifecycle(Lifecycle.State.STARTED) {
             services.setForeground(true)
-            try { services.settings.settings.map { it.stayConnected }.distinctUntilChanged().collect { enabled ->
+            try { services.privateStorage.retry(app.porchlight.shared.settings.PrivateStorageEntry.Activity) { services.settings.settings.map { it.stayConnected }.distinctUntilChanged().collect { enabled ->
+                services.privateStorage.retry(app.porchlight.shared.settings.PrivateStorageEntry.Activity) {
                 app.porchlight.shared.live.updateForegroundConnection(this@MainActivity, enabled)
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { app.porchlight.shared.live.recoverLivePermissions(applicationContext, services) }
-            } } finally { services.setForeground(false) }
+                }
+            } } } finally { services.setForeground(false) }
         } }
         val controller = services.trust.controller
         setContent {

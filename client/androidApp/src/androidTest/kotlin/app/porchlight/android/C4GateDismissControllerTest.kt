@@ -22,7 +22,7 @@ class C4GateDismissControllerTest {
         val input = File(context.filesDir, "m5-dismiss.json")
         check(input.exists()) { "Required M5 dismissal input missing" }
         val id = try { JSONObject(input.readText()).getString("id") } finally { input.delete() }
-        val inventory = DeliveryInventory.decode(context.getSharedPreferences("os-delivery", 0).getString("table", "[]")!!)
+        val inventory = DeliveryInventory.decode(app.porchlight.shared.settings.privateMetadata(context, "os-delivery").getString("table", "[]")!!)
         inventory.requirePostedAction(id)
         runBlocking(Dispatchers.IO) {
             withTimeout(60_000) {

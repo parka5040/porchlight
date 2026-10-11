@@ -50,7 +50,7 @@ class C6AdminPickerRelockTest {
                 setContent { CompositionLocalProvider(LocalScreenServices provides services) { PorchlightTheme(ThemeMode.Daylight,false) {
                     if (visible.value) PlanningScreen(services, section.value, files) else Text("Locked")
                 } } }
-                onNodeWithText("Sam").performClick()
+                onNodeWithText("Sam").performClick().assertIsSelected()
                 runOnIdle { section.value = SettingsSection.CalendarData }
                 onNodeWithContentDescription("Choose ICS file").performClick()
                 runOnIdle { visible.value = false }
@@ -108,12 +108,10 @@ class C6AdminPickerRelockTest {
                 setContent { CompositionLocalProvider(LocalScreenServices provides services) { PorchlightTheme(ThemeMode.Daylight,false) {
                     if (visible.value) PlanningScreen(services, section.value, files) else Text("Locked")
                 } } }
-                onNodeWithText("Sam").performClick()
+                onNodeWithText("Sam").performClick().assertIsSelected()
                 runOnIdle { section.value = SettingsSection.Export }
                 if (household) {
                     onNodeWithContentDescription("Export household").performClick()
-                    onNodeWithText("Password").performTextInput("fixture password")
-                    onNodeWithContentDescription("Confirm household export").performClick()
                 } else onNodeWithContentDescription("Export my data").performClick()
                 onNodeWithContentDescription(if (household) "Export household" else "Export my data").assertIsNotEnabled()
                 runOnIdle { visible.value = false }
@@ -128,6 +126,11 @@ class C6AdminPickerRelockTest {
                     catch (e: Exception) { completed!!(Result.failure(e)) }
                 } }
                 runOnIdle { assertEquals(0, calls); visible.value = true }
+                if (household) {
+                    waitUntil { onAllNodes(hasText("Password") and hasSetTextAction()).fetchSemanticsNodes().size == 1 }
+                    onNode(hasText("Password") and hasSetTextAction()).performTextInput("fixture password")
+                    onNodeWithContentDescription("Confirm household export").performClick()
+                }
                 waitUntil(timeoutMillis = 10_000) { finished }
                 assertEquals(1, calls)
                 onNodeWithText(if (household) EXPORT_NOT_PRIVATE_WARNING else "Export saved").assertExists()

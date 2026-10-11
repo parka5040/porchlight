@@ -1,5 +1,7 @@
 package app.porchlight.shared.screens.inbox
 
+import app.porchlight.shared.theme.PorchlightTokens
+
 import androidx.compose.runtime.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -29,8 +31,8 @@ fun inboxGroups(rows: List<Notification>, at: Instant, tzid: String): List<Inbox
 /** MobileInbox structure, safe server templates rather than interpolating item titles. Desktop DESIGN-PENDING. */
 @Composable fun InboxContent(groups: List<InboxGroup>, read: (String) -> Unit, readAll: () -> Unit,
     open: (Notification) -> Unit, preferences: () -> Unit) {
-    LazyColumn(Modifier.fillMaxSize().padding(16.dp).testTag("inbox"), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    LazyColumn(Modifier.fillMaxSize().padding(PorchlightTokens.spaceMd.dp).testTag("inbox"), verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceInset.dp)) {
+        item { FlowRow(horizontalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceSm.dp)) {
             ShellButton("Mark all read", onClick = readAll)
             ShellButton("Notification preferences", onClick = preferences)
         } }
@@ -41,7 +43,7 @@ fun inboxGroups(rows: List<Notification>, at: Instant, tzid: String): List<Inbox
                 Text(row.summary.title, style = MaterialTheme.typography.titleMedium)
                 Text(row.summary.body)
                 Text("${notificationTopicLabel(row.summary.category)}" + if (row.readAt == null) " · Unread" else " · Read")
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceSm.dp)) {
                     if (row.readAt == null) ShellButton("Got it", description = "Mark ${row.summary.title} read", onClick = { read(row.id) })
                     if (row.itemId != null) ShellButton("Open item", description = "Open item for ${row.summary.title}", onClick = { open(row) })
                 }

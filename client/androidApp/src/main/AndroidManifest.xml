@@ -13,7 +13,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
-    <application android:name="app.porchlight.shared.trust.PorchlightApplication" android:label="Porchlight" android:icon="@mipmap/ic_launcher" android:theme="@style/PorchlightTheme" android:allowBackup="false" android:usesCleartextTraffic="false">
+    <application android:name="app.porchlight.shared.trust.PorchlightApplication" android:label="Porchlight" android:icon="@mipmap/ic_launcher" android:theme="@style/PorchlightTheme" android:allowBackup="false" android:fullBackupContent="@xml/backup_exclusions" android:dataExtractionRules="@xml/data_extraction_rules" android:usesCleartextTraffic="false">
         <service android:name="androidx.work.impl.foreground.SystemForegroundService" android:foregroundServiceType="specialUse" tools:node="merge">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Finishes user-requested household notification actions on Android versions requiring WorkManager foreground fallback." />
         </service>

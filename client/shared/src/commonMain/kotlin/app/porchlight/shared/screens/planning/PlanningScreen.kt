@@ -16,16 +16,33 @@ import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 import kotlin.time.Duration.Companion.seconds
 
-class PendingUiExport(val sink: ExportSink, val token: String?) {
+class PendingUiExport(destination: ExportSink, token: String?, timeSource: kotlin.time.TimeSource = kotlin.time.TimeSource.Monotonic,
+    val household: Boolean = token != null) {
+    var token by mutableStateOf(token)
+        private set
+    fun authorize(value: String) { if (!result.isCompleted) token = value }
+    var bytesDownloaded by mutableLongStateOf(0L)
+        private set
+    val sink = object : ExportSink {
+        override suspend fun write(bytes: ByteArray) { destination.write(bytes); bytesDownloaded += bytes.size }
+        override suspend fun finish(checkGate: () -> Unit) = destination.finish(checkGate)
+        override suspend fun abort() = destination.abort()
+    }
     val result = CompletableDeferred<Unit>()
     private val started = CompletableDeferred<Unit>()
-    private val deadline = kotlin.time.TimeSource.Monotonic.markNow() + 60.seconds
-    fun begin(): Boolean {
+    private val deadline = timeSource.markNow() + 60.seconds
+    private var downloader: Job? = null
+    fun begin(downloadJob: Job? = null): Boolean {
         if (deadline.hasPassedNow()) cancel()
-        return !result.isCompleted && started.complete(Unit)
+        if (result.isCompleted || !started.complete(Unit)) return false
+        // Bind only the downloader, never an implicit caller/parent that may also own the waiter.
+        downloader = downloadJob
+        return true
     }
     fun cancel() {
         val failure = CancellationException("Export interrupted before completion. Try again.")
+        // Stop writes before the platform resumes awaitCompletion and aborts the sink.
+        downloader?.cancel(failure)
         started.completeExceptionally(failure)
         result.completeExceptionally(failure)
     }
@@ -35,6 +52,7 @@ class PendingUiExport(val sink: ExportSink, val token: String?) {
             withTimeout(60_000) { started.await() }
             result.await()
         } catch (e: Exception) { cancel(); throw e }
+        finally { withContext(NonCancellable) { downloader?.join() } }
     }
 }
 fun ScreenSession.cancelOrphanedPlanningExports(activeId: String) {
@@ -100,19 +118,20 @@ val planningSections = listOf(SettingsSection.CalendarData, SettingsSection.Avai
     var readBusy by remember(id) { mutableStateOf(false) }
     var sources by remember { mutableStateOf<List<Source>>(emptyList()) }
     var devices by remember { mutableStateOf<List<Device>>(emptyList()) }
-    var candidates by remember { mutableStateOf<CandidatesResponse?>(null) }
+    var candidates by remember { mutableStateOf<RetainedCacheValue<CandidatesResponse>?>(null) }
+    LaunchedEffect(cache.visibilityRevision) { if (candidates?.current(cache) == null) candidates = null }
     var candidateItem by remember { mutableStateOf<String?>(null) }
-    var unplaced by remember { mutableStateOf<List<Unplaced>>(emptyList()) }
+    var unplaced by remember { mutableStateOf<RetainedCacheValue<List<Unplaced>>?>(null) }
+    LaunchedEffect(cache.visibilityRevision) { if (unplaced?.current(cache) == null) unplaced = null }
     var reload by remember { mutableIntStateOf(0) }
     var remove by remember { mutableStateOf<Source?>(null) }
     var revoke by remember { mutableStateOf<Device?>(null) }
-    var householdExport by remember { mutableStateOf(false) }
     val files = fileAccess ?: rememberCalendarFiles()
     val busy = feedback.busy || readBusy || draft.fileBusy || feedback.retryKey != null
     suspend fun read(operation: suspend () -> Unit) {
         readBusy = true; error = null
         try { operation() } catch (e: CancellationException) { throw e }
-        catch (e: ApiProblem) { error = e.detail ?: "Request rejected (${e.type}); refetch or check permissions." }
+        catch (e: ApiProblem) { error = e.maintenanceMessage ?: e.detail ?: "Request rejected (${e.type}); refetch or check permissions." }
         catch (_: Exception) { error = "Unable to reach household. Cached planning remains available." }
         finally { readBusy = false }
     }
@@ -150,21 +169,23 @@ val planningSections = listOf(SettingsSection.CalendarData, SettingsSection.Avai
     // A destination returned while PIN-locked is retained in the session draft. Only this gated composition
     // can initiate the UI download. The platform owns the sink and aborts it on failure/cancellation.
     LaunchedEffect(session, id) { session?.cancelOrphanedPlanningExports(id) }
-    LaunchedEffect(id, draft.export) {
+    LaunchedEffect(id, draft.export, draft.export?.token) {
         val pending = draft.export ?: return@LaunchedEffect
-        if (!pending.begin()) return@LaunchedEffect
+        val token = pending.token
+        if (pending.household && token == null) return@LaunchedEffect
+        if (!pending.begin(currentCoroutineContext().job)) return@LaunchedEffect
         try {
-            if (pending.token == null) data.exports.member(pending.sink) else data.exports.household(pending.token, pending.sink)
+            if (token == null) data.exports.member(pending.sink) else data.exports.household(token, pending.sink)
             pending.result.complete(Unit)
         } catch (e: CancellationException) { pending.result.completeExceptionally(e); throw e }
         catch (e: Exception) { pending.result.completeExceptionally(e) }
     }
-    fun saveExport(household: Boolean, token: String? = null) {
+    fun saveExport(household: Boolean) {
         if (draft.fileBusy) return
         draft.fileBusy = true; draft.fileError = null; draft.notice = "Choose a destination; unlock to download and validate…"
         var warning: String? = null
         try { files.save(household, { sink ->
-            val pending = PendingUiExport(sink, token)
+            val pending = PendingUiExport(sink, null, household = household)
             draft.export = pending
             try { pending.awaitCompletion() } finally { if (draft.export === pending) draft.export = null }
         }, { warning = it }) { result ->
@@ -189,7 +210,10 @@ val planningSections = listOf(SettingsSection.CalendarData, SettingsSection.Avai
     val status: @Composable () -> Unit = {
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         draft.fileError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        draft.notice?.let { Text(it) }
+        val pending = draft.export
+        if (pending != null && (!pending.household || pending.token != null))
+            Text("Downloaded ${pending.bytesDownloaded} bytes · validating before saving…")
+        else draft.notice?.let { Text(it) }
         if (readBusy) Text("Loading…")
         WriteStatus(writer, onDiscard = { reload++ }, successLabel = if (section == SettingsSection.CalendarData && draft.feedQueued) "Refresh queued; polling has not completed." else "Saved")
         if (section == SettingsSection.Availability && draft.windowsUnsaved) Text("Not saved yet: edits made after the last save are kept here. Save again to send them.")
@@ -279,12 +303,12 @@ val planningSections = listOf(SettingsSection.CalendarData, SettingsSection.Avai
                     eligible.forEach { item -> ShellButton(item.title, "Candidates for ${item.title}", { candidateItem = item.id }, selected = candidateItem == item.id) }
                 }
                 PlanningCardsContent(cache.suggestions.filter { it.memberId == member }, { id2 -> cache.items.find { it.id == id2 }?.title ?: "Scheduled work" },
-                    request = { submit { key -> data.planning.suggest(member, key).also { if (it is WriteResult.Success) unplaced = it.value.unplaced }.asScreenResult() } },
+                    request = { val started = cache; submit { key -> data.planning.suggest(member, key).also { if (it is WriteResult.Success) unplaced = started.retainCurrent { it.value.unplaced } }.asScreenResult() } },
                     accept = { row -> submit(row) { data.planning.accept(row, it).asScreenResult() } }, dismiss = { row -> submit { data.planning.dismiss(row, it).asScreenResult() } },
-                    candidates = candidates, candidateRequest = { val item = candidateItem ?: eligible.firstOrNull()?.id
+                    candidates = candidates?.current(cache), candidateRequest = { val item = candidateItem ?: eligible.firstOrNull()?.id
                         if (item == null) error = "No visible unassigned dependent appointment."
                         else localScope.launch { read { candidates = data.planning.candidates(item) } }
-                    }, candidateName = { id2 -> cache.members.find { it.id == id2 }?.displayName ?: "Member" }, unplaced = unplaced, busy = busy, feedback = status, reload = { reload++ },
+                    }, candidateName = { id2 -> cache.members.find { it.id == id2 }?.displayName ?: "Member" }, unplaced = unplaced?.current(cache).orEmpty(), busy = busy, feedback = status, reload = { reload++ },
                     memberName = { id2 -> cache.members.find { it.id == id2 }?.displayName ?: "Member" },
                     zone = { id2 -> planningMemberZone(cache.members.find { it.id == id2 }) },
                     occurrenceName = { id2 -> cache.items.find { item -> item.id == cache.occurrences.find { it.id == id2 }?.itemId }?.title ?: "Unplaced work" }, expired = { suggestionRejectionKey(it) in session?.rejectedSuggestions.orEmpty() })
@@ -292,7 +316,7 @@ val planningSections = listOf(SettingsSection.CalendarData, SettingsSection.Avai
         }
         SettingsSection.Export -> ExportContent(admin, member = {
             saveExport(false)
-        }, household = { householdExport = true }, busy = busy, feedback = status)
+        }, household = { saveExport(true) }, busy = busy, feedback = status)
         SettingsSection.Devices -> DeviceAdminContent(devices, { id2 -> cache.members.find { it.id == id2 }?.displayName ?: "Member" },
             reload = { reload++ }, revoke = { revoke = it }, busy = busy, feedback = status, zone = planningMemberZone(own))
         else -> Text("Select a calendar setting.")
@@ -300,15 +324,16 @@ val planningSections = listOf(SettingsSection.CalendarData, SettingsSection.Avai
     remove?.let { row -> AlertDialog(onDismissRequest = { remove = null }, title = { Text("Remove ${row.name}?") }, text = { Text("Polling stops and calendar events are soft-deleted. Historical data remains read-only.") },
         confirmButton = { ShellButton("Remove feed", onClick = { remove = null; draft.feedQueued = false; submit { data.feeds.remove(row, it).asScreenResult().also { reload++ } } }) },
         dismissButton = { ShellButton("Cancel", onClick = { remove = null }) }) }
-    if (revoke != null || householdExport) {
+    val awaitingAuthorization = draft.export?.takeIf { it.household && it.token == null }
+    if (revoke != null || awaitingAuthorization != null) {
         val device = revoke
-        val export = householdExport
+        val export = awaitingAuthorization != null
         PlanningPasswordDialog(if (export) "household export" else "revoke ${device?.label}", readBusy, problem = error,
             confirm = { password -> localScope.launch { read {
                 val token = services.stepUp(password, if (export) "household.export" else "device.revoke")
-                revoke = null; householdExport = false
-                if (export) saveExport(true, token)
+                revoke = null
+                if (export) awaitingAuthorization?.authorize(token)
                 else device?.let { row -> submit { data.deviceAdmin.revoke(row.id, token, it).asScreenResult().also { reload++ } } }
-            } } }, cancel = { revoke = null; householdExport = false })
+            } } }, cancel = { revoke = null; awaitingAuthorization?.cancel() })
     }
 }

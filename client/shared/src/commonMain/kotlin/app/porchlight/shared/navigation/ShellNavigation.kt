@@ -1,5 +1,7 @@
 package app.porchlight.shared.navigation
 
+import app.porchlight.shared.theme.PorchlightTokens
+
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -113,8 +115,9 @@ private fun NavHostController.navigateRequested(route: AppRoute, discardSavedTab
 }
 
 /** Entry VMs retain ownership metadata, never a disposed composition's registry/Activity. */
-private class ShellSavedState : ViewModel() {
+internal class ShellSavedState : ViewModel() {
     private var holder: SaveableStateHolder? = null
+    internal val hasBoundHolder: Boolean get() = holder != null
     var tabs: MutableMap<String, String> = mutableMapOf()
     fun bind(value: SaveableStateHolder) { holder = value }
     fun unbind(value: SaveableStateHolder) { if (holder === value) holder = null }
@@ -163,22 +166,28 @@ private data class FreshItemRequest(val entryId: String, val route: AppRoute.Ite
 
 @Composable
 private fun rejectedItem(services: app.porchlight.shared.AppServices?, entry: NavBackStackEntry?, route: AppRoute,
-    fresh: FreshItemRequest?): Boolean {
+    fresh: FreshItemRequest?): ItemUnavailableReason? {
     val views = services?.data?.cache?.view
-    if (route !is AppRoute.Item || views == null) return false
+    if (route !is AppRoute.Item || views == null) return null
     return key(entry?.id, route, fresh) {
         val request = fresh?.takeIf { it.entryId == entry?.id && it.route == route }
         // Read the collected cache only inside derivedStateOf. The shell observes just the
-        // Boolean, including the initial value, not every unrelated cache publication.
+        // rejection reason, including the initial value, not every unrelated cache publication.
         val cacheState = views.collectAsState()
         val rejected by remember(cacheState) { derivedStateOf { itemUnavailable(cacheState.value, route, request) } }
         rejected
     }
 }
 
-private fun itemUnavailable(cache: app.porchlight.shared.data.CacheView, route: AppRoute.Item, request: FreshItemRequest?) =
-    (route.id in cache.evictedItemIds && request?.fetching != true) ||
-        (!localRouteAvailable(route, cache) && request == null)
+private enum class ItemUnavailableReason(val message: String) {
+    Evicted("This item is no longer available."),
+    Uncached("This item is not in saved data. Reconnect and open it again.")
+}
+private fun itemUnavailable(cache: app.porchlight.shared.data.CacheView, route: AppRoute.Item, request: FreshItemRequest?) = when {
+    route.id in cache.evictedItemIds && request?.fetching != true -> ItemUnavailableReason.Evicted
+    !localRouteAvailable(route, cache) && request == null -> ItemUnavailableReason.Uncached
+    else -> null
+}
 
 @Composable
 fun ShellNavigation(startRoute: AppRoute, settings: DeviceSettings, store: SettingsStore, savedRoute: (AppRoute) -> Unit,
@@ -207,7 +216,8 @@ fun ShellNavigation(startRoute: AppRoute, settings: DeviceSettings, store: Setti
     var freshItemRequest by remember { mutableStateOf<FreshItemRequest?>(null) }
     var deletingItem by remember { mutableStateOf<Pair<String, AppRoute.Item>?>(null) }
     var unavailableNoticeAt by remember { mutableStateOf<String?>(null) }
-    val rejectedItem = rejectedItem(services, entry, route, freshItemRequest) && deletingItem != (entry?.id to route)
+    var unavailableMessage by remember { mutableStateOf("") }
+    val rejectedItem = rejectedItem(services, entry, route, freshItemRequest).takeUnless { deletingItem == (entry?.id to route) }
     LaunchedEffect(entry, route) {
         if (freshItemRequest?.let { it.entryId == entry?.id && it.route == route } != true) freshItemRequest = null
         if (unavailableNoticeAt != entry?.id) unavailableNoticeAt = null
@@ -215,7 +225,8 @@ fun ShellNavigation(startRoute: AppRoute, settings: DeviceSettings, store: Setti
     LaunchedEffect(entry, rejectedItem) {
         // Keep the intended eviction-pop, but replace silent disappearance with a status notice.
         // Local deletion waits for its own result/callback, rather than racing this rejection.
-        if (rejectedItem && nav.currentBackStackEntry == entry) {
+        if (rejectedItem != null && nav.currentBackStackEntry == entry) {
+            unavailableMessage = rejectedItem.message
             nav.popBackStack()
             unavailableNoticeAt = nav.currentBackStackEntry?.id
         }
@@ -286,7 +297,7 @@ fun ShellNavigation(startRoute: AppRoute, settings: DeviceSettings, store: Setti
         val unavailableNotice: @Composable () -> Unit = {
             Column(Modifier.fillMaxWidth().padding(PorchlightTokens.spaceMd.dp)
                 .semantics { liveRegion = LiveRegionMode.Polite }, verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceSm.dp)) {
-                EmptyState("Item unavailable", "This item is no longer available.")
+                EmptyState("Item unavailable", unavailableMessage)
                 ShellButton("Dismiss", "Dismiss item notice", { unavailableNoticeAt = null })
             }
         }
@@ -344,7 +355,7 @@ fun ShellNavigation(startRoute: AppRoute, settings: DeviceSettings, store: Setti
                 services?.updates?.let { app.porchlight.shared.update.UpdateBanner(it, settings.dismissedUpdate) }
                 services?.runtimeNotice?.let { flow ->
                     val notice by flow.collectAsState()
-                    notice?.let { Text(it, modifier = Modifier.fillMaxWidth().padding(16.dp)) }
+                    notice?.let { Text(it, modifier = Modifier.fillMaxWidth().padding(PorchlightTokens.spaceMd.dp)) }
                 }
                 services?.data?.live?.let { live ->
                     val since by live.unreachableSince.collectAsState()
@@ -406,7 +417,7 @@ fun ShellNavigation(startRoute: AppRoute, settings: DeviceSettings, store: Setti
                             Box(Modifier.widthIn(max = PorchlightTokens.detailWidth.dp).weight(0.65f).fillMaxHeight()
                                 .background(palette.surface)) { unavailableNotice() }
                         }
-                        if (isDetail && !rejectedItem) {
+                        if (isDetail && rejectedItem == null) {
                             // One hosting location on both sides of the breakpoint. Only sizing and
                             // decoration change; even remember-only editor state keeps its identity.
                             val detailModifier = if (hasDetail) Modifier.widthIn(max = PorchlightTokens.detailWidth.dp)

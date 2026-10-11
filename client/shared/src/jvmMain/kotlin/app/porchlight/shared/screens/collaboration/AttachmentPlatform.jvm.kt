@@ -40,13 +40,26 @@ import javax.swing.filechooser.FileNameExtensionFilter
         override fun photo(commentId: String?) = choose(true, commentId)
         override fun file(commentId: String?) = choose(false, commentId)
         override fun camera(commentId: String?) { onError("Camera capture is available on Android. Choose a photo on desktop.") }
-        override suspend fun open(id: String, mime: String, bytes: ByteArray) = withContext(Dispatchers.IO) {
-            require(id.matches(Regex("[a-zA-Z0-9_-]+")))
-            val root = File(System.getenv("XDG_CACHE_HOME")?.takeIf { File(it).isAbsolute } ?: File(System.getProperty("user.home"), ".cache").path, "porchlight/attachments")
-            val file = app.porchlight.shared.files.writePrivateDesktopFile(root, "$id-view.${attachmentExtension(mime)}") { it.write(bytes) }
-            currentCoroutineContext().ensureActive()
-            ProcessBuilder("xdg-open", file.absolutePath).redirectError(ProcessBuilder.Redirect.DISCARD).redirectOutput(ProcessBuilder.Redirect.DISCARD).start()
-            Unit
+        override suspend fun prepareViewer(id: String, mime: String, bytes: ByteArray): app.porchlight.shared.data.PreparedAttachmentViewer {
+            var prepared: File? = null
+            try {
+                val file = withContext(Dispatchers.IO) {
+                    require(id.matches(Regex("[a-zA-Z0-9_-]+")))
+                    val root = File(System.getenv("XDG_CACHE_HOME")?.takeIf { File(it).isAbsolute } ?: File(System.getProperty("user.home"), ".cache").path, "porchlight/attachments")
+                    app.porchlight.shared.files.writePrivateDesktopFile(root, "$id-view.${java.util.UUID.randomUUID()}.${attachmentExtension(mime)}") { it.write(bytes) }.also { prepared = it }
+                }
+                return object : app.porchlight.shared.data.PreparedAttachmentViewer {
+                    override suspend fun launch() = withContext(Dispatchers.IO) {
+                        currentCoroutineContext().ensureActive()
+                        ProcessBuilder("xdg-open", file.absolutePath).redirectError(ProcessBuilder.Redirect.DISCARD).redirectOutput(ProcessBuilder.Redirect.DISCARD).start()
+                        Unit
+                    }
+                    override suspend fun discard() { withContext(Dispatchers.IO) { check(!file.exists() || file.delete()) } }
+                }
+            } catch (e: Exception) {
+                withContext(NonCancellable + Dispatchers.IO) { prepared?.delete() }
+                throw e
+            }
         }
     } }
 }

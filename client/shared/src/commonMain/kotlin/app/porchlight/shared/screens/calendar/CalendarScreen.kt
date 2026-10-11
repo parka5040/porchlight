@@ -73,6 +73,8 @@ fun calendarMemberIds(route: AppRoute.Calendar, primary: String?, members: List<
     val grid = calendarGrid(window, rows, visibleIds, zone, CalendarGridScale(LocalDensity.current.fontScale))
     val days = grid.days
     val dayHeadingYear = window.dates.first().year != window.dates.last().year
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+    val viewportHeight = maxHeight
     Column(Modifier.fillMaxSize().testTag("calendar-scroll").verticalScroll(rememberScrollState()).padding(PorchlightTokens.spaceMd.dp),
         verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceInset.dp)) {
         val views = listOf(CalendarView.Day, CalendarView.Week, CalendarView.Agenda) + if (mobile) emptyList() else listOf(CalendarView.Month)
@@ -127,19 +129,20 @@ fun calendarMemberIds(route: AppRoute.Calendar, primary: String?, members: List<
             days.forEach { day -> availabilityBands(day.date, zone, availability, members, visibleIds).forEach { Text("${day.date} · ${it.label}") } }
         }
         if (route.view == CalendarView.Month) {
-            Column(Modifier.horizontalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                days.chunked(7).forEach { week -> Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    week.forEach { day -> CalendarDayContent(day, zone, openItem, Modifier.width(260.dp), dayHeadingYear) }
+            Column(Modifier.horizontalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceInset.dp)) {
+                days.chunked(7).forEach { week -> Row(horizontalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceInset.dp)) {
+                    week.forEach { day -> CalendarDayContent(day, zone, openItem, Modifier.width(PorchlightTokens.calendarMonthDayWidth.dp), dayHeadingYear) }
                 } }
             }
         } else if (!mobile && route.view in listOf(CalendarView.Day, CalendarView.Week)) {
-            DesktopCalendarGrid(grid, today, zone, members, openItem, availability, visibleIds)
+            DesktopCalendarGrid(grid, today, zone, members, openItem, availability, visibleIds, viewportHeight)
         } else {
             val shown = if (route.view == CalendarView.Agenda) days.filter { it.allDay.isNotEmpty() || it.timed.isNotEmpty() } else days
             if (shown.isEmpty()) Text("Nothing scheduled")
             shown.forEach { CalendarDayContent(it, zone, openItem, Modifier.fillMaxWidth(), dayHeadingYear) }
         }
         planning()
+    }
     }
 }
 @Composable private fun CalendarDayContent(day: CalendarDay, zone: TimeZone, openItem: (AppRoute.Item) -> Unit,

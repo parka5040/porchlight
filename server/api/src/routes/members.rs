@@ -98,13 +98,13 @@ pub fn validation(field: &str, message: &str) -> ApiError {
     ApiError::new(Problem::ValidationFailed)
         .extension("errors", json!([{"field":field,"message":message}]))
 }
-const MEMBER: &str = "jsonb_build_object('id',m.id,
+pub(super) const MEMBER: &str = "jsonb_build_object('id',m.id,
     'household_id',m.household_id,
     'display_name',m.display_name,
     'role',m.role,
     'color',m.color,
     'initials',upper(left(m.display_name,1) || case when strpos(trim(m.display_name),' ')>0 then left(regexp_replace(trim(m.display_name),'^.* ',''),1) else '' end),
-    'tzid',case when m.role='dependent' then h.tzid else m.tzid end,
+    'tzid',porchlight.pl_effective_member_zone(m.role,m.tzid,h.tzid),
     'tz_source',m.tz_source,
     'tz_authority_device_id',case when m.id=$2 then m.tz_authority_device_id end,
     'version',m.version,
@@ -379,7 +379,7 @@ fn domain_error(e: porchlight_db::derive::Error) -> ApiError {
         Error::Sql(e) => e.into(),
         Error::NotFound => ApiError::new(Problem::NotFound),
         Error::VersionConflict => ApiError::new(Problem::VersionConflict),
-        Error::RetryableScope => ApiError::transient(Problem::Conflict).retry(1),
+        Error::RetryableScope => ApiError::transient_conflict().retry(1),
         Error::ScopeAlreadyUsed => ApiError::internal("scope_already_used"),
         Error::Validation(error) => validation(error.field, &error.reason),
         Error::Agenda(_) | Error::Ordering(_) => ApiError::internal("member_derivation"),

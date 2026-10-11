@@ -4,9 +4,6 @@ root = pathlib.Path(__file__).resolve().parents[2]
 source = (root / 'deploy/scripts/m5-demo-stream.sh').read_text().split("<<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
 os.environ['M5_STREAM_ROOT'] = str(root)
 os.environ['M5_STREAM_DATABASE_URL'] = os.environ['PORCHLIGHT_SUPERUSER_URL']
-os.environ['PGHOST'] = str(root / 'var/pgsock')
-os.environ['PGUSER'] = 'postgres'
-os.environ['PGPASSWORD'] = os.environ['POSTGRES_PASSWORD']
 namespace = {}
 try:
     exec(compile(source.split('rc = 0', 1)[0], '<stream-demo-helper>', 'exec'), namespace)

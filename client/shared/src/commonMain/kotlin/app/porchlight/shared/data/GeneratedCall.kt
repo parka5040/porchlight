@@ -19,7 +19,8 @@ suspend fun <T> withBackgroundSession(controller: TrustController, block: suspen
 /** Only sync reads and immutable notification actions may pass the UI-only PIN gate (R64). */
 private fun backgroundRoute(method: String, path: String): Boolean = when (method) {
     "GET" -> path in setOf("/v1/snapshot", "/v1/board", "/v1/agenda", "/v1/members", "/v1/me/settings", "/v1/me/notification-prefs", "/v1/notifications", "/v1/items") ||
-        Regex("/v1/items/[^/]+(?:/occurrences)?").matches(path) || Regex("/v1/occurrences/[^/]+").matches(path)
+        Regex("/v1/items/[^/]+(?:/occurrences)?").matches(path) || Regex("/v1/occurrences/[^/]+").matches(path) ||
+        Regex("/v1/lists/[^/]+").matches(path)
     "POST" -> Regex("/v1/occurrences/[^/]+/complete").matches(path) || Regex("/v1/notifications/[^/]+/read").matches(path)
     else -> false
 }

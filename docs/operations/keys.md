@@ -34,6 +34,44 @@ enrollment; deliberately change the committed pin and plan re-enrollment. Never 
 to make a failed build pass. The minisign fingerprint is SHA-256 of the base64-decoded final line of its public key
 file (the same fingerprint `release-keys.sh` prints), not SHA-256 of the text file.
 
+## Admin PAT rotation and local recovery
+
+The bootstrap PAT expires after one year. Keep a working admin PAT in a 0600 file and rotate before expiry with
+`porch token create --name <label> --scope admin --days 365` (normal issuance still requires password re-entry).
+`porch --socket <agent-socket> --token-file <private-pat-file> --json tokens list` lists metadata including
+`expires_at`, `last_used_at`, `revoked_at` and `admin_token_health`. The health fields describe the **most recently
+created live admin PAT** belonging to a live super admin: `newest_live_expires_at`, `expiring_soon` (within 30 days),
+and `recovery_required` (none remain). The server logs a warning at startup and hourly for approaching expiry or
+no remaining live admin PAT. These are administration warnings, not serving-readiness failures.
+
+If every admin PAT is expired, revoked or lost, the stack owner can mint a replacement **on the server host**,
+inside the running API container, using its own app-role database credential. No migrator/superuser password,
+old PAT, password reset, re-initialization or auth-table edits are needed. This is a privileged host operation,
+not an HTTP authentication bypass. Replace all placeholders with the installed stack's settings:
+
+```bash
+# Owner only. Private output stays under the stack's var/; never display it or enable shell tracing.
+umask 077
+mkdir -p <stack-root>/var
+set -o noclobber
+docker compose --env-file <stack-root>/.env \
+  -f <stack-root>/current/deploy/compose.yml -p <compose-project> \
+  exec -T api /usr/local/bin/porchlight admin-token \
+  --member <member-uuid-or-username> --name recovery --expires-days 365 \
+  > <stack-root>/var/recovered-admin.pat
+```
+
+`--member` accepts the live super admin's member UUID or login username; the household has no email identity
+field. The command verifies the installation and member, commits one admin-scope PAT through the ordinary token
+insertion function, attributes `token.created` to `agent:local-recovery` with the **new** token id, and writes the
+credential once to stdout (never to logs). Issuance attribution follows normal outbox retention. Protect the host's
+app credential: it already controls household writes. If output fails after commit, rerun into a new private file,
+then revoke the unused token by id from `tokens list`.
+
+Use the new file with `porch --socket <agent-socket> --token-file <stack-root>/var/recovered-admin.pat whoami`,
+then confirm `tokens list` and enrollment work. Revoke lost/obsolete tokens and keep the replacement in owner
+custody. Recovery does not revive expired/revoked tokens or change normal listener authentication.
+
 ## Backups
 
 Owner must back up together:

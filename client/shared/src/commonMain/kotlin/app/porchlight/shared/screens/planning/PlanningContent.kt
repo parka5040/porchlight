@@ -1,11 +1,16 @@
 package app.porchlight.shared.screens.planning
 
+import app.porchlight.shared.theme.PorchlightTokens
+
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboard
+import app.porchlight.shared.screens.addressClipEntry
+import kotlinx.coroutines.launch
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
@@ -16,13 +21,13 @@ import app.porchlight.shared.ui.*
 
 // DESIGN-PENDING: material forms derived from specification; planning cards follow DesktopCalendar panels.
 @Composable private fun PlanningForm(title: String, content: @Composable ColumnScope.() -> Unit) {
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(PorchlightTokens.spaceMd.dp), verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceInset.dp)) {
         Text(title, style = MaterialTheme.typography.headlineSmall)
         content()
     }
 }
 @Composable private fun Field(label: String, value: String, changed: (String) -> Unit, password: Boolean = false) {
-    OutlinedTextField(value, changed, label = { Text(label) }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+    OutlinedTextField(value, changed, label = { Text(label) }, modifier = Modifier.fillMaxWidth().heightIn(min = PorchlightTokens.touchTarget.dp),
         visualTransformation = if (password) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
         keyboardOptions = if (password) KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false) else KeyboardOptions.Default,
         singleLine = true)
@@ -51,6 +56,8 @@ import app.porchlight.shared.ui.*
     interval: String = "86400", intervalChanged: (String) -> Unit = {}, visibility: SourceVisibility = SourceVisibility.household,
     visibilityChanged: (SourceVisibility) -> Unit = {}, enabled: Boolean = true, enabledChanged: (Boolean) -> Unit = {},
     editing: Boolean = false, edit: (Source) -> Unit = {}, cancelEdit: () -> Unit = {}, zone: String = "UTC") {
+    val clipboard = LocalClipboard.current
+    val scope = rememberCoroutineScope()
     PlanningForm("Subscribed feeds") {
         Text("Super admin · choose household or member (including dependents). Feed items are read-only; server checks URLs to protect your network.")
         Row { ShellButton("Household", "Feed target household", { targetChanged(null) }, selected = target == null, enabled = !busy) }
@@ -64,9 +71,14 @@ import app.porchlight.shared.ui.*
         ShellButton(if (editing) "Save feed changes" else "Add feed", if (editing) "Save feed changes" else "Add feed", add, enabled = !busy)
         if (editing) ShellButton("Cancel feed edit", onClick = cancelEdit, enabled = !busy)
         ShellButton("Refresh feed list", "Refresh feed list", reload, enabled = !busy)
-        rows.forEach { row -> PorchlightCard(Modifier.fillMaxWidth()) {
+        rows.forEach { row -> key(row.id) { PorchlightCard(Modifier.fillMaxWidth()) {
+            var revealed by remember(row.url) { mutableStateOf(false) }
             Text(row.name, style = MaterialTheme.typography.titleMedium)
-            Text(row.url ?: "URL unavailable")
+            Text(if (revealed) row.url ?: "URL unavailable" else if (row.url == null) "URL unavailable" else "Saved URL hidden (may contain credentials)")
+            row.url?.let { savedUrl ->
+                ShellButton(if (revealed) "Hide URL" else "Reveal URL", "${if (revealed) "Hide" else "Reveal"} URL for ${row.name}", { revealed = !revealed })
+                if (revealed) ShellButton("Copy URL", "Copy URL for ${row.name}", { scope.launch { clipboard.setClipEntry(addressClipEntry(savedUrl)) } })
+            }
             Text("Target: ${members.find { it.id == row.targetMemberId }?.displayName ?: if (row.targetMemberId == null) "Household" else "Member"} · ${if (row.visibility == SourceVisibility.private) "Private" else "Household visible"}")
             Text("${if (row.enabled) "Enabled" else "Disabled"} · every ${row.refreshSeconds} seconds")
             Text("${row.lastStatus?.replace('_', ' ')?.replaceFirstChar { it.uppercase() } ?: "Not fetched"} · last fetch ${optionalPlanningTime(row.lastFetchAt, zone)}")
@@ -78,7 +90,7 @@ import app.porchlight.shared.ui.*
                 ShellButton("Refresh now", "Refresh feed ${row.name}", { refresh(row) }, enabled = !busy)
                 ShellButton("Remove feed", "Remove feed ${row.name}", { remove(row) }, enabled = !busy)
             }
-        } }
+        } } }
         Text("Removing a feed disables polling and soft-deletes its imported events. History is preserved, not purged. Re-adding the same URL creates a new source.")
         feedback()
     }

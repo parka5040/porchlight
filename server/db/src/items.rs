@@ -118,7 +118,7 @@ fn data(fields: &ItemWrite, spec: &core::SeriesSpec) -> Result<serde_json::Value
     v["nominal_wall_duration"] = serde_json::to_value(micros).unwrap();
     Ok(v)
 }
-const INSERT: &str = "insert into porchlight.items(id,household_id,title,notes,priority,owner_id,subject_member_id,visibility,address,source,buffer_before_min,buffer_after_min,est_minutes,kind,time_mode,tzid,all_day,due_date,due_at,starts_at,ends_at,local_due,local_start,local_end,rrule,recurrence_mode,completion_interval,missed_policy,nominal_local_anchor,nominal_wall_duration,series_id,split_from_item_id,split_from_seq,ics_source_id) select $1,$2,r.title,r.notes,r.priority,r.owner_id,r.subject_member_id,r.visibility,r.address,r.source,r.buffer_before_min,r.buffer_after_min,r.est_minutes,r.kind,r.time_mode,r.tzid,r.all_day,r.due_date,r.due_at,r.starts_at,r.ends_at,r.local_due,r.local_start,r.local_end,r.rrule,r.recurrence_mode,r.completion_interval,r.missed_policy,r.nominal_local_anchor,r.nominal_wall_duration,$4,$5,$6,r.ics_source_id from jsonb_populate_record(null::porchlight.items,$3) r";
+const INSERT: &str = "insert into porchlight.items(id,household_id,title,notes,priority,owner_id,subject_member_id,visibility,address,source,buffer_before_min,buffer_after_min,est_minutes,kind,time_mode,tzid,all_day,due_date,due_at,starts_at,ends_at,local_due,local_start,local_end,rrule,recurrence_mode,completion_interval,missed_policy,nominal_local_anchor,nominal_wall_duration,series_id,split_from_item_id,split_from_seq,ics_source_id,reminder_origin_id) select $1,$2,r.title,r.notes,r.priority,r.owner_id,r.subject_member_id,r.visibility,r.address,r.source,r.buffer_before_min,r.buffer_after_min,r.est_minutes,r.kind,r.time_mode,r.tzid,r.all_day,r.due_date,r.due_at,r.starts_at,r.ends_at,r.local_due,r.local_start,r.local_end,r.rrule,r.recurrence_mode,r.completion_interval,r.missed_policy,r.nominal_local_anchor,r.nominal_wall_duration,$4,$5,$6,r.ics_source_id,(select coalesce(p.reminder_origin_id,p.id) from porchlight.items p where p.id=$5 and p.household_id=$2) from jsonb_populate_record(null::porchlight.items,$3) r";
 const UPDATE: &str = "update porchlight.items i set (title,notes,priority,owner_id,subject_member_id,visibility,address,source,buffer_before_min,buffer_after_min,est_minutes,kind,time_mode,tzid,all_day,due_date,due_at,starts_at,ends_at,local_due,local_start,local_end,rrule,recurrence_mode,completion_interval,missed_policy,nominal_local_anchor,nominal_wall_duration)=(r.title,r.notes,r.priority,r.owner_id,r.subject_member_id,r.visibility,r.address,r.source,r.buffer_before_min,r.buffer_after_min,r.est_minutes,r.kind,r.time_mode,r.tzid,r.all_day,r.due_date,r.due_at,r.starts_at,r.ends_at,r.local_due,r.local_start,r.local_end,r.rrule,r.recurrence_mode,r.completion_interval,r.missed_policy,r.nominal_local_anchor,r.nominal_wall_duration) from jsonb_populate_record(null::porchlight.items,$2) r where i.id=$1";
 async fn insert(
     tx: &mut Transaction<'_, Postgres>,
@@ -163,14 +163,6 @@ async fn persist(
         .execute(conn)
         .await?;
     Ok(())
-}
-async fn replace(
-    conn: &mut PgConnection,
-    household: Uuid,
-    id: Uuid,
-    sets: &Relationships,
-) -> Result<()> {
-    restore_relationships(conn, household, id, sets).await
 }
 // All replacement paths preserve unchanged children: deleting/reinserting an
 // existing assignee manufactures immutable assignment events/notifications, and

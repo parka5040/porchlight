@@ -80,7 +80,7 @@ pub struct ImportSummary {
     pub deleted: u32,
     /// Total skipped, including invalid events and cancelled/EXDATE occurrences (legacy aggregate).
     pub skipped: u32,
-    /// Invalid events skipped with InvalidEvent warnings.
+    /// Invalid events skipped; see warnings for the reason (warning codes use snake_case).
     #[serde(default)]
     pub invalid_skipped: u32,
     /// Cancelled overrides and EXDATE occurrences, not invalid events.
@@ -146,7 +146,7 @@ pub async fn target_zone(
     target: Option<Uuid>,
 ) -> Result<chrono_tz::Tz, ApiError> {
     let zone: Option<String> = match target {
-        Some(id) => sqlx::query_scalar("select case when m.role='dependent' then h.tzid else m.tzid end from porchlight.household_members m join porchlight.households h on h.id=m.household_id where m.household_id=$1 and m.id=$2 and m.deleted_at is null").bind(household).bind(id).fetch_optional(&mut *conn).await?,
+        Some(id) => sqlx::query_scalar("select porchlight.pl_effective_member_zone(m.role,m.tzid,h.tzid) from porchlight.household_members m join porchlight.households h on h.id=m.household_id where m.household_id=$1 and m.id=$2 and m.deleted_at is null").bind(household).bind(id).fetch_optional(&mut *conn).await?,
         None => sqlx::query_scalar("select tzid from porchlight.households where id=$1 and deleted_at is null").bind(household).fetch_optional(&mut *conn).await?,
     };
     zone.ok_or_else(|| member_reference("target_member_id"))?

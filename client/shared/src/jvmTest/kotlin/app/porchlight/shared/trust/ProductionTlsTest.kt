@@ -40,7 +40,7 @@ class ProductionTlsTest {
                     else assertFails { api.request("POST", "/v1/enrollment/complete", jsonBody("token" to "secret-token", "password" to "secret-password")) }
                 } finally { api.close() }
                 server.awaitIdle()
-                assertEquals(if (success) 1 else 0, server.requests.size, "No HTTP bytes before trust and hostname checks")
+                assertEquals(if (success) 1 else 0, server.applicationRequests.get(), "No first HTTP byte before trust and hostname checks")
             }
         }
         probe(arrayOf(leaf, ca), fingerprint(ca), "localhost", true)
@@ -216,6 +216,8 @@ internal class LocalTlsServer(key: KeyPair, chain: Array<X509Certificate>, clien
     var status = "200 OK"
     var extraHeaders = ""
     val requests = CopyOnWriteArrayList<String>()
+    val applicationRequests = java.util.concurrent.atomic.AtomicInteger()
+    val firstApplicationByte = java.util.concurrent.CountDownLatch(1)
     val clientSerials = CopyOnWriteArrayList<java.math.BigInteger>()
     private val context = SSLContext.getInstance("TLSv1.3").apply {
         val store = KeyStore.getInstance("PKCS12").apply { load(null); setKeyEntry("server", key.private, "test".toCharArray(), chain) }
@@ -244,6 +246,7 @@ internal class LocalTlsServer(key: KeyPair, chain: Array<X509Certificate>, clien
                     while (!header.endsWith("\r\n\r\n")) {
                         val byte = input.read()
                         if (byte < 0) return@use
+                        if (header.isEmpty()) { applicationRequests.incrementAndGet(); firstApplicationByte.countDown() }
                         header.append(byte.toChar())
                     }
                     val size = Regex("(?i)Content-Length: (\\d+)").find(header)?.groupValues?.get(1)?.toInt() ?: 0

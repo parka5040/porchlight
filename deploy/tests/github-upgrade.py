@@ -251,7 +251,7 @@ class UpgradeTests(unittest.TestCase):
         self.sign(other, NEW)
         self.publish(NEW, other)
         result = self.run_install('--release', NEW, expected=1)
-        self.assertIn('manifest differs', result.stderr)
+        self.assertIn('operations: validation or I/O failed', result.stderr)  # rejected before expansion
         self.unchanged()
 
     def test_network_policy_and_caps(self):
@@ -367,18 +367,20 @@ class UpgradeTests(unittest.TestCase):
     def test_failed_rollback_guidance(self):
         result = self.run_install('--release', NEW, expected=1, env={'FAIL_AT': 'migrate', 'FAIL_ROLLBACK': '1'})
         self.assertIn('ROLLBACK FAILED', result.stderr)
-        self.assertIn('previous trusted installer restore', result.stderr)
+        self.assertIn('newest verified installer restore', result.stderr)
         self.assertNotIn('ROLLED BACK to', result.stderr)
         self.assertFalse(any(x['argv'][-1] == 'healthcheck' for x in self.records()))
         dump = self.stack / 'rollback' / ('pre-upgrade-' + OLD + '.dump')
         self.assertEqual(dump.read_text(), 'plain rollback fixture\n')  # kept for manual recovery
         (self.p / 'docker.jsonl').unlink()
         retry = self.run_install('--source', str(self.release), expected=2)
-        self.assertIn('recovery dump from a failed rollback exists', retry.stderr)
+        self.assertIn('Stale maintenance fence', retry.stderr)
         self.assertFalse((self.p / 'docker.jsonl').exists() and any('stop' in x['argv'] for x in self.records()))
         self.assertEqual(dump.read_text(), 'plain rollback fixture\n')
 
     def test_server_and_upgrade_settings_defaults(self):
+        docker = self.p / 'bin/docker'
+        docker.write_text(docker.read_text().replace("if a[0]=='load':", "if 'init' in a: print(json.dumps({'household_id':'fixture','bootstrap_token':'PRIVATE-FIXTURE-NEVER-PRINT'}))\nif a[0]=='load':"))
         password = self.p / 'admin.pass'
         password.write_text('fixture-only')
         for repo in ('example-owner/porchlight', None):
@@ -389,7 +391,7 @@ class UpgradeTests(unittest.TestCase):
                 (source / 'release.json').write_text(json.dumps(record, indent=1, sort_keys=True) + '\n')
                 self.sign(source, OLD)
                 fresh = self.p / ('fresh-' + str(repo is None))
-                self.run_install('--source', str(source), '--backup-recipient', 'age1fixture', '--admin-name', 'Sam Rivera',
+                self.run_install('--source', str(source), '--backup-recipient', 'age1' + 'q' * 58, '--admin-name', 'Sam Rivera',
                                  '--admin-password-file', str(password), mode='server', stack=fresh,
                                  env={'ENROLL_CIDRS': '192.168.77.0/24'})
                 text = (fresh / '.env').read_text()

@@ -61,13 +61,10 @@ kotlin {
             implementation(libs.compose.material3)
             implementation(libs.compose.components.resources)
             implementation(libs.ktor.client.core)
-            implementation(libs.ktor.client.content.negotiation)
-            implementation(libs.ktor.serialization.kotlinx.json)
             implementation(libs.kotlinx.serialization.json)
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.datetime)
             implementation(libs.sqldelight.runtime)
-            implementation(libs.sqldelight.coroutines.extensions)
             implementation(libs.androidx.datastore.preferences.core)
             implementation(libs.androidx.datastore.core.okio)
             implementation(libs.jetbrains.navigation.compose)
@@ -97,6 +94,8 @@ kotlin {
             implementation(libs.kotlinx.coroutines.test)
             implementation(libs.turbine)
             implementation(libs.ktor.client.mock)
+            implementation(libs.ktor.client.content.negotiation)
+            implementation(libs.ktor.serialization.kotlinx.json)
         }
         getByName("androidHostTest").dependencies { implementation(libs.sqldelight.sqlite.driver) }
         jvmTest.dependencies {
@@ -131,16 +130,38 @@ sqldelight {
 }
 
 tasks.named<Test>("jvmTest") {
+    // Audit the actual merged backup policy, not just the source application manifest.
+    dependsOn(":androidApp:processDebugManifest", ":androidApp:packageDebugResources")
+    inputs.files(rootProject.layout.projectDirectory.file("androidApp/build/intermediates/merged_manifests/debug/processDebugManifest/AndroidManifest.xml"))
+    inputs.dir(rootProject.layout.projectDirectory.dir("androidApp/build/intermediates/packaged_res/debug/packageDebugResources/xml"))
     // Compose UI tests render offscreen: no display needed (sandboxed agents have none).
     systemProperty("java.awt.headless", "true")
-    // c1b: even generated test keys and opt-in e2e state stay in private runtime storage.
-    systemProperty("porchlight.test.dir", rootProject.layout.projectDirectory.dir("../var/trust-tests").asFile.absolutePath)
     // Skiko unpacks its native library to ~/.skiko by default; sandboxed agents have a read-only home.
     systemProperty("skiko.data.path", layout.buildDirectory.dir("skiko").get().asFile.absolutePath)
     jvmArgs("--enable-native-access=ALL-UNNAMED") // Skiko loads its native library
 }
 
+// Run existing headless smoke tests with only the shipping app jars and bundled JVM. The
+// jpackage runtime intentionally has no java executable, so the harness reuses its native launcher.
+tasks.register<Exec>("packagedDesktopSmoke") {
+    val main = kotlin.targets.getByName("jvm").compilations.getByName("main")
+    val tests = kotlin.targets.getByName("jvm").compilations.getByName("test")
+    val desktopRuntime = project(":desktopApp").configurations.named("runtimeClasspath").get()
+    val testOnly = tests.output.allOutputs + (checkNotNull(tests.runtimeDependencyFiles) - desktopRuntime - main.output.allOutputs)
+    val image = rootProject.layout.projectDirectory.dir("desktopApp/build/compose/binaries/main/app/porchlight").asFile
+    val harness = rootProject.layout.projectDirectory.file("../deploy/tests/audit-desktop-smoke.py").asFile
+    dependsOn(tests.compileTaskProvider, ":desktopApp:createDistributable")
+    inputs.files(testOnly)
+    inputs.dir(image)
+    inputs.file(harness)
+    doFirst {
+        commandLine(listOf("python3", "-I", harness.absolutePath, image.absolutePath) + testOnly.files.map { it.absolutePath })
+    }
+}
+
 // Applies to both desktop and Android-host JVM tests (ART needs neither flag).
 tasks.withType<Test>().configureEach {
+    // Persisted restart fixtures and generated test trust belong in private runtime storage on both JVM targets.
+    systemProperty("porchlight.test.dir", rootProject.layout.projectDirectory.dir("../var/trust-tests").asFile.absolutePath)
     jvmArgs("--sun-misc-unsafe-memory-access=allow", "-Dslf4j.internal.verbosity=ERROR")
 }

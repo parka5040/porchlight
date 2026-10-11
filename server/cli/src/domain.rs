@@ -42,6 +42,40 @@ pub async fn collection(c: &Client, path: &str) -> Result<Value> {
     result["next_cursor"] = Value::Null;
     Ok(result)
 }
+/// Find one member of a parent-bound collection without reading irrelevant later pages.
+pub async fn collection_row(c: &Client, path: &str, id: Uuid) -> Result<Option<Value>> {
+    find_row(id, |cursor| {
+        let page = query(path, &[("cursor", cursor)]);
+        async move { c.request("GET", &page, Value::Null).await }
+    })
+    .await
+}
+async fn find_row<F, Fut>(id: Uuid, mut fetch: F) -> Result<Option<Value>>
+where
+    F: FnMut(Option<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<Value>>,
+{
+    let id = id.to_string();
+    let mut cursor = None;
+    let mut seen = std::collections::BTreeSet::new();
+    loop {
+        let page = fetch(cursor).await?;
+        let items = page["items"]
+            .as_array()
+            .ok_or(Error::Local("Expected collection"))?;
+        if let Some(row) = items.iter().find(|row| row["id"] == id) {
+            return Ok(Some(row.clone()));
+        }
+        cursor = page["next_cursor"].as_str().map(str::to_owned);
+        let Some(next) = cursor.as_ref() else {
+            return Ok(None);
+        };
+        if !seen.insert(next.clone()) {
+            return Err(Error::Local("Repeated page cursor"));
+        }
+    }
+}
+
 pub async fn member(c: &Client, name: &str) -> Result<Uuid> {
     if let Ok(id) = Uuid::parse_str(name) {
         return Ok(id);
@@ -179,5 +213,31 @@ pub fn table(value: &Value) {
         for (k, v) in o {
             println!("{}\t{}", cell(&Value::String(k.clone())), cell(v));
         }
+    }
+}
+
+#[cfg(test)]
+mod audit_bl_server {
+    use super::*;
+    #[tokio::test]
+    async fn occurrence_lookup_stops_on_the_matching_page() {
+        let id = Uuid::nil();
+        let mut calls = 0;
+        let row = find_row(id, |_| {
+            calls += 1;
+            std::future::ready(Ok(if calls == 1 {
+                json!({"items":[{"id":id,"version":7}],"next_cursor":"later"})
+            } else {
+                json!({"items":[],"next_cursor":null})
+            }))
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(row["version"], 7);
+        assert_eq!(
+            calls, 1,
+            "lookup must not drain pages after finding the occurrence"
+        );
     }
 }

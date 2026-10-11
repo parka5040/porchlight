@@ -101,8 +101,8 @@ class CalendarGridTest {
         assertEquals(listOf(5.0, 1.0, 1.0, 15.5), normal.map { it.durationMinutes })
         assertTrue(normal.all { it.displayDurationMinutes == 19.5 })
         val double = calendarGrid(window, rows, setOf("self"), utc, CalendarGridScale(2f)).days.single().timed
-        assertTrue(double.all { it.columns == 1 }) // 52dp is 9.75 minutes at 320dp/hour.
-        assertEquals(listOf(9.75, 9.75, 9.75, 15.5), double.map { it.displayDurationMinutes })
+        assertEquals(normal.map { it.columns }, double.map { it.columns }) // Text and targets scale with the hour height.
+        assertEquals(normal.map { it.displayDurationMinutes }, double.map { it.displayDurationMinutes })
         val closer = rows.take(2).map { if (it.id == "close") row("close", "2026-10-07T08:09:00Z", "2026-10-07T08:10:00Z") else it }
         assertEquals(listOf(0, 1), calendarGrid(window, closer, setOf("self"), utc, CalendarGridScale(2f)).days.single().timed.map { it.column })
     }

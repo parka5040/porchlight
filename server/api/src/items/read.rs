@@ -264,7 +264,7 @@ pub async fn occurrences_with_zone(
     let rows = derive::occurrences(&mut conn, id)
         .await
         .map_err(domain_error)?;
-    let zone:String=sqlx::query_scalar("SELECT CASE WHEN m.role='dependent' THEN h.tzid ELSE m.tzid END FROM porchlight.household_members m JOIN porchlight.households h ON h.id=m.household_id WHERE m.id=$1").bind(c.member_id()).fetch_one(&mut *conn).await?;
+    let zone:String=sqlx::query_scalar("SELECT porchlight.pl_effective_member_zone(m.role,m.tzid,h.tzid) FROM porchlight.household_members m JOIN porchlight.households h ON h.id=m.household_id WHERE m.id=$1").bind(c.member_id()).fetch_one(&mut *conn).await?;
     let zone = reported_zone
         .or_else(|| porchlight_core::time::parse_tz(&zone))
         .ok_or_else(|| ApiError::internal("member_zone"))?;

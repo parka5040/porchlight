@@ -7,7 +7,7 @@ import kotlinx.serialization.json.*
 import kotlin.time.Instant
 
 enum class EditorScope(val label: String) { ThisOccurrence("This occurrence"), ThisAndFuture("This and future"), All("All occurrences") }
-fun editorScopes(recurring: Boolean, occurrenceId: String?, recurrenceMode: String? = "calendar") = if (recurring && occurrenceId != null) EditorScope.entries.filter { it != EditorScope.ThisAndFuture || recurrenceMode == "calendar" } else listOf(EditorScope.All)
+fun editorScopes(recurring: Boolean, occurrenceId: String?, recurrenceMode: String?) = if (recurring && occurrenceId != null) EditorScope.entries.filter { it != EditorScope.ThisAndFuture || recurrenceMode == "calendar" } else listOf(EditorScope.All)
 fun editorFieldErrors(errors: Map<String, String>, scope: EditorScope, timeMode: String): Map<String, String> =
     if (scope != EditorScope.ThisOccurrence) errors else errors.mapKeys { (field, _) -> when (field) {
         "override_due_date" -> "due_date"

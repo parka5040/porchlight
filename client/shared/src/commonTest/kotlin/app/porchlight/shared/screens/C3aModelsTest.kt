@@ -52,8 +52,8 @@ class C3aModelsTest {
         assertTrue(EditorDraft(title = "A", timeMode = "floating", kind = "deadline", localDue = "2026-11-01T01:30:00").errors().isEmpty())
         assertTrue(EditorDraft(title = "A", kind = "deadline", dueAt = "bad").errors().containsKey("due_at"))
         assertTrue(EditorDraft(title = "A", recurrence = "calendar", frequency = "WEEKLY", byDay = "XX").errors().containsKey("byday"))
-        assertEquals(listOf(EditorScope.ThisOccurrence, EditorScope.ThisAndFuture, EditorScope.All), editorScopes(true, "occ"))
-        assertEquals(listOf(EditorScope.All), editorScopes(false, null))
+        assertEquals(listOf(EditorScope.ThisOccurrence, EditorScope.ThisAndFuture, EditorScope.All), editorScopes(true, "occ", "calendar"))
+        assertEquals(listOf(EditorScope.All), editorScopes(false, null, null))
         val edit = EditorDraft(title = "A", kind = "todo").edit().body
         assertEquals(JsonNull, edit["local_due"])
         assertEquals(JsonNull, edit["rrule"])

@@ -1,0 +1,133 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT d.id AS device_id,d.household_id,d.member_id,u.id AS user_id,u.username,m.role,d.platform,d.label,(d.revoked_at IS NOT NULL OR c.revoked_at IS NOT NULL) AS \"revoked!\",(c.not_after>clock_timestamp()) AS \"certificate_live!\",(c.first_seen_at IS NOT NULL) AS \"certificate_seen!\" FROM porchlight.device_certificates c JOIN porchlight.devices d ON d.id=c.device_id JOIN porchlight.household_members m ON m.id=d.member_id JOIN porchlight.users u ON u.id=m.user_id WHERE c.fingerprint_sha256=$1 AND m.deleted_at IS NULL AND u.deleted_at IS NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "device_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "devices",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "household_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "devices",
+            "name": "household_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "member_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "devices",
+            "name": "member_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "username",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "role",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "household_members",
+            "name": "role"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "platform",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "devices",
+            "name": "platform"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "label",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "devices",
+            "name": "label"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "revoked!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
+        "name": "certificate_live!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 10,
+        "name": "certificate_seen!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "9b5baa9449ce28bce624a02260797902b515071100190e492fc3a35ff2a714a3"
+}

@@ -51,12 +51,6 @@ pub struct Buffers {
 /// Invalid agenda inputs; no raw input strings or identifiers are included in errors.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum AgendaError {
-    /// An unknown database kind string.
-    #[error("unknown item kind")]
-    InvalidKind,
-    /// An unknown database time-mode string.
-    #[error("unknown time mode")]
-    InvalidTimeMode,
     /// A required anchor is absent.
     #[error("required agenda anchor is missing")]
     MissingAnchor,

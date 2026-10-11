@@ -41,11 +41,11 @@ with os.fdopen(fd, 'w') as f:
     json.dump({'uri': uri, 'password': os.environ['PORCHLIGHT_E2E_PASSWORD']}, f)
 os.chmod(sys.argv[2], 0o600)
 PY
-(cd "$root/client"; ./gradlew --offline --console=plain :androidApp:assembleDebug :androidApp:assembleDebugAndroidTest)
+(cd "$root/client"; ./gradlew --offline --max-workers=4 --console=plain :androidApp:assembleDebug :androidApp:assembleDebugAndroidTest)
 adb -s "$serial" install -r "$root/client/androidApp/build/outputs/apk/debug/androidApp-debug.apk"
 adb -s "$serial" shell run-as app.porchlight mkdir -p files
 adb -s "$serial" shell -T 'run-as app.porchlight sh -c "umask 077; cat > files/c1b-e2e.json"' < "$private/emulator-config.json"
-(cd "$root/client"; ANDROID_SERIAL="$serial" ./gradlew --offline --console=plain \
+(cd "$root/client"; ANDROID_SERIAL="$serial" ./gradlew --offline --max-workers=4 --console=plain \
   :androidApp:connectedDebugAndroidTest \
   -Pandroid.testInstrumentationRunnerArguments.PORCHLIGHT_E2E_REQUIRED=1 \
   -Pandroid.testInstrumentationRunnerArguments.notAnnotation=org.junit.Ignore \

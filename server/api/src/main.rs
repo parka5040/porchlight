@@ -40,7 +40,20 @@ enum Command {
     },
     /// Initialize the household once. Pipe the admin password into stdin, or set PORCHLIGHT_INIT_ADMIN_PASSWORD.
     Init(InitArgs),
+    /// Issue a recovery admin PAT locally; prints it once to stdout. Requires the API database credential.
+    AdminToken {
+        #[arg(long, env = "PORCHLIGHT_DATABASE_URL", hide_env_values = true)]
+        database_url: String,
+        /// Live super-admin member UUID or username.
+        #[arg(long)]
+        member: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long, default_value = "365", value_parser = clap::value_parser!(u32).range(1..))]
+        expires_days: u32,
+    },
     /// Replace the server certificate's complete SAN set without changing its key or household CA.
+    /// A running server keeps its loaded certificate: restart it after successful reissue.
     ServerCert(ServerCertArgs),
     /// Run the server until SIGINT/SIGTERM.
     Serve(Box<ServeArgs>),
@@ -95,8 +108,8 @@ struct ServerCertArgs {
     /// Complete new IP SAN set (not appended to the existing certificate).
     #[arg(long)]
     san_ip: Vec<IpAddr>,
-    /// Show the current SANs and expiry without writing; ignores SAN flags.
-    #[arg(long)]
+    /// Show the current SANs and expiry without writing.
+    #[arg(long, conflicts_with_all = ["san_dns", "san_ip"])]
     show: bool,
     #[arg(long)]
     json: bool,
@@ -168,6 +181,19 @@ async fn dispatch(command: Command) -> anyhow::Result<()> {
         }
         Command::Migrate { migrator_url } => migrate(&migrator_url).await,
         Command::Healthcheck { database_url } => healthcheck(&database_url).await,
+        Command::AdminToken {
+            database_url,
+            member,
+            name,
+            expires_days,
+        } => {
+            let pool = app_pool(&database_url, 1).await?;
+            let token =
+                porchlight_api::admin_recovery::mint(&pool, &member, &name, expires_days).await?;
+            let mut stdout = io::stdout().lock();
+            writeln!(stdout, "{}", token.expose()).context("writing recovery token")?;
+            stdout.flush().context("flushing recovery token output")
+        }
         Command::Init(args) => {
             let password = if let Ok(value) = std::env::var("PORCHLIGHT_INIT_ADMIN_PASSWORD") {
                 Zeroizing::new(value)
@@ -248,6 +274,7 @@ async fn dispatch(command: Command) -> anyhow::Result<()> {
             } else {
                 reissue_server_cert(
                     &dir,
+                    &pki,
                     &ServerSans {
                         dns: args.san_dns,
                         ips: args.san_ip,

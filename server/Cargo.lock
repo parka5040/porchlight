@@ -1728,7 +1728,7 @@ dependencies = [
 
 [[package]]
 name = "porchlight-api"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1755,6 +1755,7 @@ dependencies = [
  "porchlight-db",
  "porchlight-pki",
  "ring",
+ "rustix",
  "rustls",
  "rustls-pki-types",
  "serde",
@@ -1780,11 +1781,9 @@ dependencies = [
 
 [[package]]
 name = "porchlight-cli"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
- "anyhow",
  "chrono",
- "chrono-tz",
  "clap",
  "flate2",
  "http-body-util",
@@ -1811,7 +1810,7 @@ dependencies = [
 
 [[package]]
 name = "porchlight-core"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "argon2",
  "base64 0.23.1",
@@ -1836,7 +1835,7 @@ dependencies = [
 
 [[package]]
 name = "porchlight-db"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1854,7 +1853,7 @@ dependencies = [
 
 [[package]]
 name = "porchlight-pki"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "base64 0.23.1",
  "hex",

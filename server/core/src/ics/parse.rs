@@ -72,7 +72,11 @@ fn read_time(
                     out,
                     Some(ctx.uid),
                     WarningCode::UnknownTimezone,
-                    format!("Unknown TZID {name}; used {}", ctx.options.fallback_tz),
+                    format!(
+                        "Unknown TZID {}; used {}",
+                        name.chars().take(128).collect::<String>(),
+                        ctx.options.fallback_tz
+                    ),
                 );
                 ctx.options.fallback_tz
             });
@@ -164,7 +168,10 @@ pub(super) fn add_duration(t: &IcsTime, zone: Option<Tz>, d: CalendarDuration) -
 /// Custom VTIMEZONE transitions are not synthesized: use IANA/Windows/X-LIC-LOCATION
 /// or fallback with a warning. Cancelled overrides may use RECURRENCE-ID as DTSTART.
 pub fn parse(input: &str, options: ParseOptions) -> ParsedCalendar {
-    let mut out = ImportState::default();
+    let mut out = ImportState {
+        started: Some(Instant::now()),
+        ..Default::default()
+    };
     if input.len() > 8 * 1024 * 1024 {
         warn(
             &mut out,
@@ -269,9 +276,13 @@ pub fn parse(input: &str, options: ParseOptions) -> ParsedCalendar {
         zone
     });
     let mut masters = BTreeSet::new();
+    let mut rejected_uids = BTreeSet::new();
     let mut source_events = Vec::new();
     let mut future_replacements = BTreeMap::<String, IcsTime>::new();
     for c in &root.components {
+        if !out.source_admit(c.properties.len() + 1) {
+            break;
+        }
         if !c.name.as_str().eq_ignore_ascii_case("VEVENT") {
             continue;
         }
@@ -280,10 +291,47 @@ pub fn parse(input: &str, options: ParseOptions) -> ParsedCalendar {
             Some("EXPANDED" | "OVERRIDE")
         ) && prop(&c.properties, "X-PORCHLIGHT-INSTANCE").is_some();
         let uid = if has_standalone_identity && prop(&c.properties, "X-PORCHLIGHT-UID").is_some() {
-            text(&c.properties, "X-PORCHLIGHT-UID")
+            value(&c.properties, "X-PORCHLIGHT-UID")
         } else {
-            text(&c.properties, "UID")
-        };
+            value(&c.properties, "UID")
+        }
+        .unwrap_or_default();
+        // Reject before copying metadata or expanding recurrence. Keep diagnostics
+        // bounded and JSONB-safe too. An invalid UID cannot identify a stored item;
+        // this per-event warning must not suppress unrelated feed removals.
+        if uid.len() > 1024 || uid.contains('\0') {
+            out.invalid_skipped += 1;
+            let diagnostic_uid: String = uid
+                .chars()
+                .take(256)
+                .map(|c| if c == '\0' { '\u{fffd}' } else { c })
+                .collect();
+            warn(
+                &mut out,
+                Some(&diagnostic_uid),
+                WarningCode::InvalidEvent,
+                "UID exceeds 1024 bytes or contains NUL; event omitted (diagnostic UID bounded)",
+            );
+            continue;
+        }
+        if [("SUMMARY", 200), ("DESCRIPTION", 20_000), ("LOCATION", 500)]
+            .iter()
+            .any(|(name, max)| {
+                value(&c.properties, name)
+                    .is_some_and(|s| s.chars().take(max + 1).count() > *max || s.contains('\0'))
+            })
+        {
+            out.invalid_skipped += 1;
+            rejected_uids.insert(uid.to_owned());
+            warn(
+                &mut out,
+                Some(uid),
+                WarningCode::InvalidEvent,
+                "Event exceeds item text limits or contains NUL; event omitted",
+            );
+            continue;
+        }
+        let uid = uid.to_owned();
         // Extension emitted only for a later-fold UTC DTSTART. It preserves the
         // display zone without changing the unambiguous instant on the wire.
         let event_tz = value(&c.properties, "X-PORCHLIGHT-TZID")
@@ -338,6 +386,15 @@ pub fn parse(input: &str, options: ParseOptions) -> ParsedCalendar {
     }
     // Decide RANGE replacements only after every source override is known.
     for (mut e, nominal, event_tz) in source_events {
+        if !out.source_admit(1) {
+            break;
+        }
+        // As in item admission, one invalid event protects its whole UID,
+        // including the master and every exception, irrespective of source order.
+        if rejected_uids.contains(&e.uid) {
+            out.invalid_skipped += 1;
+            continue;
+        }
         let uid = e.uid.clone();
         let ctx = Context {
             aliases: &aliases,
@@ -354,7 +411,7 @@ pub fn parse(input: &str, options: ParseOptions) -> ParsedCalendar {
                     "Override RRULE: original RECURRENCE-ID retained; further rule starts expanded; RANGE=THISANDFUTURE supersedes the master's future",
                 );
                 expand(e.clone(), &rule, nominal, None, &ctx, &mut out);
-                out.events.push(e);
+                out.emit(e);
             } else {
                 let cutoff = future_replacements.get(&uid);
                 if cutoff.is_none()
@@ -362,13 +419,13 @@ pub fn parse(input: &str, options: ParseOptions) -> ParsedCalendar {
                 {
                     e.rrule = Some(normal);
                     e.origin = EventOrigin::Series;
-                    out.events.push(e);
+                    out.emit(e);
                 } else {
                     expand(e, &rule, nominal, cutoff, &ctx, &mut out);
                 }
             }
         } else {
-            out.events.push(e);
+            out.emit(e);
         }
     }
     reconcile(&mut out, options.fallback_tz);
@@ -443,14 +500,33 @@ fn read_event(
         return None;
     }
     let mut exdates = Vec::new();
-    for p in p
-        .iter()
-        .filter(|p| p.name.as_str().eq_ignore_ascii_case("EXDATE"))
-    {
+    let mut exdate_values = 0;
+    let mut invalid_exdate = false;
+    for p in p {
+        if !out.source_admit(1) {
+            return None;
+        }
+        if !p.name.as_str().eq_ignore_ascii_case("EXDATE") {
+            continue;
+        }
         for raw in p.val.as_str().split(',') {
+            if exdate_values >= EXDATE_VALUES {
+                warn(
+                    out,
+                    None,
+                    WarningCode::ExpansionLimited,
+                    "EXDATE value budget exhausted; incomplete",
+                );
+                return None;
+            }
+            if !out.source_admit(p.params.len() + 1) {
+                return None;
+            }
+            exdate_values += 1;
             if let Some((t, _)) = read_time(p, raw, ctx, out) {
                 exdates.push(t);
-            } else {
+            } else if !invalid_exdate {
+                invalid_exdate = true;
                 warn(
                     out,
                     Some(ctx.uid),
@@ -521,30 +597,57 @@ fn read_event(
     })
 }
 // Resolve overrides only after all source events are read: file order is irrelevant.
-fn reconcile(out: &mut ImportState, fallback: Tz) {
-    let overrides: Vec<_> = out
-        .events
-        .iter()
-        .filter(|e| e.origin == EventOrigin::Override)
-        .filter_map(|e| e.recurrence_id.clone().map(|rid| (e.uid.clone(), rid)))
-        .collect();
-    out.events.retain(|e| {
-        let EventOrigin::Expanded {
+pub(super) fn reconcile(out: &mut ImportState, fallback: Tz) {
+    use std::collections::{HashMap, HashSet};
+
+    let source = std::mem::take(&mut out.events);
+    // Index distinct identities before comparing any expanded instance. DATE,
+    // floating and fixed IDs keep their distinct local/instant matching semantics.
+    let mut overrides: HashMap<String, HashSet<IcsTime>> = HashMap::new();
+    for e in &source {
+        if !out.source_admit(1) {
+            return;
+        }
+        if e.origin == EventOrigin::Override
+            && let Some(rid) = &e.recurrence_id
+        {
+            overrides
+                .entry(e.uid.clone())
+                .or_default()
+                .insert(rid.clone());
+        }
+    }
+    let mut seen = HashMap::new();
+    let mut events: Vec<ImportedEvent> = Vec::new();
+    for e in source {
+        if !out.source_admit(5) {
+            break;
+        }
+        let superseded = if let EventOrigin::Expanded {
             rule_instance_start,
         } = &e.origin
-        else {
-            return true;
+            && let Some(ids) = overrides.get(e.uid.as_str())
+        {
+            let tz = e.tzid.as_deref().and_then(parse_tz).unwrap_or(fallback);
+            let local = super::expand::local(rule_instance_start, tz);
+            #[cfg(test)]
+            {
+                out.reconciliation_checks += 3;
+            }
+            ids.contains(&IcsTime::Date(local.date()))
+                || ids.contains(&IcsTime::Floating(local))
+                || ids.contains(&IcsTime::Fixed(super::expand::instant(
+                    rule_instance_start,
+                    tz,
+                )))
+        } else {
+            false
         };
-        let tz = e.tzid.as_deref().and_then(parse_tz).unwrap_or(fallback);
-        !overrides.iter().any(|(uid, rid)| {
-            uid == &e.uid && super::expand::matches_instance(rid, rule_instance_start, tz)
-        })
-    });
-    // Same key cannot leave parse twice. Higher SEQUENCE wins; equal sequence keeps
-    // the first source record. Warn so ambiguous source duplicates are not silent.
-    let mut seen = BTreeMap::new();
-    let mut events: Vec<ImportedEvent> = Vec::new();
-    for e in std::mem::take(&mut out.events) {
+        if superseded {
+            continue;
+        }
+        // Same key cannot leave parse twice. Higher SEQUENCE wins; equal sequence
+        // keeps the first source record. Normalization shares the watchdog/work cap.
         let key = (e.uid.clone(), e.recurrence_id.clone());
         if let Some(&index) = seen.get(&key) {
             let previous: &ImportedEvent = &events[index];

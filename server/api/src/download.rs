@@ -22,6 +22,29 @@ fn range(value: &str, size: u64) -> Option<(u64, u64)> {
     };
     (start < size && start <= end).then_some((start, end))
 }
+pub(crate) fn valid_range(size: u64, sha256: &str, headers: &HeaderMap) -> bool {
+    selection(size, sha256, headers).is_some()
+}
+pub(crate) fn unsatisfiable(size: u64) -> Response {
+    let mut response = ApiError::new(Problem::RangeNotSatisfiable).into_response();
+    response
+        .headers_mut()
+        .insert("content-range", format!("bytes */{size}").parse().unwrap());
+    response
+}
+fn selection(size: u64, sha256: &str, headers: &HeaderMap) -> Option<(StatusCode, u64, u64)> {
+    let etag = format!("\"{}\"", sha256);
+    let requested = headers.get("range").filter(|_| {
+        headers
+            .get("if-range")
+            .is_none_or(|v| v.to_str().ok() == Some(etag.as_str()))
+    });
+    if let Some(value) = requested {
+        range(value.to_str().ok()?, size).map(|(a, b)| (StatusCode::PARTIAL_CONTENT, a, b - a + 1))
+    } else {
+        Some((StatusCode::OK, 0, size))
+    }
+}
 pub async fn stream(
     file: std::fs::File,
     size: u64,
@@ -29,28 +52,10 @@ pub async fn stream(
     headers: &HeaderMap,
     filename: Option<&str>,
 ) -> Result<Response, ApiError> {
-    let etag = format!("\"{}\"", sha256);
-    let requested = headers
-        .get("range")
-        .and_then(|v| v.to_str().ok())
-        .filter(|_| {
-            headers
-                .get("if-range")
-                .is_none_or(|v| v.to_str().ok() == Some(etag.as_str()))
-        });
-    let (code, start, length) = if let Some(value) = requested {
-        if let Some((a, b)) = range(value, size) {
-            (StatusCode::PARTIAL_CONTENT, a, b - a + 1)
-        } else {
-            let mut response = ApiError::new(Problem::RangeNotSatisfiable).into_response();
-            response
-                .headers_mut()
-                .insert("content-range", format!("bytes */{size}").parse().unwrap());
-            return Ok(response);
-        }
-    } else {
-        (StatusCode::OK, 0, size)
+    let Some((code, start, length)) = selection(size, sha256, headers) else {
+        return Ok(unsatisfiable(size));
     };
+    let etag = format!("\"{}\"", sha256);
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
     let mut file = tokio::fs::File::from_std(file);
     file.seek(std::io::SeekFrom::Start(start))
@@ -96,6 +101,23 @@ pub async fn stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn audit_trust_invalid_range_bytes_are_not_a_full_download() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "range",
+            axum::http::HeaderValue::from_bytes(b"bytes=\xff").unwrap(),
+        );
+        assert!(
+            !valid_range(10, "digest", &headers),
+            "invalid Range must be rejected before verification"
+        );
+        headers.insert("if-range", "\"old-digest\"".parse().unwrap());
+        assert!(
+            valid_range(10, "digest", &headers),
+            "If-Range mismatch intentionally restarts the download"
+        );
+    }
     #[test]
     fn ranges() {
         assert_eq!(range("bytes=2-4", 10), Some((2, 4)));

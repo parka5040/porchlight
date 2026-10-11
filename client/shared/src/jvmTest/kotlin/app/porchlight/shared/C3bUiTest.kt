@@ -34,9 +34,11 @@ class C3bUiTest {
                 val node = onNodeWithContentDescription(label).assertExists().fetchSemanticsNode()
                 assertTrue(node.boundsInRoot.width >= 48 && node.boundsInRoot.height >= 48)
             }
-            // The hour grid has nested horizontal/vertical scroll axes; target the outer vertical axis explicitly.
+            // Reveal the bounded hour viewport, then scroll it back from work hours to the early appointment.
+            val viewportY = onNodeWithTag("calendar-hours-scroll").fetchSemanticsNode().positionInRoot.y
             val entryY = onNodeWithContentDescription("Open Meds").fetchSemanticsNode().positionInRoot.y
-            onNodeWithTag("calendar-scroll").performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.ScrollBy) { it(0f, entryY) }
+            onNodeWithTag("calendar-scroll").performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.ScrollBy) { it(0f, viewportY) }
+            onNodeWithTag("calendar-hours-scroll").performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.ScrollBy) { it(0f, entryY - viewportY) }
             onNodeWithText("Floating · 03:00", useUnmergedTree = true).assertIsDisplayed()
             onNodeWithText("Pending derivation").assertExists()
             onAllNodesWithText("SR", useUnmergedTree = true).assertCountEquals(2)

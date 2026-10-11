@@ -31,6 +31,13 @@ in
       "d ${cfg.dataMount}/porchlight 0750 ${cfg.user} porchlight -"
     ];
 
+    # Defense in depth for containers outside the release Compose logging policy.
+    virtualisation.docker.logDriver = "json-file";
+    virtualisation.docker.daemon.settings."log-opts" = {
+      "max-size" = "10m";
+      "max-file" = "3";
+    };
+
     # The data mount may be nofail: never let Docker start the stack against an empty mountpoint.
     systemd.services.docker.unitConfig.RequiresMountsFor = [ cfg.dataMount ];
 

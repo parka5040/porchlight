@@ -10,8 +10,8 @@ import kotlin.test.*
 import kotlin.time.Instant
 
 class RebaseDesktopCacheTest {
-    @Test fun mainVersionFourCacheRecreatesWithPlanningCollaborationAndNotificationsVersionFive() = runTest {
-        assertEquals(5L, PorchlightDb.Schema.version)
+    @Test fun mainVersionFourCacheRecreatesWithCurrentSchema() = runTest {
+        assertEquals(10L, PorchlightDb.Schema.version)
         val root = File(checkNotNull(System.getProperty("porchlight.test.dir"))).apply { mkdirs() }
         val dir = Files.createTempDirectory(root.toPath(), "rebase-cache-").toFile()
         val file = File(dir, "read-cache.db")

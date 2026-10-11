@@ -150,6 +150,7 @@ pub(crate) fn normalize_server_sans(sans: &mut ServerSans) -> anyhow::Result<()>
         ensure!(
             !dns.is_empty()
                 && dns.len() <= 253
+                && !dns.bytes().all(|b| b.is_ascii_digit() || b == b'.')
                 && dns.split('.').all(|label| !label.is_empty()
                     && label.len() <= 63
                     && !label.starts_with('-')
@@ -157,7 +158,11 @@ pub(crate) fn normalize_server_sans(sans: &mut ServerSans) -> anyhow::Result<()>
                     && label
                         .bytes()
                         .all(|b| b.is_ascii_alphanumeric() || b == b'-')),
-            "invalid DNS SAN"
+            "invalid DNS SAN (use --san-ip for addresses): {}",
+            dns.chars()
+                .take(253)
+                .flat_map(char::escape_default)
+                .collect::<String>()
         );
         dns.make_ascii_lowercase();
     }
@@ -178,9 +183,11 @@ pub struct ReissuedCert {
 
 /// Replace only the server leaf, retaining its key and the household CA.
 /// SANs replace the old set (with init's mandatory canonical name).
-/// Callers with a database must verify_install before invoking this operation.
+/// Pass the already authenticated `load` result; callers with a database must
+/// verify_install on that same value. This operation never reloads the key or CA.
 pub fn reissue_server_cert(
     dir: &DataDir,
+    pki: &ServerPki,
     sans: &ServerSans,
     now: SystemTime,
 ) -> anyhow::Result<ReissuedCert> {
@@ -190,12 +197,20 @@ pub fn reissue_server_cert(
     );
     let mut sans = sans.clone();
     normalize_server_sans(&mut sans)?;
-    let pki = load(dir)?;
     let previous = parse_cert_pem(&pki.server_cert_pem)?.sans;
     let cert = pki
         .ca
         .reissue_server(&pki.server_key_pem, &sans, now, 730)?;
     let info = parse_cert_pem(&cert.cert_pem)?;
+    pki.ca.verify_server_signature(&cert.cert_pem)?;
+    ensure!(
+        key_matches_cert(&pki.server_key_pem, &cert.cert_pem)?,
+        "reissued server certificate and key do not match"
+    );
+    ensure!(
+        info.sans == sans,
+        "reissued server certificate SANs do not match"
+    );
     write_secret_file(&dir.server_cert(), cert.cert_pem.as_bytes(), false)?;
     Ok(ReissuedCert {
         previous,
@@ -249,4 +264,28 @@ pub fn load_idempotency_key(dir: &DataDir) -> anyhow::Result<Zeroizing<[u8; 32]>
     hex::decode_to_slice(&text[..64], &mut *key)
         .map_err(|_| anyhow::anyhow!("invalid idempotency key file"))?;
     Ok(key)
+}
+
+#[cfg(test)]
+mod audit_bl_server {
+    use super::*;
+
+    #[test]
+    fn address_looking_dns_requires_ip_san() {
+        for dns in ["192.168.77.50", "192.168.077.050", "1234"] {
+            let mut sans = ServerSans {
+                dns: vec![dns.into()],
+                ips: vec![],
+            };
+            assert!(
+                normalize_server_sans(&mut sans).is_err(),
+                "address-looking DNS SAN accepted"
+            );
+        }
+        let mut sans = ServerSans {
+            dns: vec!["123.example".into()],
+            ips: vec![],
+        };
+        normalize_server_sans(&mut sans).unwrap();
+    }
 }

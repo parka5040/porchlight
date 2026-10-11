@@ -23,6 +23,7 @@ class DesktopTrayActions {
     }
     fun unregister(key: String) { if (synchronized(this) { entries.remove(key) != null }) changed() }
     @Synchronized internal fun snapshot() = entries.values.toList()
+    @Synchronized internal fun entry(key: String) = entries[key]
 }
 
 @DBusInterfaceName("org.kde.StatusNotifierItem")

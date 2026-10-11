@@ -54,11 +54,25 @@ class DesktopKeyStore internal constructor(
         backends.hasFileSecret() -> throw LocalTrustUnavailable()
         else -> KeyProtection.SecretService
     }
+    /** Called only after the desktop application's single-instance lock is acquired, like every key-store access. */
+    private fun removeSnapshotStaging() {
+        if (!Files.exists(directory, LinkOption.NOFOLLOW_LINKS)) return
+        val root = app.porchlight.shared.files.ensurePrivateDesktopDirectory(directory)
+        Files.newDirectoryStream(root, ".device-*.p12").use { entries ->
+            for (entry in entries) {
+                // Unlink symlinks without following them; never recurse into an unexpected directory.
+                check(!Files.isDirectory(entry, LinkOption.NOFOLLOW_LINKS)) { "Invalid device staging file" }
+                Files.deleteIfExists(entry)
+            }
+        }
+        java.nio.channels.FileChannel.open(root, StandardOpenOption.READ).use { it.force(true) }
+    }
     private fun open(create: Boolean): KeyStore? {
         store?.let { return it }
+        removeSnapshotStaging()
+        backends.removeStagingLeftovers() // M1: a crash may have left a staged copy of the secret
         val exists = Files.exists(file)
         if (!exists && !create) return null
-        backends.removeStagingLeftovers() // M1: a crash may have left a staged copy of the secret
         val recorded = protection(exists)
         val secret = if (exists) backends.wallet(checkNotNull(recorded)).let { wallet -> wallet.attempt { wallet.read() } } ?: throw LocalTrustUnavailable()
             // R85: with no key yet, every Secret Service failure (start, no default collection, dismissed or timed-out
@@ -173,8 +187,19 @@ class DesktopKeyStore internal constructor(
         replacement.deleteEntry("enrollment-attempt")
         commit(replacement); store = replacement
     }
+    override suspend fun clearSession(logoutPending: Boolean): DeviceTrust? = withContext(Dispatchers.IO) {
+        val saved = load() ?: return@withContext null
+        val cleared = saved.withSession(null, null).withLogoutPending(logoutPending)
+        val replacement = cloneSnapshot()
+        replacement.setEntry("trust-metadata", KeyStore.SecretKeyEntry(SecretKeySpec(WireJson.encodeToString(cleared).toByteArray(), "AES")), KeyStore.PasswordProtection(password))
+        commit(replacement); store = replacement
+        cleared
+    }
     override suspend fun clear() = withContext(Dispatchers.IO) {
-        Files.deleteIfExists(file); store = null; password?.fill('\u0000'); password = null
+        removeSnapshotStaging()
+        app.porchlight.shared.files.deletePrivateDesktopFile(directory, "device.p12")
+        if (Files.exists(directory, LinkOption.NOFOLLOW_LINKS)) java.nio.channels.FileChannel.open(directory, StandardOpenOption.READ).use { it.force(true) }
+        store = null; password?.fill('\u0000'); password = null
         // After the key is gone: the next enrollment chooses a backend afresh (re-enroll = the way to switch).
         backends.forget()
     }

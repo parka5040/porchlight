@@ -1,5 +1,7 @@
 package app.porchlight.shared.screens.item
 
+import app.porchlight.shared.theme.PorchlightTokens
+
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
@@ -12,15 +14,15 @@ import app.porchlight.shared.ui.ShellButton
 import app.porchlight.shared.theme.LocalPorchlightPalette
 import app.porchlight.shared.screens.fieldLabel
 
-@Composable fun FormField(label: String, field: String, value: String, change: (String) -> Unit, errors: Map<String, String> = emptyMap()) {
-    OutlinedTextField(value, change, colors = OutlinedTextFieldDefaults.colors(errorLabelColor = LocalPorchlightPalette.current.errorText, errorSupportingTextColor = LocalPorchlightPalette.current.errorText), label = { Text(label) }, isError = field in errors,
+@Composable fun FormField(label: String, field: String, value: String, change: (String) -> Unit, errors: Map<String, String> = emptyMap(), enabled: Boolean = true) {
+    OutlinedTextField(value, change, enabled = enabled, colors = OutlinedTextFieldDefaults.colors(errorLabelColor = LocalPorchlightPalette.current.errorText, errorSupportingTextColor = LocalPorchlightPalette.current.errorText), label = { Text(label) }, isError = field in errors,
         supportingText = { errors[field]?.let { Text(it, color = LocalPorchlightPalette.current.errorText) } },
-        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics { contentDescription = label })
+        modifier = Modifier.fillMaxWidth().heightIn(min = PorchlightTokens.touchTarget.dp).semantics { contentDescription = label })
 }
-@Composable fun Choices(label: String, choices: List<String>, selected: String, change: (String) -> Unit) {
+@Composable fun Choices(label: String, choices: List<String>, selected: String, enabled: Boolean = true, change: (String) -> Unit) {
     Text(label, style = MaterialTheme.typography.titleSmall)
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
-        choices.forEach { value -> ShellButton(value, "$label: $value", selected = value == selected, onClick = { change(value) }) }
+        choices.forEach { value -> ShellButton(value, "$label: $value", selected = value == selected, enabled = enabled, onClick = { change(value) }) }
     }
 }
 @Composable fun MemberChoices(label: String, members: List<MemberRead>, chosen: List<String>, change: (List<String>) -> Unit) {
@@ -51,11 +53,11 @@ fun editorTextControls(draft: EditorDraft, creating: Boolean, scope: EditorScope
 }
 @Composable fun EditorForm(draft: EditorDraft, change: (EditorDraft) -> Unit, errors: Map<String, String>, members: List<MemberRead>,
     creating: Boolean, scope: EditorScope, changeScope: (EditorScope) -> Unit, modifier: Modifier = Modifier,
-    scopes: List<EditorScope> = listOf(EditorScope.All), capabilities: List<String> = listOf("edit", "reassign", "change_visibility", "edit_reminders")) {
-    Column(modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (scopes.size > 1) {
+    scopes: List<EditorScope> = listOf(EditorScope.All), capabilities: List<String> = listOf("edit", "reassign", "change_visibility", "edit_reminders"), scopeChosen: Boolean = true) {
+    Column(modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(PorchlightTokens.spaceSm.dp), verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceSm.dp)) {
+        if (scopes.size > 1 || !scopeChosen) {
             Text("Choose recurring edit scope before adjusting timing. Changing scope resets timing and recurrence schedule fields to that scope; other edits are kept.")
-            scopes.forEach { s -> ShellButton(s.label, "Edit scope: ${s.label}", selected = scope == s, onClick = { changeScope(s) }) }
+            scopes.forEach { s -> ShellButton(s.label, "Edit scope: ${s.label}", selected = scopeChosen && scope == s, onClick = { changeScope(s) }) }
         }
         val controls = editorTextControls(draft, creating, scope)
         errors.filterKeys { it !in controls }.forEach { (field, message) -> Text(if (field == "scope") message else "${fieldLabel(field)}: $message", color = LocalPorchlightPalette.current.errorText) }
@@ -63,42 +65,42 @@ fun editorTextControls(draft: EditorDraft, creating: Boolean, scope: EditorScope
         if (!occurrenceOnly) {
             if ("title" in controls) FormField("Title", "title", draft.title, { change(draft.copy(title = it)) }, errors)
             if ("notes" in controls) FormField("Notes", "notes", draft.notes, { change(draft.copy(notes = it)) }, errors)
-            Choices("Kind", listOf("todo", "deadline", "appointment"), draft.kind) { change(draft.copy(kind = it)) }
-            Choices("Time mode", listOf("fixed", "floating"), draft.timeMode) { change(draft.copy(timeMode = it)) }
+            Choices("Kind", listOf("todo", "deadline", "appointment"), draft.kind, enabled = scopeChosen) { change(draft.copy(kind = it)) }
+            Choices("Time mode", listOf("fixed", "floating"), draft.timeMode, enabled = scopeChosen) { change(draft.copy(timeMode = it)) }
         } else {
             Text("Only this occurrence's anchors change. Series metadata stays unchanged.")
             if (draft.timeMode == "fixed") Text("Overrides use the item's zone (${draft.tzid}); DST folds use the earlier offset and gaps the next valid wall time.")
         }
         if ("tzid" in controls) {
-            FormField("Time zone", "tzid", draft.tzid, { change(draft.copy(tzid = it)) }, errors)
-            Choices("Common IANA zones", listOf("UTC", "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "Europe/London"), draft.tzid) { change(draft.copy(tzid = it)) }
+            FormField("Time zone", "tzid", draft.tzid, { change(draft.copy(tzid = it)) }, errors, enabled = scopeChosen)
+            Choices("Common IANA zones", listOf("UTC", "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "Europe/London"), draft.tzid, enabled = scopeChosen) { change(draft.copy(tzid = it)) }
         }
         Text(if (draft.timeMode == "fixed") "Fixed times use an ISO instant with offset (e.g. 2026-10-06T14:00:00-04:00)." else "Floating times use local YYYY-MM-DDTHH:MM:SS.")
-        if ("due_date" in controls) FormField("Due date", "due_date", draft.dueDate, { change(draft.copy(dueDate = it)) }, errors)
-        if ("due_at" in controls) FormField("Due instant", "due_at", draft.dueAt, { change(draft.copy(dueAt = it)) }, errors)
-        if ("local_due" in controls) FormField("Local due time", "local_due", draft.localDue, { change(draft.copy(localDue = it)) }, errors)
+        if ("due_date" in controls) FormField("Due date", "due_date", draft.dueDate, { change(draft.copy(dueDate = it)) }, errors, enabled = scopeChosen)
+        if ("due_at" in controls) FormField("Due instant", "due_at", draft.dueAt, { change(draft.copy(dueAt = it)) }, errors, enabled = scopeChosen)
+        if ("local_due" in controls) FormField("Local due time", "local_due", draft.localDue, { change(draft.copy(localDue = it)) }, errors, enabled = scopeChosen)
         if (draft.kind == "appointment") {
-            if ("starts_at" in controls) FormField("Start instant", "starts_at", draft.startsAt, { change(draft.copy(startsAt = it)) }, errors)
-            if ("ends_at" in controls) FormField("End instant", "ends_at", draft.endsAt, { change(draft.copy(endsAt = it)) }, errors)
-            if ("local_start" in controls) FormField("Local start", "local_start", draft.localStart, { change(draft.copy(localStart = it)) }, errors)
-            if ("local_end" in controls) FormField("Local end", "local_end", draft.localEnd, { change(draft.copy(localEnd = it)) }, errors)
-            if (!occurrenceOnly) ShellButton("All day", selected = draft.allDay, onClick = { change(draft.copy(allDay = !draft.allDay)) })
+            if ("starts_at" in controls) FormField("Start instant", "starts_at", draft.startsAt, { change(draft.copy(startsAt = it)) }, errors, enabled = scopeChosen)
+            if ("ends_at" in controls) FormField("End instant", "ends_at", draft.endsAt, { change(draft.copy(endsAt = it)) }, errors, enabled = scopeChosen)
+            if ("local_start" in controls) FormField("Local start", "local_start", draft.localStart, { change(draft.copy(localStart = it)) }, errors, enabled = scopeChosen)
+            if ("local_end" in controls) FormField("Local end", "local_end", draft.localEnd, { change(draft.copy(localEnd = it)) }, errors, enabled = scopeChosen)
+            if (!occurrenceOnly) ShellButton("All day", selected = draft.allDay, enabled = scopeChosen, onClick = { change(draft.copy(allDay = !draft.allDay)) })
         }
         if (!occurrenceOnly) {
             Choices("Recurrence", listOf("none", "calendar", "completion"), draft.recurrence) { change(draft.copy(recurrence = it)) }
             if (draft.recurrence == "calendar") {
-                Choices("Frequency", listOf("DAILY", "WEEKLY", "MONTHLY", "YEARLY"), draft.frequency) { change(draft.copy(frequency = it)) }
-                if ("interval" in controls) FormField("Repeat every", "interval", draft.interval, { change(draft.copy(interval = it)) }, errors)
-                if ("byday" in controls) FormField("Days (MO,TU,…; ordinal e.g. 1MO)", "byday", draft.byDay, { change(draft.copy(byDay = it)) }, errors)
-                if ("bymonthday" in controls) FormField("Month days (1…31, -1 for last)", "bymonthday", draft.byMonthDay, { change(draft.copy(byMonthDay = it)) }, errors)
-                if ("count" in controls) FormField("Count", "count", draft.count, { change(draft.copy(count = it)) }, errors)
-                if ("until" in controls) FormField("Until (YYYYMMDD or YYYYMMDDTHHMMSSZ)", "until", draft.until, { change(draft.copy(until = it)) }, errors)
+                Choices("Frequency", listOf("DAILY", "WEEKLY", "MONTHLY", "YEARLY"), draft.frequency, enabled = scopeChosen) { change(draft.copy(frequency = it)) }
+                if ("interval" in controls) FormField("Repeat every", "interval", draft.interval, { change(draft.copy(interval = it)) }, errors, enabled = scopeChosen)
+                if ("byday" in controls) FormField("Days (MO,TU,…; ordinal e.g. 1MO)", "byday", draft.byDay, { change(draft.copy(byDay = it)) }, errors, enabled = scopeChosen)
+                if ("bymonthday" in controls) FormField("Month days (1…31, -1 for last)", "bymonthday", draft.byMonthDay, { change(draft.copy(byMonthDay = it)) }, errors, enabled = scopeChosen)
+                if ("count" in controls) FormField("Count", "count", draft.count, { change(draft.copy(count = it)) }, errors, enabled = scopeChosen)
+                if ("until" in controls) FormField("Until (YYYYMMDD or YYYYMMDDTHHMMSSZ)", "until", draft.until, { change(draft.copy(until = it)) }, errors, enabled = scopeChosen)
                 Text("Rule: ${draft.rule()}")
             }
             if (draft.recurrence == "completion") {
-                if ("months" in controls) FormField("Interval months", "months", draft.months, { change(draft.copy(months = it)) }, errors)
-                if ("days" in controls) FormField("Interval days", "days", draft.days, { change(draft.copy(days = it)) }, errors)
-                if ("microseconds" in controls) FormField("Interval microseconds", "microseconds", draft.microseconds, { change(draft.copy(microseconds = it)) }, errors)
+                if ("months" in controls) FormField("Interval months", "months", draft.months, { change(draft.copy(months = it)) }, errors, enabled = scopeChosen)
+                if ("days" in controls) FormField("Interval days", "days", draft.days, { change(draft.copy(days = it)) }, errors, enabled = scopeChosen)
+                if ("microseconds" in controls) FormField("Interval microseconds", "microseconds", draft.microseconds, { change(draft.copy(microseconds = it)) }, errors, enabled = scopeChosen)
             }
             Choices("Missed policy", listOf("carry_over", "skip", "stack"), draft.missedPolicy) { change(draft.copy(missedPolicy = it)) }
             if ("buffer_before_min" in controls) FormField("Buffer before (minutes)", "buffer_before_min", draft.bufferBefore, { change(draft.copy(bufferBefore = it)) }, errors)

@@ -158,6 +158,18 @@ os.execv('''+repr(shutil.which('timeout'))+''', ['timeout',*sys.argv[1:]])
         path = self.p/'docker.jsonl'
         return [json.loads(x) for x in path.read_text().splitlines()] if path.exists() else []
 
+    def assert_only_diagnostics(self):
+        # Failed activation keeps sanitized evidence, never the secret-bearing install stage.
+        directories = list((self.stack/'tmp').iterdir())
+        self.assertTrue(directories)
+        for directory in directories:
+            self.assertTrue(directory.name.startswith('failure.'))
+            self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
+            self.assertEqual([p.name for p in directory.iterdir()], ['summary.txt'])
+            summary = directory/'summary.txt'
+            self.assertEqual(summary.stat().st_mode & 0o777, 0o600)
+            self.assertNotIn(self.key.read_text().strip(), summary.read_text())
+
     def env_values(self):
         return dict(x.split('=', 1) for x in (self.stack/'.env').read_text().splitlines() if '=' in x)
 
@@ -243,7 +255,7 @@ os.execv('''+repr(shutil.which('timeout'))+''', ['timeout',*sys.argv[1:]])
             self.assertIn('install.sh server-cert', result.stderr)
             self.assertEqual((self.stack/'.env').read_bytes(), before)
         self.assertFalse(any('up' in r['argv'] or 'stop' in r['argv'] for r in self.records()))
-        self.assertFalse(list((self.stack/'tmp').iterdir()))
+        self.assert_only_diagnostics()
 
     def test_enroll_host_show_failure_and_invalid_metadata_leave_stack_unchanged(self):
         before = (self.stack/'.env').read_bytes()
@@ -253,7 +265,7 @@ os.execv('''+repr(shutil.which('timeout'))+''', ['timeout',*sys.argv[1:]])
         self.run_install('enroll-host', '--host', '192.168.77.50', ok=False)
         self.assertEqual((self.stack/'.env').read_bytes(), before)
         self.assertFalse(any('up' in r['argv'] for r in self.records()))
-        self.assertFalse(list((self.stack/'tmp').iterdir()))
+        self.assert_only_diagnostics()
 
     def test_enroll_host_no_backup_and_closed_output_complete_change(self):
         self.run_install('enroll-host', '--host', '192.168.77.50', '--no-backup', closed_output=True)
@@ -276,7 +288,7 @@ os.execv('''+repr(shutil.which('timeout'))+''', ['timeout',*sys.argv[1:]])
                 last_api = [r for r in self.records() if 'up' in r['argv'] and r['argv'][-1]=='api'][-1]
                 self.assertEqual(last_api['env']['ENROLL_HOST'], 'porchlight.lan:8444')
                 self.assertIn('--force-recreate', last_api['argv'])
-                self.assertFalse(list((self.stack/'tmp').iterdir()))
+                self.assert_only_diagnostics()
 
     def test_enroll_host_failed_recovery_reports_once(self):
         with (self.stack/'.env').open('a') as f: f.write('ENROLL_HOST=porchlight.lan:8444\n')
@@ -372,7 +384,7 @@ os.execv('''+repr(shutil.which('timeout'))+''', ['timeout',*sys.argv[1:]])
         self.funnel('--ts-authkey-file', str(self.key), env={'FAIL_START':'1'}, closed_output=True, ok=False)
         self.assert_disabled()
         self.assertEqual(stat.S_IMODE((self.stack/'tailscale/authkey').stat().st_mode), 0o600)
-        self.assertEqual(list((self.stack/'tmp').iterdir()), [])
+        self.assert_only_diagnostics()
 
     def test_closed_pipe_successful_rotation_recovers_api(self):
         self.funnel('--ts-authkey-file', str(self.key), closed_output=True)
@@ -512,7 +524,7 @@ os.execv('''+repr(real_python)+''', ['python3','-I','-c',code,*sys.argv[3:]])
         # Restoration must be verified from persisted state, independent of output availability.
         self.assert_disabled()
         self.assertTrue((self.stack/'tailscale/authkey').exists())
-        self.assertEqual(list((self.stack/'tmp').iterdir()), [])
+        self.assert_only_diagnostics()
         self.assertFalse(any('up' in x['argv'] and x['argv'][-1]=='tailscale' for x in self.records()))
 
     def test_cleanup_children_ignore_second_signals_and_are_bounded(self):
@@ -522,7 +534,7 @@ os.execv('''+repr(real_python)+''', ['python3','-I','-c',code,*sys.argv[3:]])
         self.assertEqual([json.loads(x) for x in (self.p/'cleanup-signals').read_text().splitlines()], [[True]*3]*2)
         # Removal and API recovery each have a 30-second Docker client budget.
         self.assertEqual((self.p/'timeouts').read_text().splitlines()[-2:], ['30','30'])
-        self.assertEqual(list((self.stack/'tmp').iterdir()), [])
+        self.assert_only_diagnostics()
 
     def test_capability_lag_after_running_is_retried_within_grace(self):
         lagging = json.dumps({'CapMap':{'https':[], 'https://tailscale.com/cap/funnel-ports?ports=443':[]}})
@@ -566,7 +578,7 @@ os.execv('''+repr(real_python)+''', ['python3','-I','-c',code,*sys.argv[3:]])
                                           capture_output=True, text=True, timeout=30, start_new_session=True)
                 self.assertEqual(recovery.returncode, 0, recovery.stderr[:500])
                 self.assertEqual((self.p/'api-running').read_text(), '1')
-                self.assertEqual(list((self.stack/'tmp').iterdir()), [])
+                self.assert_only_diagnostics()
 
     def test_state_directory_fd_owner_recheck_is_clean(self):
         self.python_shim('if "os.O_DIRECTORY" in code and "os.fstat(fd).st_uid" in code:\n'
@@ -605,6 +617,7 @@ os.execv('''+repr(real_python)+''', ['python3','-I','-c',code,*sys.argv[3:]])
 
     def server_release(self, version='0.1.1'):
         source = self.p/('server-release-'+version); source.mkdir()
+        shutil.copyfile(self.installer, source/'install.sh')
         for name in ('compose.yml', 'compose.funnel.yml'):
             shutil.copyfile(ROOT/'deploy'/name, source/name)
         for service in ('api', 'backup'):
@@ -614,6 +627,8 @@ os.execv('''+repr(real_python)+''', ['python3','-I','-c',code,*sys.argv[3:]])
         return source
 
     def restore_bundle(self, enabled):
+        # Restore now validates and persists explicit target endpoints, rather than ignoring them.
+        self.env.pop('PORCHLIGHT_ENDPOINTS', None)
         import tarfile
         tree = self.p/'bundle-tree'; tree.mkdir()
         for path in ('db.dump','pki/ca.crt','pki/ca.key','secrets/idempotency.key','backup-recipient.txt'):

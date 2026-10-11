@@ -79,6 +79,8 @@ pub enum UniversalProblems {
 #[derive(utoipa::IntoResponses)]
 #[allow(dead_code)]
 pub enum MutationProblems {
+    #[response(status=503,description="Server is updating; mutation not executed, retry the identical request shortly",content_type="application/problem+json",headers(("Retry-After"=u64,description="Seconds before retrying")))]
+    Maintenance(ProblemBody),
     #[response(
         status = 408,
         description = "Request body timeout",
@@ -200,6 +202,7 @@ pub fn document() -> utoipa::openapi::OpenApi {
     doc.merge(crate::routes::devices::DevicesApi::openapi());
     doc.merge(crate::routes::enrollment::EnrollmentApi::openapi());
     doc.merge(crate::routes::admin::AdminApi::openapi());
+    doc.merge(crate::routes::security_events::SecurityEventsApi::openapi());
     doc.merge(crate::routes::administration::AdministrationApi::openapi());
     doc.merge(crate::routes::connection::ConnectionApi::openapi());
     doc.merge(crate::routes::me::MeApi::openapi());

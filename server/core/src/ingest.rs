@@ -28,6 +28,11 @@
 //! lossless screenshots and lossless animation. These are `attachment-type-unsupported`;
 //! small lossless/alpha fixtures and ordinary alpha-free lossy WebP work. This is not
 //! a promise to support arbitrary lossless/alpha WebP below the byte/pixel limits.
+//! The container profile is intentionally narrower than the WebP specification: ANMF
+//! subchunks must be ALPH + VP8, VP8 alone, or VP8L alone. Unknown subchunks and ALPH +
+//! VP8L are rejected even when a general-purpose decoder could ignore them. Animation
+//! canvases with an alpha channel use lossless WebP even if every pixel happens to be
+//! opaque; this conservative R17 size tradeoff preserves actual transparency.
 
 use std::io::{self, Cursor, Write};
 use std::path::PathBuf;

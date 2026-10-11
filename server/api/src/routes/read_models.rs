@@ -107,6 +107,8 @@ pub struct OccurrenceRead {
 }
 #[derive(utoipa::ToSchema)]
 pub struct AgendaRead {
+    /// Recipient-local missed-policy disposition; absent on pre-upgrade projections.
+    pub disposition: Option<String>,
     pub household_id: Uuid,
     pub member_id: Uuid,
     pub occurrence_id: Uuid,

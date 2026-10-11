@@ -181,6 +181,7 @@ internal class FakeProvider(private val connection: DBusConnection) : ProviderSe
             return SecretValue(session, byteArrayOf(), synchronized(items) { items.getValue(attributes) }, "text/plain; charset=utf8")
         }
         override fun SetSecret(secret: SecretValue) { check(!locked); synchronized(items) { items[attributes] = secret.value } }
+        override fun Delete(): DBusPath { check(!locked); synchronized(items) { items.remove(attributes) }; return DBusPath("/") }
     }
     inner class Session : SecretSession {
         override fun getObjectPath() = SESSION

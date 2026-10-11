@@ -16,7 +16,7 @@ class Frames(unittest.TestCase):
     def test_other_member_cannot_receive_dismissal_before_barrier(self):
         reply = io.BytesIO(b'event: notification.dismissed\ndata: {"entity_id":"inbox"}\n\nevent: item.changed\ndata: {"entity_id":"barrier"}\n\n')
         with self.assertRaisesRegex(ValueError, 'recipient isolation'):
-            module['read_sse_until'](reply, 'item.changed', 'barrier', forbid_notifications=True)
+            module['read_sse_until'](reply, 'item.changed', 'barrier', forbid_notifications={'inbox'})
 
     def test_eof_is_not_success(self):
         with self.assertRaisesRegex(ValueError, 'stream ended'):

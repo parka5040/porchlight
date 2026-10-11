@@ -226,10 +226,14 @@ funnel() {
   [[ $ts_hostname =~ ^[a-z0-9-]{1,63}$ ]] || die 2 'invalid Tailscale hostname (1-63 lowercase letters, digits or hyphens)'
   [[ $tailscale_image =~ ^tailscale/tailscale@sha256:[a-f0-9]{64}$ ]] || die 2 'Tailscale image must be tailscale/tailscale@sha256:<64 lowercase hex>'
   [[ $no_authkey == 0 || $explicit_authkey == 0 ]] || die 2 '--no-authkey conflicts with --ts-authkey-file'
-  local key=$ts_authkey_file transport=$ROOT/tmp/m9-ts-authkey script result pending
+  local key=$ts_authkey_file transport=$ROOT/tmp/m9-ts-authkey script result pending identity size=0 digest=dry-run
   if [[ $no_authkey == 0 ]]; then
     [[ $key == /* ]] || key=$repo/$key
     [[ -f $key && ! -L $key && -s $key && $(stat -c '%a:%u' "$key") == "600:$(id -u)" ]] || die 2 'Tailscale auth key must be a nonempty owner-owned regular 0600 file (no symlinks)'
+  fi
+  if [[ $no_authkey == 0 && $DRY_RUN != 1 ]]; then
+    identity=$(python3 -I -c 'import hashlib,pathlib,sys; data=pathlib.Path(sys.argv[1]).read_bytes(); print(len(data),hashlib.sha256(data).hexdigest())' "$key") || die 1 'FAIL auth-key identity'
+    read -r size digest <<< "$identity"
   fi
   local args=(bash "$ROOT/release-current/install.sh" funnel --root "$ROOT" --run-dir "$RUN_DIR" --project "$PROJECT" --ts-hostname "$ts_hostname" --tailscale-image "$tailscale_image")
   # Omit BOTH installer key flags: reuse part A's staged key if present, otherwise node state.
@@ -239,6 +243,20 @@ set -euo pipefail
 umask 077
 [[ ! -L $(quote_command "$ROOT/tmp") ]] || { printf 'FAIL funnel staging directory symlink\\n' >&2; exit 1; }
 $(quote_command declare "transport=$transport")
+mkdir -m 700 -p $(quote_command "$ROOT/tmp")
+chmod 700 $(quote_command "$ROOT/tmp")
+[[ ! -L $(quote_command "$ROOT/tmp/.m9-funnel.lock") ]] || exit 1
+exec 8>>$(quote_command "$ROOT/tmp/.m9-funnel.lock")
+flock -n 8 || { printf 'FAIL concurrent Funnel controller\\n' >&2; exit 1; }
+# Only sweep our private, owned regular stages older than a day, while holding the transfer lock.
+python3 -I - $(quote_command "$ROOT/tmp") <<'PY_SWEEP'
+import os,pathlib,stat,sys,time
+root=pathlib.Path(sys.argv[1])
+for path in root.glob('.m9-ts-authkey.*'):
+ info=path.lstat()
+ if stat.S_ISREG(info.st_mode) and info.st_uid==os.getuid() and stat.S_IMODE(info.st_mode)==0o600 and time.time()-info.st_mtime>86400:
+  path.unlink()
+PY_SWEEP
 stage='' log=''
 cleanup() { rm -f -- \"\$transport\"; [[ -z \$stage ]] || rm -f -- \"\$stage\"; [[ -z \$log ]] || rm -f -- \"\$log\"; }
 trap cleanup EXIT
@@ -249,7 +267,7 @@ chmod 700 $(quote_command "$ROOT/tmp")
   if [[ $no_authkey == 0 ]]; then
     script+="stage=\$(mktemp $(quote_command "$ROOT/tmp/.m9-ts-authkey.XXXXXX"))
 cat > \"\$stage\"
-[[ -s \$stage ]]
+python3 -I -c 'import hashlib,pathlib,sys; p=pathlib.Path(sys.argv[1]); data=p.read_bytes(); sys.exit(not (len(data)==int(sys.argv[2]) and hashlib.sha256(data).hexdigest()==sys.argv[3]))' \"\$stage\" $(quote_command "$size" "$digest") || { printf 'FAIL auth-key transfer integrity\\n' >&2; exit 1; }
 mv -Tf -- \"\$stage\" \"\$transport\"
 "
   fi
@@ -258,19 +276,33 @@ $(quote_command "${args[@]}") | tee \"\$log\"
 python3 -I -c 'import pathlib,re,sys; lines=re.findall(r\"^PASS funnel ([a-z0-9.-]+)$\",pathlib.Path(sys.argv[1]).read_text(),re.M); assert len(lines)==1; s=lines[0]; assert len(s)<=253 and re.fullmatch(r\"[a-z0-9-]+(?:\\.[a-z0-9-]+)*\\.ts\\.net\",s) and all(re.fullmatch(r\"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\",p) for p in s.split(\".\"))' \"\$log\" 2>/dev/null || { printf 'FAIL funnel missing valid PASS line\\n' >&2; exit 1; }
 "
   if [[ $DRY_RUN == 1 ]]; then remote bash -c "$script" < /dev/null; return; fi
-  # Forward trusted installer stdout/stderr, including safe recovery guidance on failure.
+  # Preserve recovery guidance, but only this controller may publish final success.
+  local remote_rc=0
   if [[ $no_authkey == 1 ]]; then
-    result=$(remote bash -c "$script" < /dev/null) || { printf '%s\n' "$result"; die 1 'FAIL funnel (no FQDN published; laptop key retained)'; }
+    result=$(remote bash -c "$script" < /dev/null) || remote_rc=$?
   else
-    result=$(remote bash -c "$script" < "$key") || { printf '%s\n' "$result"; die 1 'FAIL funnel (no FQDN published; laptop key retained)'; }
+    result=$(remote bash -c "$script" < "$key") || remote_rc=$?
   fi
-  printf '%s\n' "$result"
+  if ((remote_rc)); then
+    printf '%s\n' "$result" | python3 -I -c 'import sys; sys.stdout.writelines(line for line in sys.stdin if not line.startswith("PASS funnel "))'
+    die 1 'FAIL funnel (no FQDN published; laptop key retained)'
+  fi
   fqdn=$(printf '%s\n' "$result" | python3 -I -c 'import re,sys; rows=re.findall(r"^PASS funnel ([a-z0-9.-]+)$",sys.stdin.read(),re.M); assert len(rows)==1; print(rows[0])') || die 1 'FAIL funnel response'
   valid_fqdn "$fqdn" || die 1 'FAIL funnel FQDN'
   private_local_dir "$repo/var/m9"
   pending=$(mktemp "$repo/var/m9/.funnel-fqdn.XXXXXX")
   trap "$(quote_command rm -f -- "$pending")" EXIT
-  printf '%s\n' "$fqdn" > "$pending"; mv -Tf -- "$pending" "$repo/var/m9/funnel-fqdn"
+  printf '%s\n' "$fqdn" > "$pending"
+  python3 -I - "$pending" "$repo/var/m9/funnel-fqdn" <<'PY_SAVE'
+import os,pathlib,sys
+pending,target=map(pathlib.Path,sys.argv[1:])
+with pending.open('rb') as stream: os.fsync(stream.fileno())
+os.replace(pending,target)
+fd=os.open(target.parent,os.O_RDONLY|os.O_DIRECTORY)
+try: os.fsync(fd)
+finally: os.close(fd)
+PY_SAVE
+  printf '%s\n' "$result"
   [[ $no_authkey == 1 ]] || printf 'Reminder: delete the laptop auth key after successful activation (not deleted automatically).\n'
 }
 funnel_check() {
@@ -349,35 +381,42 @@ try:
  ctx.minimum_version=ssl.TLSVersion.TLSv1_3
  ctx.check_hostname=True
  ctx.hostname_checks_common_name=False
- # Connect the already-screened address list, never re-resolve after the tailnet gate.
- raw=None
- for family,kind,proto,_,address in addresses:
-  candidate=socket.socket(family,kind,proto)
-  try:
-   remaining=deadline-time.monotonic()
-   if remaining<=0: raise TimeoutError()
-   candidate.settimeout(remaining)
-   candidate.connect(address)
-   raw=candidate
-   break
-  except OSError:
-   candidate.close()
- if raw is None: fail('public-tls','TLS connection failed or timed out')
- with raw:
-  with ctx.wrap_socket(raw,server_hostname=fqdn) as tls:
-   if tls.version()!='TLSv1.3': fail('public-tls','TLS 1.3 required')
-   remaining=deadline-time.monotonic()
-   if remaining<=0: raise TimeoutError()
-   tls.settimeout(remaining)
-   # TLS 1.3 can complete on the client before the server rejects the empty client chain.
+ # Retry only transient post-handshake resets, never weaken the certificate-required proof.
+ for attempt in range(3):
+  raw=None
+  for family,kind,proto,_,address in addresses:
+   candidate=socket.socket(family,kind,proto)
    try:
-    tls.recv(1)
-   except ssl.SSLError as error:
-    if error.reason in ('TLSV13_ALERT_CERTIFICATE_REQUIRED','CERTIFICATE_REQUIRED'):
-     print('PASS public-tls', flush=True)
-     raise SystemExit(0)
-    fail('public-tls','Unexpected TLS alert; mandatory client certificate not proven')
-   fail('public-tls','Data or EOF without certificate-required alert; mandatory mTLS not proven')
+    remaining=deadline-time.monotonic()
+    if remaining<=0: raise TimeoutError()
+    candidate.settimeout(remaining)
+    candidate.connect(address)
+    raw=candidate
+    break
+   except OSError:
+    candidate.close()
+  if raw is None: fail('public-tls','TLS connection failed or timed out')
+  with raw:
+   remaining=deadline-time.monotonic()
+   if remaining<=0: raise TimeoutError()
+   raw.settimeout(remaining)
+   with ctx.wrap_socket(raw,server_hostname=fqdn) as tls:
+    if tls.version()!='TLSv1.3': fail('public-tls','TLS 1.3 required')
+    remaining=deadline-time.monotonic()
+    if remaining<=0: raise TimeoutError()
+    tls.settimeout(remaining)
+    # TLS 1.3 can complete on the client before the server rejects the empty client chain.
+    try:
+     tls.recv(1)
+    except ssl.SSLError as error:
+     if getattr(error,'reason',None) in ('TLSV13_ALERT_CERTIFICATE_REQUIRED','CERTIFICATE_REQUIRED'):
+      print('PASS public-tls', flush=True)
+      raise SystemExit(0)
+     fail('public-tls','Unexpected TLS alert; mandatory client certificate not proven')
+    except (ConnectionResetError,BrokenPipeError):
+     if attempt<2: continue
+     fail('public-tls','Repeated post-handshake reset; mandatory mTLS not proven')
+    fail('public-tls','Data or EOF without certificate-required alert; mandatory mTLS not proven')
 except ssl.SSLCertVerificationError:
  fail('public-tls','Household-CA chain or FQDN SAN verification failed')
 except (TimeoutError,OSError,ValueError):
@@ -415,7 +454,14 @@ cat $(quote_command "$ROOT/data/pki/ca.crt")" < /dev/null > "$pending" && [[ -s 
   cat "$pending"
   cat "$directory/tls-check.log" >&2
   if ((probe_rc != 0)); then
-    # The outer watchdog also bounds DNS; interpreter/runtime/watchdog failures never PASS.
+    # Distinguish resolver stalls from TLS stalls even when the external watchdog fires.
+    if ((probe_rc == 137 || probe_rc == 124)); then
+      if grep -q '^PASS probe-path$' "$pending"; then
+        printf 'Funnel TLS watchdog expired\n' >&2
+      else
+        printf 'FAIL probe-path\n'; printf 'Funnel DNS watchdog expired\n' >&2
+      fi
+    fi
     if ! grep -q '^FAIL probe-path$\|^FAIL public-tls$' "$pending"; then printf 'FAIL public-tls\n'; fi
     failed=1
   fi
@@ -450,7 +496,7 @@ case $command in
     preflight
     stack_status=0
     remote bash -c "# stack-absent
-[[ ! -e $(quote_command "$ROOT/.env") ]]" < /dev/null || stack_status=$?
+[[ ! -e $(quote_command "$ROOT/.env") || -f $(quote_command "$ROOT/.provisioning") ]]" < /dev/null || stack_status=$?
     case $stack_status in
       0) ;;
       1) die 1 'production stack .env exists; use upgrade' ;;

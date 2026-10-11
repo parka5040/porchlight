@@ -1,5 +1,7 @@
 package app.porchlight.shared.screens.inbox
 
+import app.porchlight.shared.theme.PorchlightTokens
+
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -27,9 +29,9 @@ import kotlinx.coroutines.launch
     var draft by remember(current.version) { mutableStateOf(current.prefs) }
     var start by remember(current.version) { mutableStateOf(current.prefs.quietStart.orEmpty()) }
     var end by remember(current.version) { mutableStateOf(current.prefs.quietEnd.orEmpty()) }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(PorchlightTokens.spaceMd.dp), verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceInset.dp)) {
         val connectionLabel = if (services.platform.kind == app.porchlight.shared.PlatformKind.Desktop) "Start at login" else "Stay connected on this device"
-        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+        Row(Modifier.fillMaxWidth().heightIn(min = PorchlightTokens.touchTarget.dp)) {
             Text(connectionLabel, modifier = Modifier.weight(1f))
             Switch(device.stayConnected, { value -> scope.launch { services.settings.setStayConnected(value) } }, modifier = Modifier.semantics { contentDescription = connectionLabel })
         }
@@ -46,7 +48,7 @@ import kotlinx.coroutines.launch
         listOf("Reminders" to draft.reminders, "Assignments" to draft.assignments,
             "Dependents' appointments" to draft.dependents, "Household activity" to draft.activity,
             "Digest" to draft.digest, "Connection" to draft.connection).forEach { (label, enabled) ->
-            Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+            Row(Modifier.fillMaxWidth().heightIn(min = PorchlightTokens.touchTarget.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(label, modifier = Modifier.weight(1f))
                 Switch(enabled, { value -> draft = when (label) {
                     "Reminders" -> draft.copy(reminders = value); "Assignments" -> draft.copy(assignments = value)

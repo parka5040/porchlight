@@ -1,7 +1,6 @@
 package app.porchlight.shared.settings
 
 import android.content.Context
-import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.*
 import app.porchlight.shared.*
 import java.io.File
@@ -12,10 +11,11 @@ import kotlin.time.Clock
 
 /** Application-scoped DataStore: activity recreation must not open a second instance on the same file. */
 class AndroidAppServices private constructor(context: Context) : AppServices {
-    override val settings: SettingsStore = DataStoreSettingsStore(PreferenceDataStoreFactory.create(
-        corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
-        produceFile = { File(context.filesDir, "datastore/device.preferences_pb") },
-    ))
+    val privateStorage = privateStorageBoundary(context)
+    override val settings: SettingsStore = RecoveringSettingsStore(DataStoreSettingsStore(PreferenceDataStoreFactory.create(
+        produceFile = { migratePrivateSettings(File(context.filesDir, "datastore/device.preferences_pb"),
+            File(context.noBackupFilesDir, "datastore/device.preferences_pb")) },
+    )), privateStorage)
     override val recoverNotifications: () -> Unit = {
         context.startActivity(android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
             .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
@@ -45,36 +45,43 @@ class AndroidAppServices private constructor(context: Context) : AppServices {
     private val streamEnabled = MutableStateFlow(false)
     fun setForeground(value: Boolean) { foreground.value = value }
     init {
+        dataScope.launch { privateStorage.notices.collect { notice ->
+            if (notice != null || runtimeNotice.value == PRIVATE_STORAGE_NOTICE) runtimeNotice.value = notice
+        } }
         dataScope.launch {
             kotlinx.coroutines.flow.combine(settings.settings, foreground) { device, active -> device.stayConnected || active }
                 .collect { streamEnabled.value = it }
         }
     }
-    override val data by lazy {
-        val schema = app.porchlight.shared.db.PorchlightDb.Schema
-        // The read cache is disposable: a schema version mismatch either way recreates it (as on desktop) instead of
-        // migrating, or crashing at start on a downgrade (SQLite's default onDowngrade throws).
-        val callback = object : app.cash.sqldelight.driver.android.AndroidSqliteDriver.Callback(schema) {
-            override fun onUpgrade(db: androidx.sqlite.db.SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = recreate(db)
-            override fun onDowngrade(db: androidx.sqlite.db.SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = recreate(db)
-            private fun recreate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
-                val tables = db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'android_metadata'").use { cursor ->
-                    buildList { while (cursor.moveToNext()) add(cursor.getString(0)) }
-                }
-                tables.forEach { db.execSQL("DROP TABLE IF EXISTS \"$it\"") }
-                onCreate(db)
-            }
-        }
-        val driver = app.cash.sqldelight.driver.android.AndroidSqliteDriver(schema, context.applicationContext, "read-cache.db", callback = callback)
+    internal val liveRuntime: app.porchlight.shared.live.AndroidLiveReconciler by lazy {
+        app.porchlight.shared.live.AndroidLiveReconciler(trust.controller, { data.cache.view.value },
+            alarms = { view ->
+                app.porchlight.shared.live.notificationActionOwner(context, trust.controller)
+                app.porchlight.shared.live.AndroidAlarms(context).reconcile(view, liveRuntime::current)
+                data.firedOccurrences.value = app.porchlight.shared.live.firedOccurrences(app.porchlight.shared.live.AndroidAlarms(context).tickets())
+            },
+            delivery = { app.porchlight.shared.live.AndroidDelivery(context).reconcile(it, liveRuntime::current) },
+            reschedule = { app.porchlight.shared.live.AndroidAlarms(context).reschedule(liveRuntime::current) },
+            clear = {
+                app.porchlight.shared.live.AndroidAlarms(context).clear()
+                app.porchlight.shared.live.AndroidDelivery(context).clear()
+                check(privateMetadata(context, "os-delivery").edit().remove("owner").remove("identity").remove("action-failure").commit())
+            }, loadOwner = { app.porchlight.shared.live.AndroidDelivery(context).owner() },
+            saveOwner = { app.porchlight.shared.live.AndroidDelivery(context).saveOwner(it) })
+    }
+    override val data: app.porchlight.shared.data.HouseholdData by lazy {
         app.porchlight.shared.data.HouseholdData(
-            app.porchlight.shared.data.ReadCache(driver) { clock.now() },
+            app.porchlight.shared.data.androidReadCache(context, app.porchlight.shared.data.FileAttachmentStore(java.io.File(context.applicationContext.cacheDir, "attachments"))) { clock.now() },
             app.porchlight.shared.data.GeneratedCall.trusted(trust.controller), { clock.now() },
-            attachmentStore = app.porchlight.shared.data.FileAttachmentStore(java.io.File(context.applicationContext.cacheDir, "attachments")),
-        ).also { it.bindTrust(trust.controller, dataScope, screenSession::bind, onIdentityEnded = { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            app.porchlight.shared.live.AndroidAlarms(context).clear()
-            app.porchlight.shared.live.AndroidDelivery(context).clear()
-            context.getSharedPreferences("os-delivery", Context.MODE_PRIVATE).edit().remove("owner").remove("identity").remove("action-failure").commit()
-        } }, streamEnabled = streamEnabled, refreshWhenInactive = false, resumeFromCursor = true); app.porchlight.shared.live.bindAndroidLive(context.applicationContext, it, dataScope) }
+        ).also { data ->
+            dataScope.launch { data.cache.storageNotice.collect { notice ->
+                if (notice != null || runtimeNotice.value == app.porchlight.shared.data.CACHE_STORAGE_NOTICE) runtimeNotice.value = privateStorage.notice ?: notice
+            } }
+            data.bindTrust(trust.controller, dataScope, screenSession::bind, onIdentityEnded = { epoch -> privateStorage.retry(PrivateStorageEntry.Live) { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            liveRuntime.clearIdentity(epoch)
+        } } }, onIdentityStarting = { owner, epoch -> privateStorage.retry(PrivateStorageEntry.Live) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { liveRuntime.prepareIdentity(owner, epoch) }
+        } }, streamEnabled = streamEnabled, refreshWhenInactive = false, resumeFromCursor = true); app.porchlight.shared.live.bindAndroidLive(context.applicationContext, data, dataScope) }
     }
     override val settingsWrites by lazy { app.porchlight.shared.screens.settings.HouseholdSettingsController(data) }
     private val dark = MutableStateFlow(isDark(context.resources.configuration))

@@ -127,10 +127,13 @@ merge. R2 item membership is one shared DB SQL fragment for EDF inputs, acceptan
 and candidate-peer pending checks.
 
 Snapshot suggestions serialize the same typed `SuggestionResponse` as REST, including nullable
-`occurrence_version`, and never internal columns such as `updated_at`. The derive worker passes the
+`occurrence_version`, and never internal columns such as `updated_at`. The additive
+`conflicts_evaluated` flag is true only on successful acceptance, where fresh derivation and
+ACL masking produce the warnings. Snapshot/list/dismiss/proposal responses set it false:
+`conflicts: []` there means unavailable, not conflict-free. Older servers omit the flag (false). The derive worker passes the
 injected domain clock to both item and availability-only load batches, including member-local "today".
 Missing/deleted/foreign body `member_id` references on suggest use R38's 422 `validation-failed`, field
-`member_id`, code `invalid-reference`; authorization failures remain 403 and path resources keep 404.
+`member_id`, code `invalid-reference`, for every caller before target-member authorization; valid but unauthorized targets remain 403 and path resources keep 404.
 Custom item permission rows cross visibility/relationship with independent self/other suggestion targets
 and PAT read/write/admin scopes; other planning rows use the reduced self/other member dimension.
 

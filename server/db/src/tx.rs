@@ -11,6 +11,34 @@ pub struct Actor {
 }
 
 impl Actor {
+    /// Authenticated app caller. A member and device always travel together.
+    pub fn member(member_id: uuid::Uuid, device_id: uuid::Uuid, request_id: uuid::Uuid) -> Self {
+        Self {
+            member_id: Some(member_id),
+            device_id: Some(device_id),
+            request_id,
+            agent_label: None,
+            token_id: None,
+        }
+    }
+    /// HTTP PAT caller, attributed to its authenticated owner and token name.
+    /// Unlike raw SQL's validated `agent:<name>` application_name, the HTTP label
+    /// is the token's stored name verbatim; token_id records the channel identity.
+    pub fn pat(
+        member_id: uuid::Uuid,
+        token_id: uuid::Uuid,
+        label: String,
+        request_id: uuid::Uuid,
+    ) -> Self {
+        Self {
+            member_id: Some(member_id),
+            device_id: None,
+            request_id,
+            agent_label: Some(label),
+            token_id: Some(token_id),
+        }
+    }
+
     /// Background work has no member/device/PAT identity; each transaction gets a request id.
     pub fn system() -> Self {
         Self {

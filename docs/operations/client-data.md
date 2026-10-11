@@ -75,8 +75,11 @@ predecessor above, `before_id` the visible successor below. One 422 `invalid-ref
 refetches the board and chooses a **new** key. The visible projection, never all cached occurrences, supplies bounds.
 
 Write follow-ups never wipe a projection (R59). An item write stores the response, then resnapshots (R59a; only the
-snapshot carries reminder identities, scheduled reminders and creation metadata); that snapshot is staged with its board
-and agenda like any other, and it queues behind any in-flight refresh, so it is always taken after the write. An
+snapshot carries reminder identities, scheduled reminders and creation metadata). Until it arrives, response conversion
+preserves available creation metadata and matching reminder rows provisionally, replaces explicit nulls and stores real
+offsets. The snapshot is staged with board and agenda like any other, and queues behind any in-flight refresh, so it is
+always taken after the write. Failed refresh leaves provisional identities/timestamps; use the acknowledged offsets and
+`refreshPending`, not those provisional fields. An
 occurrence write stores the response, then refetches the affected entities (parent item, its occurrences in the
 snapshot window) and both projections, replacing their rows in place in one transaction; a failed fetch leaves the
 previous rows and returns `refreshPending = true`.
@@ -86,8 +89,9 @@ A snapshot requested before a write can arrive after it. Two guards keep that ol
 - **Receipts.** Item GET/write and occurrence write responses, member PATCH and settings responses (including a settings GET), and item
   deletions, received after the snapshot was requested, are re-applied inside the snapshot's install transaction.
   - A response replaces a row **the snapshot holds** when its version is higher.
-  - A row the snapshot lacks is never re-added. The snapshot carries every undated occurrence of a visible item, so
-    such a row was deleted or reparented on the server.
+  - A row the snapshot lacks is never re-added. It includes every undated occurrence of a visible item as of its read;
+    absence of a previously existing undated row can reflect deletion/reparenting. Newly created rows and dated rows
+    outside the window can also be absent; absence is not a general deletion proof. Repair refetch handles them.
   - A deletion evicts the snapshot's older copy of the item, with its occurrences, projections and reminders.
   - This covers undated occurrences too; the C4 window extension also returns them. The older row is never published.
 - **Repair refetch.** Item refetches that ran meanwhile (write follow-ups, C4 tickles) are repeated once after the
@@ -130,11 +134,6 @@ filters/windows are not persisted; request them on entry, not inferred from surv
 Cleanup removes occurrence/agenda/reminder rows older than 180 days; spanning rows use their end; undated rows stay.
 Date-only occurrence and agenda rows expire at the end of the member-local day.
 
-Item writes lack creation metadata and reminder IDs. Response conversion preserves the available metadata and the
-matching reminder rows provisionally, replaces explicit nulls and stores the real offsets; production writes then
-resnapshot to reconcile authoritative identities (even for unchanged offsets). If that refetch fails, rely on the
-write's offsets and `refreshPending`, not on provisional reminder IDs or timestamps.
-
 Disk load and SQL transactions execute on `Dispatchers.Default`, not the composition thread; the desktop cache file is
 opened (directory, `PRAGMA user_version` check, possible recreate) on first use inside `initialize()`, never while
 composing. `initialize()` explicitly loads a persisted cache; production binding does it before collecting trust.
@@ -142,6 +141,20 @@ Desktop compares `PRAGMA user_version` with `PorchlightDb.Schema.version`; Andro
 same version. Either way a mismatch (upgrade or downgrade) recreates only the disposable cache, never
 preferences/credentials. A future SQL schema change must increment SQLDelight's schema version. Close serializes with
 cache transactions; post-close mutations cancel.
+
+Production cache factories recover physical SQLite corruption (CORRUPT/NOTADB) or invalid persisted JSON with at most
+one destructive recovery per cache instance: close handles, discard only `read-cache.db` and its WAL/SHM/journal,
+publish an unavailable view (`sync=null`), recreate, then force binding to resnapshot/reconnect even on a healthy stream. Settings, credentials, alarm codes and
+delivery inventories are never reset. I/O, full-disk, busy and permission errors do not authorize deletion. Binding
+and desktop alarm startup keep retrying initialization (1-second backoff, capped at 30 seconds) with a redacted storage
+notice instead of losing their collectors; Android workers return retry. A failed recreation does not loop deleting.
+
+Android disables backup and explicitly excludes every credential/device-protected domain from both cloud backup and
+device transfer, including legacy full-backup rules. Settings DataStore, encrypted trust/pending enrollment, alarm
+high-water and delivery metadata migrate into `noBackupFilesDir` before use. Private metadata is forced and atomically
+renamed and its containing directory forced before legacy preferences are cleared or a commit is acknowledged; settings relocation likewise keeps its legacy file until the replacement is durable. An interrupted cleanup retries the directory force before legacy removal. Android trust metadata opens only inside suspend key-store operations, so migration/decode failures reach the controller recovery screen rather than crashing construction. Damaged
+private metadata is never treated as disposable cache. A replacement device must re-enroll. JVM checks inspect the
+merged debug manifest and packaged XML exclusions; an OEM device-transfer run remains a controller check.
 
 `bindTrust` belongs to the application scope and is bound before `TrustGate` restores (composition order). Ready waits
 for C2a endpoint/renewal refresh then snapshots. `sessionEpoch` is the household **identity** epoch: it advances only
@@ -195,8 +208,10 @@ local-day overlap; other members and out-of-window rows remain. Per-resource ite
 individual responses never downgrade a stored version; keyed SQL lookups keep batch guards linear. Snapshots and
 fully paginated member collections authoritatively replace rows, including LOWER versions after server restore.
 Only higher-version receipts received after the request are re-applied, atomically, for resources still included.
-A member collection install does not consume member receipts: an older snapshot still in flight (e.g. C4's item
-tickle refreshes members mid-snapshot) re-applies them; only snapshot installs clear receipts.
+A member collection keeps receipts needed by an older in-flight snapshot (e.g. C4's item tickle refreshes
+members mid-snapshot), except pre-request receipts for rows authoritatively removed or replaced by LOWER versions.
+Those restored-history receipts are invalidated so a subsequent write cannot restamp an old version. Genuine
+post-request write guards remain; snapshot installs and identity `clear()` clear receipts.
 Cursor regression discards old-epoch receipts: `sync.refresh` captures the receipt mark and the cursor installed at
 that moment (`cache.snapshotMark()`) BEFORE requesting the snapshot, and only a snapshot whose cursor is below that
 request-time cursor counts as a restore/rollback. The live cursor is never the basis: C4's stream acks advance it while
@@ -211,7 +226,23 @@ events) stay ordinary refreshes. Missing resources evict.
 
 Item GET not-found/forbidden evicts parent, occurrences, projections and collaboration children; detail/editor
 locks when the parent disappears, including an already open editor; write outcomes and identical-request retry
-remain visible. A successful item GET/put clears prior denial receipts. A denial received during a snapshot fetch
+remain visible. `cache.inSession { fence -> … }` captures the durable visibility generation before network work.
+Every cache install API requires that explicit, unforgeable `ReadCache.Fence`; passing a different cache's or expired
+request's token fails at the common transaction gate. Snapshot installation remains a single fenced commit.
+Archived/omitted list entries advance per-entry fences across their stored scopes; nested delayed list/snapshot
+replies cannot reinstall them. `RetainedCacheValue` gates list search results, open list-entry editors and planning
+candidate cards against the current cache view on every render. Item editor generations and comment bodies use the
+same gate; a redacted comment also closes its editor even if its placeholder remains cached. Planning unplaced
+results keep their request-start visibility generation, and board drags retain only an occurrence ID resolved from
+the current projection at drop. Write feedback retains outcome/identical-retry metadata after eviction, but clears
+current/comparison values, saved representations and derived warning text. Clear/recovery also invalidate retained
+copies. A successful item save retires only its submitted edit generation; newer typing remains visibly unsaved,
+rebased on the committed version (also when the reply arrives off-screen or finishes a creation).
+Every item,
+list/entry/scope, comment/attachment, notification/suggestion and board/agenda commit checks its own and parent eviction generations atomically;
+a late pre-eviction reply throws `StaleVisibilityReply` instead of restoring private content or clearing tombstones.
+A successful read begun after eviction may re-establish access; its generation remains recorded so still-older reads
+stay fenced, even after that restoration. Deleted representations, snapshot child omissions and covered-window removals also advance fences; capacity/expiry trimming does not. History is capped at 256 rows, with a monotonic in-process rejection floor protecting requests older than pruned history (a conservative stale reply can require a fresh request). Only current evicted IDs are published; the counter is seeded once on open, not scanned on each request. List redaction uses this same fence regardless of cleanup capabilities. Search never restores access: list hits are fenced at receipt and the screen discards retained results when the visibility revision changes, including when a redacted descriptor later leaves the cache. Snapshot installation filters post-request evictions too. A denial received during a snapshot fetch
 is reapplied atomically so that older snapshot cannot restore revoked content. Connection/server errors and
 step-up-required and 401 are not visibility revocations and retain offline cache. Search hits do not authorize access.
 Committed eviction file cleanup completes even if its caller is cancelled; removal failures are suppressed on the
@@ -220,3 +251,9 @@ only after trying remaining IDs. Windowed occurrence fetches capture a receipt m
 delete occurrence versions installed by a response or snapshot after that request. Direct unmarked batches
 conservatively preserve own-write receipts. Fixed tzid-less todos keep override locals unresolved (no invented UTC
 instants), including editor seeds. D03's date overlap lower bound is starts_at → due_at → local day start.
+
+Occurrence eviction deletes Board by its occurrence primary key and Agenda/Reminder through indexed occurrence
+columns; only normal immutable-view publication decodes unrelated projections. Schema version 8 (including durable comment coverage/window metadata) recreates the
+disposable cache on both platforms. Identity-binding file cleanup errors report `attachment-cleanup-failed` and
+retry at one-second intervals before admitting new-session reads. Explicit trust cleanup still propagates failure
+so the durable logout marker remains available for restart recovery.

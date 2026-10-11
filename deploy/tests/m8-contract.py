@@ -24,7 +24,7 @@ for path in (ROOT / 'docs/operations').glob('*.md'):
     assert not re.search(r'\bdeploy/install\.sh[\s`]+restore\b', doc), f'template restore command in {path.name}'
 for name in ['passive-pull.md', 'backup-restore.md']:
     doc = (ROOT / 'docs/operations' / name).read_text()
-    assert 'bash dist/VERSION/install.sh restore "$staged"' in doc
+    assert 'bash dist/RECOVERY_VERSION/install.sh restore "$staged"' in doc
     assert '--root "$PWD/var/restore-target"' in doc
     assert 'target root must be under the repository' in doc
 assert text.index('uninstall app.porchlight') < text.index('install -r')

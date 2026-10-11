@@ -31,7 +31,75 @@ pub async fn create(
     hash: &[u8; 32],
     expires_at: DateTime<Utc>,
 ) -> sqlx::Result<Uuid> {
-    sqlx::query_scalar!("INSERT INTO porchlight.api_tokens(household_id,owner_member_id,name,scopes,token_hash,expires_at) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",owner.household_id,owner.member_id,name,scopes,hash.as_slice(),expires_at).fetch_one(&mut **tx).await
+    create_with_id(tx, Uuid::now_v7(), owner, name, scopes, hash, expires_at).await
+}
+/// Shared insert for normal issuance and local recovery, which attributes the new token's id.
+pub async fn create_with_id(
+    tx: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+    owner: &PatIdentity,
+    name: &str,
+    scopes: &[String],
+    hash: &[u8; 32],
+    expires_at: DateTime<Utc>,
+) -> sqlx::Result<Uuid> {
+    sqlx::query_scalar!("INSERT INTO porchlight.api_tokens(id,household_id,owner_member_id,name,scopes,token_hash,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id",id,owner.household_id,owner.member_id,name,scopes,hash.as_slice(),expires_at).fetch_one(&mut **tx).await
+}
+
+pub struct RecoveryOwner {
+    pub household_id: Uuid,
+    pub member_id: Uuid,
+    pub user_id: Uuid,
+    pub username: String,
+}
+/// The installation and household must be live; member/user authority is held through issuance.
+pub async fn recovery_owner(
+    tx: &mut Transaction<'_, Postgres>,
+    member: Option<Uuid>,
+    username: &str,
+) -> sqlx::Result<Option<RecoveryOwner>> {
+    sqlx::query_as!(
+        RecoveryOwner,
+        "SELECT m.household_id,m.id AS member_id,u.id AS user_id,u.username
+         FROM porchlight.install_state i JOIN porchlight.households h ON h.id=i.household_id
+         JOIN porchlight.household_members m ON m.household_id=h.id
+         JOIN porchlight.users u ON u.id=m.user_id
+         WHERE (m.id=$1 OR ($1 IS NULL AND u.username=$2)) AND m.role='super_admin'
+           AND h.deleted_at IS NULL AND m.deleted_at IS NULL AND u.deleted_at IS NULL
+         FOR SHARE OF m,u",
+        member,
+        username
+    )
+    .fetch_optional(&mut **tx)
+    .await
+}
+pub struct TokenSummary {
+    pub id: Uuid,
+    pub owner_member_id: Uuid,
+    pub name: String,
+    pub scopes: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+pub async fn list<'e>(
+    ex: impl Executor<'e, Database = Postgres>,
+    household: Uuid,
+) -> sqlx::Result<Vec<TokenSummary>> {
+    sqlx::query_as!(TokenSummary,"SELECT id,owner_member_id,name,scopes,created_at,expires_at,last_used_at,revoked_at FROM porchlight.api_tokens WHERE household_id=$1 ORDER BY created_at DESC,id DESC",household).fetch_all(ex).await
+}
+pub async fn newest_admin_expiry<'e>(
+    ex: impl Executor<'e, Database = Postgres>,
+) -> sqlx::Result<Option<DateTime<Utc>>> {
+    sqlx::query_scalar!("SELECT t.expires_at FROM porchlight.api_tokens t
+        JOIN porchlight.install_state i ON i.household_id=t.household_id
+        JOIN porchlight.households h ON h.id=i.household_id
+        JOIN porchlight.household_members m ON m.id=t.owner_member_id
+        JOIN porchlight.users u ON u.id=m.user_id
+        WHERE t.revoked_at IS NULL AND t.expires_at>now() AND 'admin'=ANY(t.scopes)
+          AND m.role='super_admin' AND m.deleted_at IS NULL AND u.deleted_at IS NULL AND h.deleted_at IS NULL
+        ORDER BY t.created_at DESC,t.id DESC LIMIT 1").fetch_optional(ex).await
 }
 /// Reserve both PATs before claiming either caller's authority. The ordered
 /// wait lets a revoker join the lock queue ahead of later requests on a busy PAT,

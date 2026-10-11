@@ -5,25 +5,37 @@ umask 077
 root=$(cd "$(dirname "$0")/../.." && pwd -P)
 cd "$root"
 [[ $root != */var/wt/* ]] || { printf 'FAIL run update gate build from the main tree\n'; exit 2; }
-. scripts/env.sh
 export PYTHONDONTWRITEBYTECODE=1 PORCHLIGHT_RELEASE_REPO=example-owner/porchlight
-keep=0 android_only=0
+keep=0 android_only=0 discard=0
 for arg in "$@"; do
-  case $arg in --keep) keep=1 ;; --android-only) android_only=1 ;; *) printf 'usage: update-gate-build.sh [--keep] [--android-only]\n'; exit 2 ;; esac
+  case $arg in --keep) keep=1 ;; --android-only) android_only=1 ;; --discard) discard=1 ;; *) printf 'usage: update-gate-build.sh [--keep] [--android-only] | --discard\n'; exit 2 ;; esac
 done
+(( ! discard || (! keep && ! android_only) )) || { printf 'FAIL --discard cannot be combined with build options\n'; exit 2; }
 fail() { printf 'FAIL %s\n' "$1"; exit 1; }
 state=$root/var/update-gate
 [[ ! -L $state ]] || fail 'update gate state must not be a symlink'
 mkdir -m 700 -p "$state"; chmod 700 "$state"
 exec 9> "$state/.lock"
 flock -n 9 || fail 'another update gate is running'
+if ((discard)); then
+  # Acceptance shares this lock. Also refuse survivors of an interrupted/kept acceptance.
+  projects=$(docker ps -a --filter label=com.docker.compose.project --format '{{.Label "com.docker.compose.project"}}') || fail 'cannot check update gate containers'
+  while IFS= read -r project; do
+    [[ $project != porchlight-update-gate-* ]] || fail 'tear down retained update gate containers before discard'
+  done <<< "$projects"
+  # Only owned payloads; keep run/build logs, credentials needing diagnosis, and the lock inode.
+  rm -rf -- "$state/dists" "$state/android" "$state/build.json"
+  printf 'PASS discarded update gate artifacts (diagnostics retained)\n'
+  exit 0
+fi
+. scripts/env.sh
 copy=$root/var/wt/updgate-build
 [[ ! -e $copy && ! -L $copy && ! -e $root/var/wt/.base/updgate-build ]] || fail 'inspect or drop the existing updgate-build copy first'
 if ((android_only)); then
   # Rebuild only the 9.9.8 debug app/test APKs against the existing scratch releases (same debug signer).
   [[ -d $state/dists && -f $state/build.json ]] || fail 'android-only rebuild needs a complete earlier update gate build'
 else
-  [[ ! -e $state/dists && ! -e $state/android && ! -e $state/build.json ]] || fail 'inspect and remove previous update gate artifacts before rebuilding'
+  [[ ! -e $state/dists && ! -e $state/android && ! -e $state/build.json ]] || fail 'inspect previous artifacts, then use --discard before rebuilding'
 fi
 [[ -s $HOME/.android/debug.keystore ]] || fail 'Android debug keystore required under the controller HOME'
 work=$(mktemp -d "$state/build-$(date -u +%Y%m%dT%H%M%SZ).XXXXXXXX")

@@ -42,7 +42,7 @@ pub struct CreateToken {
 fn default_days() -> u32 {
     365
 }
-fn valid_label(label: &str) -> bool {
+pub(crate) fn valid_label(label: &str) -> bool {
     (1..=60).contains(&label.trim().chars().count()) && label.chars().count() <= 60
 }
 async fn start<T>(
@@ -348,8 +348,9 @@ pub async fn create_token(
         }
         let token = Token::generate(TokenKind::Pat);
         let expires_at = expires_at.expect("validated lifetime");
-        let id = tokens::create(
+        let id = tokens::create_with_id(
             &mut tx.tx,
+            Uuid::now_v7(),
             &p.0,
             &m.body.name,
             &m.body.scopes,
@@ -403,9 +404,69 @@ pub async fn revoke_token(
     .await
 }
 
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct ListedToken {
+    pub id: Uuid,
+    pub owner_member_id: Uuid,
+    pub name: String,
+    pub scopes: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct TokenList {
+    pub tokens: Vec<ListedToken>,
+    pub admin_token_health: crate::admin_recovery::AdminTokenHealth,
+}
+#[utoipa::path(get, path="/v1/admin/tokens", security(("pat"=[])),
+    responses((status=200,description="Token metadata (never credentials) and newest live admin PAT expiry health",body=TokenList),crate::openapi::ForbiddenProblem,crate::openapi::UniversalProblems))]
+pub async fn list_tokens(
+    State(state): State<AppState>,
+    AdminAuth(p): AdminAuth,
+) -> Result<Json<TokenList>, ApiError> {
+    let tokens = tokens::list(&state.pool, p.0.household_id)
+        .await?
+        .into_iter()
+        .map(|t| ListedToken {
+            id: t.id,
+            owner_member_id: t.owner_member_id,
+            name: t.name,
+            scopes: t.scopes,
+            created_at: t.created_at,
+            expires_at: t.expires_at,
+            last_used_at: t.last_used_at,
+            revoked_at: t.revoked_at,
+        })
+        .collect();
+    Ok(Json(TokenList {
+        tokens,
+        admin_token_health: crate::admin_recovery::health(&state.pool).await?,
+    }))
+}
+fn token_list_policy(c: &crate::permissions::PolicyContext) -> u16 {
+    match c.pat_scope {
+        Some(crate::permissions::PatScope::Admin) => 200,
+        Some(_) => 403,
+        None => 404,
+    }
+}
+pub const ENDPOINTS: &[crate::permissions::Endpoint] = &[crate::permissions::Endpoint {
+    method: "GET",
+    path: "/v1/admin/tokens",
+    handler: "list_tokens",
+    policy: crate::permissions::Policy::Custom {
+        label: "Admin PAT metadata and expiry health",
+        expected: token_list_policy,
+    },
+    case: "",
+}];
+
 #[derive(utoipa::OpenApi)]
 #[openapi(paths(
     whoami,
+    list_tokens,
     enrollment_tokens,
     password_reset,
     list_devices,

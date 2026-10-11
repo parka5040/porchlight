@@ -83,9 +83,13 @@ async fn internal_errors_are_classified_and_redacted(pool: sqlx::PgPool) {
 }
 
 #[test]
-#[should_panic(expected = "only conflict may be transient")]
-fn transient_rejects_non_conflict_problems() {
-    let _ = ApiError::transient(Problem::Forbidden);
+fn transient_constructor_only_creates_conflicts() {
+    let error = ApiError::transient_conflict();
+    assert!(error.is_transient());
+    assert_eq!(
+        error.into_response().status(),
+        axum::http::StatusCode::CONFLICT
+    );
 }
 
 #[sqlx::test(migrations = "../db/migrations")]

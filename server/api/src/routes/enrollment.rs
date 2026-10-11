@@ -61,7 +61,17 @@ pub async fn complete(
     )
     .await?;
     crate::mutation::execute(&state, begin, |mut tx| async {
-        let token = enrollment::lock(&mut tx.tx, token.id).await?;
+        let token = enrollment::lock(&mut tx.tx, token.id)
+            .await
+            .map_err(|error| {
+                // Retention may delete an expired token after the initial lookup.
+                // Treat it like a missing token and roll back the unsealed claim.
+                if matches!(error, sqlx::Error::RowNotFound) {
+                    ApiError::new(crate::error::Problem::EnrollmentTokenInvalid)
+                } else {
+                    ApiError::from(error)
+                }
+            })?;
         let error = if token.used_at.is_some() {
             Some(crate::error::Problem::EnrollmentTokenUsed)
         } else if token.expires_at <= Utc::now() {

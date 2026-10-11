@@ -201,7 +201,7 @@ pub(super) async fn edit_occurrence(
     };
     // A plan-time disappearance after bound validation is a retryable race.
     let board_plan_error = |e| match e {
-        derive::Error::NotFound if board => ApiError::transient(Problem::Conflict).retry(1),
+        derive::Error::NotFound if board => ApiError::transient_conflict().retry(1),
         other => domain_error(other),
     };
     let mut scope = WriteScope::begin_at(tx, c.household_id(), request, now)
@@ -214,7 +214,7 @@ pub(super) async fn edit_occurrence(
     }
     if authoritative && scope.item(parent.id).await.map_err(domain_error)?.version != parent.version
     {
-        return Err(ApiError::transient(Problem::Conflict).retry(1));
+        return Err(ApiError::transient_conflict().retry(1));
     }
     let mut version = locked.version;
     if let Some(s) = status {
@@ -236,8 +236,9 @@ pub(super) async fn edit_occurrence(
             .move_on_board(id, version, predecessor, successor)
             .await
             .map_err(|e| match e {
-                // R42: S3's NotFound here means the mover is absent in its new
-                // column, not lock contention or a stale neighbour.
+                // R42: missing mover/new-column membership, including disappearance
+                // after an unchanged-status precheck, is deliberately a sealed
+                // body-reference 422. Contention/stale neighbours remain distinct.
                 derive::Error::NotFound => reference_error("board_move", "invalid-reference"),
                 other => domain_error(other),
             })?;

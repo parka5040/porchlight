@@ -21,7 +21,8 @@ with tempfile.TemporaryDirectory(prefix='fbc-ops-', dir=ROOT / 'var') as fixture
         result = subprocess.run(['bash', '-c', harness, 'fixture', str(base), *args], capture_output=True, text=True)
         assert result.returncode == 2 and 'SELECTED' not in result.stdout, (args, result.returncode, result.stdout)
         assert 'explicit bundle path is empty' in result.stdout
-    result = subprocess.run(['bash', '-c', harness, 'fixture', str(base)], capture_output=True, text=True)
+    installer = base / 'install.sh'; installer.write_text('# trusted fixture\n')
+    result = subprocess.run(['bash', '-c', harness, 'fixture', str(base), '--installer', str(installer)], capture_output=True, text=True)
     assert result.returncode == 0 and result.stdout == 'SELECTED\n', result.stdout
     missing = subprocess.run(['bash', '-c', harness, 'fixture', str(base), str(base / 'missing')], capture_output=True, text=True)
     assert missing.returncode == 1 and 'SELECTED' not in missing.stdout

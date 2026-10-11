@@ -10,11 +10,12 @@ import kotlin.time.Duration.Companion.hours
 data class CalendarWindow(val dates: List<LocalDate>, val from: Instant, val to: Instant)
 data class CalendarEntry(val item: ItemRead, val startLabel: String, val endLabel: String,
     val startMinute: Double = 0.0, val durationMinutes: Double = 0.0, val column: Int = 0, val columns: Int = 1,
-    val displayDurationMinutes: Double = durationMinutes)
+    val displayDurationMinutes: Double = durationMinutes,
+    val memberIds: Set<String> = setOfNotNull(item.agenda?.memberId))
 /** Pixel-free drawing metrics shared by overlap layout and Compose; 52dp leaves a 48dp padded target. */
 data class CalendarGridScale(val fontScale: Float = 1f) {
     val hourHeightDp: Float get() = 160f * fontScale.coerceAtLeast(1f)
-    val minimumDurationMinutes: Double get() = 52.0 * 60.0 / hourHeightDp
+    val minimumDurationMinutes: Double get() = 52.0 * fontScale.coerceAtLeast(1f) * 60.0 / hourHeightDp
 }
 data class CalendarTick(val minute: Double, val label: String)
 data class CalendarDay(val date: LocalDate, val hours: Long, val allDay: List<CalendarEntry>, val timed: List<CalendarEntry>,
@@ -81,7 +82,7 @@ fun calendarConflictLabel(conflict: ConflictRead, zone: TimeZone): String =
 fun calendarEntryLabels(entry: CalendarEntry, zone: TimeZone, allDay: Boolean = false): List<String> = buildList {
     add("${if (entry.item.timeMode == "floating") "Floating" else "Fixed"} · ${if (allDay) "All day" else entry.startLabel + if (entry.endLabel.isNotEmpty()) "–${entry.endLabel}" else ""}")
     if (entry.item.pendingDerivation) add("Pending derivation")
-    entry.item.conflicts.orEmpty().filter { it.memberId == entry.item.agenda?.memberId }.forEach { add(calendarConflictLabel(it, zone)) }
+    entry.item.conflicts.orEmpty().filter { it.memberId in entry.memberIds }.map { calendarConflictLabel(it, zone) }.distinct().forEach { add(it) }
 }
 
 /** Only resolved server agenda instants are positioned, including overlays. No local floating resolution. */
@@ -89,14 +90,21 @@ fun calendarDays(window: CalendarWindow, rows: List<ItemRead>, memberId: String?
     calendarGrid(window, rows, setOfNotNull(memberId), zone).days
 fun calendarGrid(window: CalendarWindow, rows: List<ItemRead>, memberIds: Set<String>, zone: TimeZone,
     scale: CalendarGridScale = CalendarGridScale()): CalendarGrid {
-    val visible = rows.filter { it.deletedAt == null && it.agenda != null && it.agenda.memberId in memberIds }
+    val overlays = rows.filter { it.deletedAt == null && it.agenda != null && it.agenda.memberId in memberIds }
         .distinctBy { it.agenda!!.memberId to it.agenda.occurrenceId }
+        // Floating occurrences can resolve differently per member; only coincident slots share a card.
+        .groupBy { it.agenda!!.let { a -> listOf(a.occurrenceId, a.startsAt, a.endsAt, a.dueAt, a.dueDate) } }
+        .values.map { shared ->
+            shared.first().copy(conflicts = shared.flatMap { it.conflicts.orEmpty() }.distinct()) to
+                shared.map { it.agenda!!.memberId }.toSet()
+        }
+    val visible = overlays.map { it.first }
     val days = window.dates.map { date ->
         val start = date.atStartOfDayIn(zone)
         val end = date.plus(DatePeriod(days = 1)).atStartOfDayIn(zone)
         val allDay = mutableListOf<CalendarEntry>()
         val timed = mutableListOf<CalendarEntry>()
-        visible.forEach { item ->
+        overlays.forEach { (item, sharedMembers) ->
             val agenda = item.agenda!!
             val from = agenda.startsAt ?: agenda.dueAt
             val until = agenda.endsAt
@@ -111,9 +119,15 @@ fun calendarGrid(window: CalendarWindow, rows: List<ItemRead>, memberIds: Set<St
                 val clippedEnd = minOf(until?.takeIf { it > clippedStart } ?: (clippedStart + 1.hours), end)
                 val entry = CalendarEntry(item, from?.let { clippedStart.clockLabel(zone) } ?: "All day",
                     until?.let { if (it >= end) "24:00" else it.clockLabel(zone) } ?: "",
-                    (clippedStart - start).inWholeMilliseconds / 60000.0, (clippedEnd - clippedStart).inWholeMilliseconds / 60000.0)
+                    (clippedStart - start).inWholeMilliseconds / 60000.0, (clippedEnd - clippedStart).inWholeMilliseconds / 60000.0,
+                    memberIds = sharedMembers)
                 if (item.allDay || agenda.dueDate != null && from == null) allDay += entry
-                else timed += entry.copy(displayDurationMinutes = maxOf(entry.durationMinutes, scale.minimumDurationMinutes))
+                else {
+                    val drawnMinutes = maxOf(entry.durationMinutes, scale.minimumDurationMinutes)
+                    // Keep the minimum touch target inside the day; the label retains its actual server time.
+                    timed += entry.copy(startMinute = minOf(entry.startMinute, (end - start).inWholeMinutes - drawnMinutes),
+                        displayDurationMinutes = drawnMinutes)
+                }
             }
         }
         val hours = (end - start).inWholeHours

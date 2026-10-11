@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """C5 offline contract boundary checks; Kotlin suites test repository/UI behaviour."""
 import json
+import re
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
@@ -18,9 +19,11 @@ for name in ("list", "list-attached-persistent", "list-occurrence-template", "li
     if row["mode"] == "per_occurrence":
         assert not row["got_it"], "Per-occurrence checks stay in entries"
 sql = (root / "client/shared/src/commonMain/sqldelight/app/porchlight/shared/db/Cache.sq").read_text()
+promotions = re.search(r"\bpromoteEntities\s*\{([^}]*)\}", sql, re.S)
+assert promotions, "Snapshot metadata must be promoted in one SQLDelight transaction group"
 for name in ("List", "Entry", "Comment", "Attachment"):
     assert f"CREATE TABLE Cache{name}" in sql
-    assert f"promote{name}s:" in sql
+    assert re.search(rf"INSERT INTO Cache{name}\s+SELECT\b[^;]*\bFROM Staging WHERE kind = '{name}';", promotions[1]), name
 assert " BLOB" not in sql.upper(), "Byte payloads must not enter the metadata database"
 a = "{http://schemas.android.com/apk/res/android}"
 manifest = ET.parse(root / "client/androidApp/src/main/AndroidManifest.xml").getroot()

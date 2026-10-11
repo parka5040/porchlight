@@ -13,7 +13,7 @@ class AttemptReadabilityTest {
         assertTrue(isDefinitivelyUnreadableAttempt(LocalTrustUnavailable()))
         assertTrue(isDefinitivelyUnreadableAttempt(AEADBadTagException("tag")))
         assertTrue(isDefinitivelyUnreadableAttempt(SerializationException("malformed")))
-        assertTrue(isDefinitivelyUnreadableAttempt(IllegalStateException("foreign alias")))
+        assertFalse(isDefinitivelyUnreadableAttempt(IllegalStateException("provider unavailable")))
     }
     @Test fun transientKeystoreErrorsKeepStoredAttempt() {
         assertFalse(isDefinitivelyUnreadableAttempt(KeyStoreException("keystore busy")))

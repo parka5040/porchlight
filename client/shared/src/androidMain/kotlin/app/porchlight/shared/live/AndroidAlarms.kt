@@ -8,15 +8,16 @@ import app.porchlight.shared.data.*
 import app.porchlight.shared.transport.WireJson
 import kotlinx.serialization.encodeToString
 import app.porchlight.shared.settings.AndroidAppServices
+import app.porchlight.shared.settings.PrivateStorageEntry
+import app.porchlight.shared.settings.privateStorageBoundary
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.sync.withLock
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.minutes
 
 /** Ledger is not the disposable cache: Android stores it privately and commits before touching AlarmManager. */
 class AndroidAlarms(private val context: Context, private val now: () -> kotlin.time.Instant = { Clock.System.now() }) {
-    private val prefs = context.getSharedPreferences("alarm-ledger", Context.MODE_PRIVATE)
+    private val prefs = app.porchlight.shared.settings.privateMetadata(context, "alarm-ledger")
     private val manager = context.getSystemService(AlarmManager::class.java)
     private fun load(): AlarmLedger {
         val legacy = prefs.getString("table", null)
@@ -50,13 +51,20 @@ class AndroidAlarms(private val context: Context, private val now: () -> kotlin.
         }
         manager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pending)
     }
-    fun reconcile(view: CacheView) = synchronized(lock) {
+    fun reconcile(view: CacheView, current: () -> Boolean = { true }) = synchronized(lock) {
+        if (!current() || !drainWithdrawals()) return@synchronized
+        if (view.sync == null) return@synchronized // unavailable/rebuilding, not an authoritative empty household
         val ledger = load(); val old = ledger.all().filter { it.active }
         reconcileAndroidAlarms(ledger, view, now()); prune(ledger); save(ledger)
-        old.filter { ticket -> ledger.active().none { it.code == ticket.code && it.generation == ticket.generation } }.forEach { manager.cancel(intent(it)) }
-        ledger.active().filter { ticket -> old.none { it == ticket } }.forEach(::schedule)
+        old.filter { ticket -> ledger.active().none { it.code == ticket.code && it.generation == ticket.generation } }.forEach { if (!current()) return@synchronized; manager.cancel(intent(it)) }
+        // Parent-only split updates retain the existing PendingIntent and its delivery deadline.
+        ledger.active().filter { ticket -> old.none { it.code == ticket.code && it.generation == ticket.generation } }.forEach { if (!current()) return@synchronized; schedule(it) }
     }
-    fun reschedule() = synchronized(lock) { val ledger = load(); prune(ledger); save(ledger); ledger.active().forEach(::schedule) }
+    fun reschedule(current: () -> Boolean = { true }) = synchronized(lock) {
+        if (!current() || !drainWithdrawals()) return@synchronized
+        val ledger = load(); prune(ledger); save(ledger)
+        ledger.active().forEach { if (!current()) return@synchronized; schedule(it) }
+    }
     fun pending(code: Int, generation: Long): AlarmTicket? = synchronized(lock) {
         load().let { ledger -> ledger.ticket(code)?.takeIf { ledger.canFire(code, generation) } }
     }
@@ -65,7 +73,24 @@ class AndroidAlarms(private val context: Context, private val now: () -> kotlin.
         if (!ledger.canFire(code, generation)) return@synchronized null
         ledger.ticket(code).also { ledger.fired(code, generation); save(ledger) }
     }
-    fun clear() = synchronized(lock) { val ledger = load(); ledger.all().forEach { manager.cancel(intent(it)); ledger.cancel(it.key) }; save(ledger) }
+    fun clear() = synchronized(lock) {
+        val ledger = load()
+        val pending = (pendingWithdrawals() + ledger.all()).distinctBy { it.code to it.generation }
+        check(prefs.edit().putString("withdrawals", WireJson.encodeToString(pending)).commit())
+        ledger.retire(); save(ledger)
+        drainWithdrawals()
+        Unit
+    }
+    private fun pendingWithdrawals(): List<AlarmTicket> = prefs.getString("withdrawals", null)?.let { WireJson.decodeFromString(it) } ?: emptyList()
+    private fun drainWithdrawals(): Boolean {
+        val pending = pendingWithdrawals().toMutableList()
+        for (ticket in pending.toList()) {
+            try { manager.cancel(intent(ticket)) } catch (_: Exception) { return false }
+            pending.remove(ticket)
+            check(prefs.edit().putString("withdrawals", WireJson.encodeToString(pending)).commit())
+        }
+        return true
+    }
     /** Controller fixtures may restore preference files in-process; normal runtime never needs to re-decode them. */
     fun reloadFromDisk() = synchronized(lock) { ledgers.remove(context.filesDir.absolutePath); legacyValues.remove(context.filesDir.absolutePath) }
     fun tickets(): List<AlarmTicket> = synchronized(lock) { load().all() }
@@ -113,26 +138,24 @@ class ReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val pending = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
-            try {
+            try { privateStorageBoundary(context).attempt(PrivateStorageEntry.Receiver) {
                 val code = intent.getIntExtra("code", -1)
-                val ticket = AndroidAlarms(context).pending(code, intent.getLongExtra("generation", -1)) ?: return@launch
+                val generation = intent.getLongExtra("generation", -1)
                 val services = AndroidAppServices.get(context)
                 services.data.cache.initialize() // disk only: due delivery never needs a network request or PIN
                 services.trust.controller.ensureRestored()
                 services.trust.controller.state.first { it != app.porchlight.shared.trust.TrustState.Loading }
-                notificationActionOwner(context, services.trust.controller)?.let { owner ->
-                    check(context.getSharedPreferences("os-delivery", Context.MODE_PRIVATE).edit().putString("owner", owner).commit())
+                services.liveRuntime.withCurrent { view ->
+                    val ticket = AndroidAlarms(context).pending(code, generation) ?: return@withCurrent
+                    if (view.items.none { it.id == ticket.itemId } || view.occurrences.none { it.id == ticket.occurrenceId && it.status.isOpenForReminders() }) return@withCurrent
+                    notificationActionOwner(context, services.trust.controller)
+                    createNotificationChannels(context)
+                    AndroidDelivery(context).recordAlarm(ticket) // denied delivery is durable and recoverable
+                    AndroidAlarms(context).fire(code, ticket.generation)
+                    services.data.firedOccurrences.value = firedOccurrences(AndroidAlarms(context).tickets())
+                    AndroidDelivery(context).reconcile(view, services.liveRuntime::current)
                 }
-                services.trust.controller.sessionCommitMutex.withLock {
-                val view = services.data.cache.view.value
-                if (view.items.none { it.id == ticket.itemId } || view.occurrences.none { it.id == ticket.occurrenceId && it.status in setOf("todo", "doing") }) return@withLock
-                createNotificationChannels(context)
-                AndroidDelivery(context).recordAlarm(ticket) // denied delivery is durable and recoverable
-                AndroidAlarms(context).fire(code, ticket.generation)
-                services.data.firedOccurrences.value = firedOccurrences(AndroidAlarms(context).tickets())
-                AndroidDelivery(context).reconcile(view)
-                }
-            } finally { pending.finish() }
+            }.onFailure { runCatching { enqueueSafetyNet(context) } } } finally { pending?.finish() }
         }
     }
 }
@@ -140,7 +163,10 @@ class AlarmRescheduleReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val pending = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
-            runAlarmReschedule(pending) { rescheduleAfterBroadcast(context, intent) }
+            runAlarmReschedule(pending) {
+                privateStorageBoundary(context).attempt(PrivateStorageEntry.Receiver) { rescheduleAfterBroadcast(context, intent) }
+                    .onFailure { runCatching { enqueueSafetyNet(context) } }
+            }
         }
     }
 }
@@ -156,11 +182,9 @@ suspend fun rescheduleAfterBroadcast(context: Context, intent: Intent) {
         val services = AndroidAppServices.get(context)
         if (services.settings.settings.first().stayConnected) updateForegroundConnection(context, true)
     }
-    AndroidAlarms(context).reschedule() // disk/commit/AlarmManager off receiver main thread
-    if (intent.action == AlarmManager.ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED) {
-        val services = AndroidAppServices.get(context)
-        services.data.cache.initialize(); recoverLivePermissions(context, services)
-    }
+    val services = AndroidAppServices.get(context)
+    services.data.cache.initialize()
+    recoverLivePermissions(context, services) // advance the window on boot/time/zone changes as well as permission changes
 }
 
 /** The cache collector can reconcile before a cold-process ReminderReceiver marks its ticket fired. */

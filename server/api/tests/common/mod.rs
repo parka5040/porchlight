@@ -1,4 +1,8 @@
 #![allow(dead_code)] // Integration test binaries use different subsets of these shared helpers.
+pub mod schema;
+pub mod statements;
+pub mod warnings;
+
 use axum::http::Request;
 use http_body_util::Full;
 use hyper::body::Bytes;

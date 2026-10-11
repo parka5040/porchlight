@@ -402,13 +402,15 @@ Capability arrays use the stable API order. The HTTP endpoint dimension is added
 
 <!-- HTTP endpoint matrix -->
 
+All mutation transports (LAN, Funnel, enrollment and agent socket) return `maintenance` (503, `Retry-After: 1`) before authentication/idempotency while the installer write fence exists. Reads and readiness are unaffected.
+
 ## HTTP endpoint dimension
 
 Generated from `porchlight_api::permissions`; regenerate both dimensions with `CARGO_NET_OFFLINE=true cargo run --manifest-path server/Cargo.toml -p porchlight-api --example endpoint-matrix`.
 
-Domain rows use live session+mTLS OR a PAT on the agent socket. `/v1/admin/…` rows are agent-only (app callers receive 404); `/v1/feeds…` rows are app-only with separate `/v1/admin/feeds…` counterparts. `/v1/stream` is session+mTLS only (agent rows are 404); SSE results mean allowed tickle or filtered frame, not HTTP statuses. PAT scopes form the hierarchy **admin ⊇ write ⊇ read**: every live token can read; mutations require write or admin; admin-only endpoints require admin. Endpoint-owned pluggable policies describe item, member self-only, list, settings and admin rules. UD records whether an item is unassigned and about a dependent; take requires UD=true even for agents. Additional cases cover request-specific permission branches. App creation sets caller as owner; agents may choose any live household owner. PATCH details/overrides require edit, owner transfer additionally reassign, visibility/viewers change_visibility; status/board/reopen change_status; complete complete. Versioned mutations require If-Match and may return 204 when access is removed. Collection reads omit invisible items. Conflict masking nulls both counterpart ids and replaces its title with Busy. Idempotency binds method, path/query and body, not If-Match; rotate the key after version-conflict.
+Domain rows use live session+mTLS OR a PAT on the agent socket. `/v1/admin/…` rows are agent-only (app callers receive 404); `/v1/feeds…` rows are app-only with separate `/v1/admin/feeds…` counterparts. `/v1/stream` is session+mTLS only (agent rows are 404); SSE results mean allowed tickle or filtered frame, not HTTP statuses. PAT scopes form the hierarchy **admin ⊇ write ⊇ read**: every live token can read; mutations require write or admin; admin-only endpoints require admin. Endpoint-owned pluggable policies describe item, member self-only, list, settings and admin rules. Custom callbacks must explicitly enforce admin PAT scope when required; the generic HTTP-method precheck enforces read/write only. UD records whether an item is unassigned and about a dependent; take requires UD=true even for agents. Additional cases cover request-specific permission branches. App creation sets caller as owner; agents may choose any live household owner. PATCH details/overrides require edit, owner transfer additionally reassign, visibility/viewers change_visibility; status/board/reopen change_status; complete complete. Versioned mutations require If-Match and may return 204 when access is removed. Collection reads omit invisible items. Conflict masking nulls both counterpart ids and replaces its title with Busy. Idempotency binds method, path/query and body, not If-Match; rotate the key after version-conflict.
 
-Non-item rows cross caller kind and PAT scope with **self / other** target members independently of item ACLs. For `/v1/me/settings` the route always resolves the caller's settings; other-target rows demonstrate that an unrelated member context cannot retarget it. Read PATs cannot mutate; write/admin PATs may patch their owner's member, but cannot request `make_zone_authority:true` (no device). Item rows retain their item ACL dimension and use write-scoped PATs; custom item policies additionally cross independent self/other target members and all PAT scopes. Collaboration rows likewise cross the full item ACL dimension with all PAT scopes and independent resource self/other (author or uploader), not item ownership. The comment-attachment delete case uses comment authorship/moderation rather than the item-editor rule. Notification SSE rows likewise retain the full item relationship/visibility dimension while independently crossing recipient self/other and all PAT scopes; item ACL never grants another member’s notification. List rows retain private/household/selected and owner/viewer/inherited item relationships, independently crossed with self/other and all three PAT scopes; self never changes list ACLs.
+Non-item rows cross caller kind and PAT scope with **self / other** target members independently of item ACLs. For `/v1/me/settings` the route always resolves the caller's settings; other-target rows are nonapplicable and omitted because there is no target-member parameter. Read PATs cannot mutate; write/admin PATs may patch their owner's member, but cannot request `make_zone_authority:true` (no device). Item rows retain their item ACL dimension and use write-scoped PATs; custom item policies additionally cross independent self/other target members and all PAT scopes. Collaboration rows likewise cross the full item ACL dimension with all PAT scopes and independent resource self/other (author or uploader), not item ownership. The comment-attachment delete case uses comment authorship/moderation rather than the item-editor rule. Notification SSE rows likewise retain the full item relationship/visibility dimension while independently crossing recipient self/other and all PAT scopes; item ACL never grants another member’s notification. List rows retain private/household/selected and owner/viewer/inherited item relationships, independently crossed with self/other and all three PAT scopes; self never changes list ACLs. `GET /v1/lists?include_orphaned=true` admits deleted-parent cleanup for the list owner or admin, but content still requires the parent ACL ignoring only deletion. Other cleaners receive a nameless `redacted: true` descriptor with delete only and empty entries/checks/viewers; stale-delete current uses the same rule.
 
 | Method | Endpoint | Case | Relationship / role | PAT scope | Target member / resource | Visibility | UD | Policy | Result |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -813,25 +815,15 @@ Non-item rows cross caller kind and PAT scope with **self / other** target membe
 | PATCH | `/v1/members/{id}` | authority | agent | admin | self | — | — | self-device-authority | 403 |
 | PATCH | `/v1/members/{id}` | authority | agent | admin | other | — | — | self-device-authority | 403 |
 | GET | `/v1/me/settings` |  | user | — | self | — | — | authenticated | 200 |
-| GET | `/v1/me/settings` |  | user | — | other | — | — | authenticated | 200 |
 | GET | `/v1/me/settings` |  | super_admin_app | — | self | — | — | authenticated | 200 |
-| GET | `/v1/me/settings` |  | super_admin_app | — | other | — | — | authenticated | 200 |
 | GET | `/v1/me/settings` |  | agent | read | self | — | — | authenticated | 200 |
-| GET | `/v1/me/settings` |  | agent | read | other | — | — | authenticated | 200 |
 | GET | `/v1/me/settings` |  | agent | write | self | — | — | authenticated | 200 |
-| GET | `/v1/me/settings` |  | agent | write | other | — | — | authenticated | 200 |
 | GET | `/v1/me/settings` |  | agent | admin | self | — | — | authenticated | 200 |
-| GET | `/v1/me/settings` |  | agent | admin | other | — | — | authenticated | 200 |
 | PUT | `/v1/me/settings` |  | user | — | self | — | — | authenticated | 200 |
-| PUT | `/v1/me/settings` |  | user | — | other | — | — | authenticated | 200 |
 | PUT | `/v1/me/settings` |  | super_admin_app | — | self | — | — | authenticated | 200 |
-| PUT | `/v1/me/settings` |  | super_admin_app | — | other | — | — | authenticated | 200 |
 | PUT | `/v1/me/settings` |  | agent | read | self | — | — | authenticated | 403 |
-| PUT | `/v1/me/settings` |  | agent | read | other | — | — | authenticated | 403 |
 | PUT | `/v1/me/settings` |  | agent | write | self | — | — | authenticated | 200 |
-| PUT | `/v1/me/settings` |  | agent | write | other | — | — | authenticated | 200 |
 | PUT | `/v1/me/settings` |  | agent | admin | self | — | — | authenticated | 200 |
-| PUT | `/v1/me/settings` |  | agent | admin | other | — | — | authenticated | 200 |
 | GET | `/v1/export/member` |  | user | — | self | — | — | Own member ACL; admin PAT can select a member (no bypass) | 200 |
 | GET | `/v1/export/member` |  | user | — | other | — | — | Own member ACL; admin PAT can select a member (no bypass) | 403 |
 | GET | `/v1/export/member` |  | super_admin_app | — | self | — | — | Own member ACL; admin PAT can select a member (no bypass) | 200 |
@@ -932,6 +924,26 @@ Non-item rows cross caller kind and PAT scope with **self / other** target membe
 | GET | `/v1/admin/release` |  | agent | write | other | — | — | Admin PAT only; agent status surface | 403 |
 | GET | `/v1/admin/release` |  | agent | admin | self | — | — | Admin PAT only; agent status surface | 200 |
 | GET | `/v1/admin/release` |  | agent | admin | other | — | — | Admin PAT only; agent status surface | 200 |
+| GET | `/v1/admin/tokens` |  | user | — | self | — | — | Admin PAT metadata and expiry health | 404 |
+| GET | `/v1/admin/tokens` |  | user | — | other | — | — | Admin PAT metadata and expiry health | 404 |
+| GET | `/v1/admin/tokens` |  | super_admin_app | — | self | — | — | Admin PAT metadata and expiry health | 404 |
+| GET | `/v1/admin/tokens` |  | super_admin_app | — | other | — | — | Admin PAT metadata and expiry health | 404 |
+| GET | `/v1/admin/tokens` |  | agent | read | self | — | — | Admin PAT metadata and expiry health | 403 |
+| GET | `/v1/admin/tokens` |  | agent | read | other | — | — | Admin PAT metadata and expiry health | 403 |
+| GET | `/v1/admin/tokens` |  | agent | write | self | — | — | Admin PAT metadata and expiry health | 403 |
+| GET | `/v1/admin/tokens` |  | agent | write | other | — | — | Admin PAT metadata and expiry health | 403 |
+| GET | `/v1/admin/tokens` |  | agent | admin | self | — | — | Admin PAT metadata and expiry health | 200 |
+| GET | `/v1/admin/tokens` |  | agent | admin | other | — | — | Admin PAT metadata and expiry health | 200 |
+| GET | `/v1/admin/security-events` |  | user | — | self | — | — | Admin PAT security history (agent socket only) | 404 |
+| GET | `/v1/admin/security-events` |  | user | — | other | — | — | Admin PAT security history (agent socket only) | 404 |
+| GET | `/v1/admin/security-events` |  | super_admin_app | — | self | — | — | Admin PAT security history (agent socket only) | 404 |
+| GET | `/v1/admin/security-events` |  | super_admin_app | — | other | — | — | Admin PAT security history (agent socket only) | 404 |
+| GET | `/v1/admin/security-events` |  | agent | read | self | — | — | Admin PAT security history (agent socket only) | 403 |
+| GET | `/v1/admin/security-events` |  | agent | read | other | — | — | Admin PAT security history (agent socket only) | 403 |
+| GET | `/v1/admin/security-events` |  | agent | write | self | — | — | Admin PAT security history (agent socket only) | 403 |
+| GET | `/v1/admin/security-events` |  | agent | write | other | — | — | Admin PAT security history (agent socket only) | 403 |
+| GET | `/v1/admin/security-events` |  | agent | admin | self | — | — | Admin PAT security history (agent socket only) | 200 |
+| GET | `/v1/admin/security-events` |  | agent | admin | other | — | — | Admin PAT security history (agent socket only) | 200 |
 | POST | `/v1/imports/ics` |  | user | — | self | — | — | calendar_self_or_admin | 200 |
 | POST | `/v1/imports/ics` |  | user | — | other | — | — | calendar_self_or_admin | 403 |
 | POST | `/v1/imports/ics` |  | super_admin_app | — | self | — | — | calendar_self_or_admin | 200 |

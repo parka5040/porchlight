@@ -112,7 +112,7 @@ class CacheReviewRegressionTest {
 
     @Test fun c501CommentAndAttachmentDenialsEvictAllContentAndFilesBeforeReturning() = runTest {
         for (endpoint in listOf("comment", "attachment")) for (status in listOf(404, 403)) {
-            val cache = memoryCache { now }
+            
             val keys = mutableSetOf<String>(); val views = mutableSetOf<String>()
             val store = object : AttachmentStore {
                 override suspend fun read(key: String): ByteArray? = null
@@ -122,9 +122,10 @@ class CacheReviewRegressionTest {
                 override suspend fun removeView(id: String) { views -= id }
                 override suspend fun cleanup(before: Instant) = Unit
             }
+            val cache = memoryCache(store) { now }
             val api = transport { denied(status) }
             try {
-                val data = HouseholdData(cache, GeneratedCall({ api }, { null }), { now }, attachmentStore = store)
+                val data = HouseholdData(cache, GeneratedCall({ api }, { null }), { now })
                 val row = attachmentFixture().copy(hasThumbnail = true)
                 cache.install(emptySnapshot(1).copy(items = listOf(itemRead(row.itemId)), occurrences = listOf(occurrenceRead("occ", row.itemId)), comments = listOf(commentFixture()), attachments = listOf(row)))
                 keys += "0-${row.id}-${row.version}-file"; keys += "0-${row.id}-${row.version}-thumb"; views += row.id

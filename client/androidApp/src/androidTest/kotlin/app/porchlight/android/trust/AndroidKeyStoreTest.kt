@@ -11,6 +11,7 @@ import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
 import android.security.keystore.KeyInfo
+import app.porchlight.shared.settings.privateMetadata
 import java.security.KeyFactory
 
 @RunWith(AndroidJUnit4::class)
@@ -41,7 +42,8 @@ class AndroidKeyStoreTest {
         val keys = AndroidDeviceKeyStore(context, "porchlight.transfer-test", "transfer-test")
         keys.clear()
         try {
-            context.getSharedPreferences("transfer-test", android.content.Context.MODE_PRIVATE).edit()
+            // Metadata lives in the same private store production reads (no-backup file, migrated from legacy prefs).
+            privateMetadata(context, "transfer-test").edit()
                 .putString("encrypted", android.util.Base64.encodeToString(ByteArray(32), android.util.Base64.NO_WRAP)).commit()
             assertTrue(runCatching { keys.load() }.exceptionOrNull() is LocalTrustUnavailable)
             val controller = TrustController(keys, app.porchlight.shared.transport.OkHttpTrustFactory(keys,
@@ -61,8 +63,7 @@ class AndroidKeyStoreTest {
             val csr = keys.csr()
             val attempt = EnrollmentAttempt("target", "test-idempotency-key", csr, alias)
             keys.saveEnrollmentAttempt(attempt)
-            val encrypted = context.getSharedPreferences(prefsName, android.content.Context.MODE_PRIVATE)
-                .getString("enrollment-attempt", null)!!
+            val encrypted = privateMetadata(context, prefsName).getString("enrollment-attempt", null)!!
             assertFalse(encrypted.contains(csr))
             assertFalse(encrypted.contains(attempt.idempotencyKey))
             val reopened = AndroidDeviceKeyStore(context, alias, prefsName)
@@ -82,7 +83,7 @@ class AndroidKeyStoreTest {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val alias = "porchlight.pending-corrupt"; val prefsName = "pending-corrupt"
         val keys = AndroidDeviceKeyStore(context, alias, prefsName)
-        val prefs = context.getSharedPreferences(prefsName, android.content.Context.MODE_PRIVATE)
+        val prefs = privateMetadata(context, prefsName)
         for (failure in listOf("device", "metadata", "ciphertext", "wrong-alias")) {
             keys.clear()
             try {
@@ -108,6 +109,33 @@ class AndroidKeyStoreTest {
                 reopened.saveEnrollmentAttempt(EnrollmentAttempt("fresh-target", "fresh-key", reopened.csr(), alias))
                 assertNotNull(reopened.loadEnrollmentAttempt("fresh-target"))
             } finally { keys.clear() }
+        }
+    }
+    @Test fun legacyPreferencesFromAnUpgradedInstallMigrateAndDecryptOnFirstOpen() = runBlocking {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val alias = "porchlight.legacy-migration"
+        // A name no store has opened in this process: the first open must migrate what 0.1.6 left in SharedPreferences.
+        val prefsName = "legacy-migration-${System.nanoTime()}"
+        val seed = AndroidDeviceKeyStore(context, alias, "legacy-seed")
+        seed.clear()
+        try {
+            seed.saveEnrollmentAttempt(EnrollmentAttempt("seed", "seed-key", seed.csr(), alias)) // device + metadata keys
+            val store = java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+            val cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(javax.crypto.Cipher.ENCRYPT_MODE, store.getKey("$alias.metadata", null))
+            cipher.updateAAD("$prefsName:enrollment-attempt".toByteArray())
+            val text = """{"attempts":[{"targetBinding":"target","idempotencyKey":"legacy-key","csr":"legacy-csr","keyAlias":"$alias"}]}"""
+            val legacy = context.getSharedPreferences(prefsName, android.content.Context.MODE_PRIVATE)
+            assertTrue(legacy.edit().putString("enrollment-attempt", android.util.Base64.encodeToString(
+                cipher.iv + cipher.doFinal(text.toByteArray()), android.util.Base64.NO_WRAP)).commit())
+            val upgraded = AndroidDeviceKeyStore(context, alias, prefsName)
+            assertEquals("legacy-key", upgraded.loadEnrollmentAttempt("target")?.idempotencyKey)
+            assertTrue(java.io.File(context.noBackupFilesDir, "$prefsName.json").exists())
+            assertTrue(legacy.all.isEmpty())
+        } finally {
+            seed.clear()
+            java.io.File(context.noBackupFilesDir, "$prefsName.json").delete()
+            context.deleteSharedPreferences(prefsName)
         }
     }
     private fun verifyCsr(pem: String, public: java.security.PublicKey): Boolean {

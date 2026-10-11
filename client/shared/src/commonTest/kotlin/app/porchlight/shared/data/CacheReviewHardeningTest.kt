@@ -98,13 +98,14 @@ class CacheReviewHardeningTest {
         } finally { cache.close() }
     }
     @Test fun cachedDownloadCannotReturnAfterAuthoritativeVisibilityEviction() = runTest {
-        val cache = memoryCache { now }; val started = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val started = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
         val store = object : AttachmentStore by MemoryAttachmentStore() {
             override suspend fun read(key: String): ByteArray { started.complete(Unit); release.await(); return byteArrayOf(1) }
         }
+        val cache = memoryCache(store) { now }
         val api = KtorApiTransport(HttpClient(MockEngine { error("Cached bytes must not require network") }), listOf(testOrigin()), HeaderPolicy(ClientInfo("1.0.0"), { "UTC" }, { "unused" }), { false })
         try {
-            val data = HouseholdData(cache, GeneratedCall({ api }, { null }), { now }, attachmentStore = store)
+            val data = HouseholdData(cache, GeneratedCall({ api }, { null }), { now })
             val row = attachmentFixture(); cache.putAttachment(row)
             val download = async { runCatching { data.attachments.download(row) } }
             started.await(); cache.evictItem(row.itemId); release.complete(Unit)

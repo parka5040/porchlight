@@ -9,7 +9,14 @@ interface AttachmentActions {
     fun photo(commentId: String? = null)
     fun file(commentId: String? = null)
     fun camera(commentId: String? = null)
-    suspend fun open(id: String, mime: String, bytes: ByteArray)
+    suspend fun prepareViewer(id: String, mime: String, bytes: ByteArray): app.porchlight.shared.data.PreparedAttachmentViewer
+    suspend fun open(id: String, mime: String, bytes: ByteArray) {
+        val viewer = prepareViewer(id, mime, bytes)
+        try { viewer.launch() } catch (e: Exception) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { viewer.discard() }
+            throw e
+        }
+    }
 }
 /** Results go to [picks] for [itemId], never to a composition-bound callback; [error] reports launch failures only. */
 @Composable expect fun rememberAttachmentActions(picks: AttachmentPicks, itemId: String, error: (String) -> Unit): AttachmentActions

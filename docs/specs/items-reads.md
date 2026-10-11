@@ -64,7 +64,11 @@ The `lists` array contains normal ListResponse templates, including viewers/entr
 `lists::snapshot_contribution` on that same transaction. Per-occurrence templates have no selected occurrence;
 occurrence-specific checks are fetched through list detail. Soft-deleted lists/deleted-parent lists never enter
 snapshot or search, including for agents. Owners/admins discover orphan cleanup separately via
-`/v1/lists?include_orphaned=true`; this opt-in does not change stream/item ACL authority.
+`/v1/lists?include_orphaned=true`. The retained parent ACL (ignoring only its tombstone) still governs content.
+Without that read permission, cleanup returns id, version, item_id, mode, owner_id, `redacted: true`, `[delete]`
+capabilities and empty entries/Got it/viewers, with no name. Clients render "Private list" and Delete, not cached
+content or a parent link. Authorized parent readers retain view/delete. This opt-in does not change stream/item
+ACL authority, and stale-delete `current` descriptors follow the same redaction.
 
 ## S8a read extensions (0040–0044)
 
@@ -183,7 +187,7 @@ no producer redefines pl_emit_notification_event or a kind CHECK.
 The closed stream allow-list routes those kind/entity pairs through pl_item_can_read on that item scope,
 including soft-delete tickles; a hidden/deleted parent is never delivered. S6b retains that authoritative check.
 
-### S8a notification kind extension (0044)
+## S8a notification kind extension (0044)
 
 - `calendar_changed`: changed imported/feed appointment inputs or exception edits only, one event per live readable owner/assignee. Emitted in one SQL statement per import batch, never for normalized no-ops or deleted/hidden/dependent recipients. Business self suppression is enforced inside the shared ABI (including agent owner attribution); no dedupe key, because separate changed imports are separate business events. Entity/item is the item UUID, payload `{item_id}`. Preview savepoint rollback includes these events. Source scheduler is a system actor.
 - `feed_error`: operational failed/partial feed status, live super-admin recipients only. Source bookkeeping trigger emits a single batch through the shared ABI, covering scheduler, removed-owner and raw SQL status changes. Not self-suppressed. Entity is `ics_source`, payload `{source_id,status}` (no URL, name, remote UID, title or error detail). Dedupe key `feed_error:<source UUID>:<recipient UUID>:<UTC fetch date>` implements one alert per source/recipient/day, whether failed or partial; another source/day still notifies. No item/occurrence FK. Notifications delivery/processed_at remain S6-owned.

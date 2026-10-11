@@ -39,6 +39,12 @@ def verify(path):
                         raise ValueError('blob hash mismatch')
                     blobs.append(expected)
                 else: raise ValueError('unexpected entry')
+                if completion is not None:
+                    # Do not let TarFile.next swallow a malformed/missing terminating header.
+                    archive.fileobj.seek(archive.offset)
+                    if archive.fileobj.read(1024) != bytes(1024):
+                        raise ValueError('missing or invalid tar terminator')
+                    break
             # Include tarfile's read-ahead buffer: bytes after the end marker must be zero padding.
             while chunk := archive.fileobj.read(65536):
                 if any(chunk): raise ValueError('nonzero bytes after tar end')

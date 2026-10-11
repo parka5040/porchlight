@@ -56,6 +56,7 @@ class DesktopFix1Test {
     @Test fun suspendWallClockJumpDeliversOverdueAlarmDespiteCacheReconciliation() = runTest {
         val dir = directory(); val base = Instant.parse("2026-10-06T12:00:00Z")
         var wall = base
+        val alarmWaitingUntil = MutableStateFlow<Instant?>(null)
         val cache = memoryCache { wall }
         val data = HouseholdData(cache, GeneratedCall({ error("No network") }, { null }), { wall })
         val fake = FakeSessionBus()
@@ -64,9 +65,9 @@ class DesktopFix1Test {
             val snapshot = emptySnapshot(1).copy(items = listOf(itemRead("one")), occurrences = listOf(occurrenceRead("o", "one")),
                 scheduledReminders = listOf(ScheduledReminderRead("future", "h", "self", "o", "one", "offset", base + 1.days, base)))
             cache.install(snapshot)
-            runtime = DesktopLive(data, dir, backgroundScope, { wall }, { _, _ -> }, {}, MutableStateFlow(null), sleepBusFactory = { NoSleepBus }, sessionFactory = { fake })
+            runtime = DesktopLive(data, dir, backgroundScope, { wall }, { _, _ -> }, {}, MutableStateFlow(null), sleepBusFactory = { NoSleepBus }, sessionFactory = { fake }, onAlarmWait = { alarmWaitingUntil.value = it })
             data.localSnooze!!("o") // await durable runtime initialization (no ticket is due yet)
-            runtime.alarmWaitingUntil.first { it == base + 1.days } // prove the future wait is armed before suspend
+            alarmWaitingUntil.first { it == base + 1.days } // prove the future wait is armed before suspend
             runCurrent()
             wall = base + 1.days + kotlin.time.Duration.parse("5m") // suspend advances wall, not coroutine time
             // Do not await Default-dispatcher disk work here: runTest would auto-advance an unbounded old timer.
@@ -77,8 +78,8 @@ class DesktopFix1Test {
         } finally { runtime?.close(); data.close(); dir.toFile().deleteRecursively() }
     }
     @Test fun noticesDoNotTurnCloseToTrayIntoQuit() {
-        assertTrue(desktopCloseHides(true, "Local inventory damaged"))
-        assertFalse(desktopCloseHides(false, null))
+        assertTrue(desktopCloseHides(true))
+        assertFalse(desktopCloseHides(false))
     }
     @Test fun runtimeNeverDuplicatesInstallerNiriStartup() {
         val dir = directory()

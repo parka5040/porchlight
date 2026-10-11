@@ -62,7 +62,13 @@ class C6ScreensTest {
                 }
                 when (index) {
                     0 -> onNodeWithText("cancelled/EXDATE occurrences:", substring = true).assertExists()
-                    1 -> { onNodeWithText(feed.url!!).assertExists(); onNodeWithText("Failures: 2", substring = true).assertExists() }
+                    1 -> {
+                        val savedUrl = checkNotNull(feed.url)
+                        onNodeWithText(savedUrl).assertDoesNotExist()
+                        onNodeWithContentDescription("Reveal URL for Recorded feed").performScrollTo().performClick()
+                        onNodeWithText(savedUrl).assertExists()
+                        onNodeWithText("Failures: 2", substring = true).assertExists()
+                    }
                     2 -> onNodeWithText("Sam ·", substring = true).assertExists()
                     3 -> onNodeWithText("Certificate expires:", substring = true).assertExists()
                 }

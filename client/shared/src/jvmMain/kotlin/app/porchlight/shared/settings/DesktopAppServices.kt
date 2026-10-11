@@ -27,6 +27,7 @@ class DesktopAppServices : AppServices, AutoCloseable {
     override val runtimeNotice = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
     override val systemResumes = kotlinx.coroutines.flow.MutableStateFlow(0L)
     private var liveRuntime: app.porchlight.shared.live.DesktopLive? = null
+    private val liveStarted = CompletableDeferred<app.porchlight.shared.live.DesktopLive>()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val directory = desktopDataDirectory(System.getenv("XDG_DATA_HOME"), System.getProperty("user.home"))
     override val settings: SettingsStore = DataStoreSettingsStore(PreferenceDataStoreFactory.create(
@@ -67,10 +68,11 @@ class DesktopAppServices : AppServices, AutoCloseable {
         app.porchlight.shared.data.HouseholdData(
             // The cache opens (mkdirs, PRAGMA check, possible recreate) on its first use inside initialize(), which
             // runs on Dispatchers.Default — never during composition, where this lazy value is first read.
-            app.porchlight.shared.data.ReadCache({ app.porchlight.shared.data.openDesktopCache(file) }) { clock.now() },
+            app.porchlight.shared.data.desktopReadCache(file, app.porchlight.shared.data.FileAttachmentStore(File(System.getenv("XDG_CACHE_HOME")?.takeIf { File(it).isAbsolute } ?: File(System.getProperty("user.home"), ".cache").path, "porchlight/attachments"))) { clock.now() },
             app.porchlight.shared.data.GeneratedCall.trusted(trust.controller), { clock.now() },
-            attachmentStore = app.porchlight.shared.data.FileAttachmentStore(File(System.getenv("XDG_CACHE_HOME")?.takeIf { File(it).isAbsolute } ?: File(System.getProperty("user.home"), ".cache").path, "porchlight/attachments")),
-        ).also { it.bindTrust(trust.controller, scope, screenSession::bind, onIdentityEnded = { liveRuntime?.clearIdentity() }) }
+        ).also { it.bindTrust(trust.controller, scope, screenSession::bind,
+            onIdentityEnded = { epoch -> liveStarted.await().clearIdentity(epoch) },
+            onIdentityStarting = { owner, epoch -> liveStarted.await().prepareIdentity(owner, epoch) }) }
     }
     override val data get() = lazyData.value
     override val settingsWrites by lazy { app.porchlight.shared.screens.settings.HouseholdSettingsController(data) }
@@ -100,6 +102,7 @@ class DesktopAppServices : AppServices, AutoCloseable {
             if (item != null) pendingOpen.value = app.porchlight.shared.navigation.AppRoute.Item(item, occurrence)
             open()
         }, quit, runtimeNotice, trust.controller, trayActions, trayAvailable = trayAvailable, systemResumes = systemResumes)
+        liveStarted.complete(checkNotNull(liveRuntime))
         scope.launch {
             settings.settings.map { it.stayConnected }.distinctUntilChanged().collect { enabled ->
                 val path = launcher
@@ -111,6 +114,7 @@ class DesktopAppServices : AppServices, AutoCloseable {
         }
     }
     override fun close() {
+        // Drain native replies to disk before cancelling completion/binding work or closing the read cache.
         liveRuntime?.close()
         scope.cancel()
         if (lazyData.isInitialized()) lazyData.value.close()

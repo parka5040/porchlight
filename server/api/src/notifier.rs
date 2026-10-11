@@ -193,10 +193,42 @@ pub fn summary(sources: &[Source], digest: bool) -> NotificationSummary {
             local_alarm: false,
         };
     };
-    let actor = if sources
-        .iter()
-        .all(|s| s.actor_member_id == first.actor_member_id && s.actor_label == first.actor_label)
-    {
+    summary_parts(
+        first,
+        sources.len(),
+        sources.iter().all(|s| {
+            s.actor_member_id == first.actor_member_id && s.actor_label == first.actor_label
+        }),
+        sources.iter().all(|s| s.kind == first.kind),
+        sources.iter().all(|s| s.kind == "reminder"),
+        digest,
+    )
+}
+fn digest_summary(count: usize, local_alarm: bool) -> NotificationSummary {
+    let text = format!(
+        "Morning digest: {count} {}",
+        if count == 1 { "update" } else { "updates" }
+    );
+    NotificationSummary {
+        text: text.clone(),
+        title: "Morning digest".into(),
+        body: text,
+        category: "digest".into(),
+        local_alarm,
+    }
+}
+fn summary_parts(
+    first: &Source,
+    n: usize,
+    same_actor: bool,
+    homogeneous: bool,
+    local_alarm: bool,
+    digest: bool,
+) -> NotificationSummary {
+    if digest {
+        return digest_summary(n, local_alarm);
+    }
+    let actor = if same_actor {
         first
             .actor_label
             .as_deref()
@@ -206,15 +238,7 @@ pub fn summary(sources: &[Source], digest: bool) -> NotificationSummary {
         "Household activity"
     };
     let (title, body, topic) = template(&first.kind, first.conflicting);
-    let n = sources.len();
-    let homogeneous = sources.iter().all(|s| s.kind == first.kind);
-    let (title, body, topic, text) = if digest {
-        let text = format!(
-            "Morning digest: {n} {}",
-            if n == 1 { "update" } else { "updates" }
-        );
-        ("Morning digest", text.clone(), "digest", text)
-    } else if n > 1 {
+    let (title, body, topic, text) = if n > 1 {
         let text = match first.kind.as_str() {
             "reminder" if homogeneous => format!("Reminder history: {n} reminders"),
             "dependent_unassigned" if homogeneous => format!("Dependent appointments: {n} alerts"),
@@ -235,9 +259,83 @@ pub fn summary(sources: &[Source], digest: bool) -> NotificationSummary {
         title: title.into(),
         body,
         category: topic.into(),
-        local_alarm: sources.iter().all(|s| s.kind == "reminder"),
+        local_alarm,
     }
 }
+
+/// Maximum notification identities (and aggregate rows) in a detail query.
+/// Counts cover ALL authorized sources, not a truncated source preview.
+pub const SOURCE_DETAIL_BATCH: usize = 200;
+#[derive(sqlx::FromRow)]
+pub struct SourceSummary {
+    pub notification_id: Uuid,
+    #[sqlx(flatten)]
+    pub first: Source,
+    pub count: i32,
+    pub same_actor: bool,
+    pub same_category: bool,
+    homogeneous: bool,
+    local_alarm: bool,
+}
+impl SourceSummary {
+    pub fn summary(&self, digest: bool) -> NotificationSummary {
+        summary_parts(
+            &self.first,
+            self.count as usize,
+            self.same_actor,
+            self.homogeneous,
+            self.local_alarm,
+            digest,
+        )
+    }
+}
+/// Reauthorize all links in SQL, decoding only one representative source and
+/// constant-size summary facts per notification. Large snapshots use batches;
+/// exact ACL counts necessarily inspect all links, but never materialize them in Rust.
+pub async fn visible_source_summaries(
+    c: &mut PgConnection,
+    ids: &[Uuid],
+    member: Uuid,
+    household: Uuid,
+) -> sqlx::Result<Vec<SourceSummary>> {
+    assert!(ids.len() <= SOURCE_DETAIL_BATCH);
+    let summaries = sqlx::query_as(
+        "with visible as materialized (
+            select s.notification_id,e.id,e.kind,e.item_id,e.occurrence_id,e.entity_type,e.entity_id,
+                   e.actor_member_id,e.actor_label,e.created_at,
+                   case when jsonb_typeof(e.payload->'conflicting')='boolean'
+                        then (e.payload->>'conflicting')::boolean end as conflicting,
+                   case e.kind when 'reminder' then 'reminders' when 'assigned' then 'assignments'
+                        when 'dependent_unassigned' then 'dependents' else 'activity' end as delivery_category
+            from porchlight.notification_sources s
+            join porchlight.notification_events e on e.id=s.event_id
+            where s.notification_id=any($1) and e.household_id=$3 and e.recipient_member_id=$2
+              and (e.item_id is null or porchlight.pl_item_can_read(e.item_id,$2))
+        ), firsts as (
+            select distinct on (notification_id) * from visible order by notification_id,created_at,id
+        ), totals as (
+            select v.notification_id,count(*)::int as count,
+                   bool_and(v.kind=f.kind) as homogeneous,
+                   bool_and(v.actor_member_id is not distinct from f.actor_member_id
+                            and v.actor_label is not distinct from f.actor_label) as same_actor,
+                   bool_and(v.delivery_category=f.delivery_category) as same_category,
+                   bool_and(v.kind='reminder') as local_alarm
+            from visible v join firsts f using(notification_id) group by v.notification_id
+        )
+        select f.*,m.display_name as actor_name,t.count,t.homogeneous,t.same_actor,t.same_category,t.local_alarm
+        from firsts f join totals t using(notification_id)
+        left join porchlight.household_members m on m.id=f.actor_member_id",
+    )
+    .bind(ids)
+    .bind(member)
+    .bind(household)
+    .fetch_all(c)
+    .await?;
+    #[cfg(feature = "testing")]
+    crate::testing::record_notification_source_query(summaries.len());
+    Ok(summaries)
+}
+/// Bounded raw-source preview; inbox/count rendering uses visible_source_summaries.
 /// Sources are reauthorized independently, preventing both title and coalesced-count leaks.
 pub async fn visible_sources(
     c: &mut PgConnection,
@@ -245,8 +343,11 @@ pub async fn visible_sources(
     member: Uuid,
     household: Uuid,
 ) -> sqlx::Result<Vec<Source>> {
-    sqlx::query_as("select e.id,e.kind,e.item_id,e.occurrence_id,e.entity_type,e.entity_id,e.actor_member_id,e.actor_label,m.display_name as actor_name,e.created_at,case when jsonb_typeof(e.payload->'conflicting')='boolean' then (e.payload->>'conflicting')::boolean end as conflicting from porchlight.notification_sources s join porchlight.notification_events e on e.id=s.event_id left join porchlight.household_members m on m.id=e.actor_member_id where s.notification_id=$1 and e.household_id=$3 and e.recipient_member_id=$2 and (e.item_id is null or porchlight.pl_item_can_read(e.item_id,$2)) order by e.created_at,e.id")
-        .bind(id).bind(member).bind(household).fetch_all(c).await
+    let sources = sqlx::query_as("select e.id,e.kind,e.item_id,e.occurrence_id,e.entity_type,e.entity_id,e.actor_member_id,e.actor_label,m.display_name as actor_name,e.created_at,case when jsonb_typeof(e.payload->'conflicting')='boolean' then (e.payload->>'conflicting')::boolean end as conflicting from porchlight.notification_sources s join porchlight.notification_events e on e.id=s.event_id left join porchlight.household_members m on m.id=e.actor_member_id where s.notification_id=$1 and e.household_id=$3 and e.recipient_member_id=$2 and (e.item_id is null or porchlight.pl_item_can_read(e.item_id,$2)) order by e.created_at,e.id limit $4")
+        .bind(id).bind(member).bind(household).bind(SOURCE_DETAIL_BATCH as i64).fetch_all(c).await?;
+    #[cfg(feature = "testing")]
+    crate::testing::record_notification_source_query(sources.len());
+    Ok(sources)
 }
 /// Member FK lock precedes prefs in every consumer/release path. Never wait on a
 /// member while holding prefs; skip busy recipients and try them next tick.
@@ -259,21 +360,42 @@ async fn lock_member(c: &mut PgConnection, member: Uuid) -> sqlx::Result<bool> {
     .await?
     .is_some())
 }
-fn error_class(error: &anyhow::Error) -> &str {
-    if let Some(sqlx::Error::Database(db)) = error.downcast_ref::<sqlx::Error>() {
+// Adding a class requires a forward migration: the live catalog parity test below
+// inserts every generated inventory value into the final CHECK-constrained table.
+macro_rules! delivery_error_classes {
+    ($($variant:ident => $wire:literal),+ $(,)?) => {
+        enum DeliveryErrorClass { $($variant),+ }
+        impl DeliveryErrorClass {
+            #[cfg(test)]
+            const ALL: &'static [Self] = &[$(Self::$variant),+];
+            const fn as_str(&self) -> &'static str {
+                match self { $(Self::$variant => $wire),+ }
+            }
+        }
+    };
+}
+delivery_error_classes! {
+    Deadlock => "deadlock", Serialization => "serialization", LockTimeout => "lock_timeout",
+    StatementCancel => "statement_cancel", Constraint => "constraint", Database => "database",
+    DatabaseClient => "database_client", InvalidData => "invalid_data",
+}
+fn error_class(error: &anyhow::Error) -> &'static str {
+    use DeliveryErrorClass::*;
+    let class = if let Some(sqlx::Error::Database(db)) = error.downcast_ref::<sqlx::Error>() {
         match db.code().as_deref() {
-            Some("40P01") => "deadlock",
-            Some("40001") => "serialization",
-            Some("55P03") => "lock_timeout",
-            Some("57014") => "statement_cancel",
-            Some(code) if code.starts_with("23") => "constraint",
-            _ => "database",
+            Some("40P01") => Deadlock,
+            Some("40001") => Serialization,
+            Some("55P03") => LockTimeout,
+            Some("57014") => StatementCancel,
+            Some(code) if code.starts_with("23") => Constraint,
+            _ => Database,
         }
     } else if error.downcast_ref::<sqlx::Error>().is_some() {
-        "database_client"
+        DatabaseClient
     } else {
-        "invalid_data"
-    }
+        InvalidData
+    };
+    class.as_str()
 }
 /// Recipient serialization with atomic per-event savepoints. Durable bounded
 /// backoff survives restarts; isolated transient failures do not stall release.
@@ -368,7 +490,7 @@ async fn consume_recipient(
         return Ok(0);
     }
     let mut processed = 0;
-    let p:Option<(Json<NotificationPrefs>,String,bool)>=sqlx::query_as(sqlx::AssertSqlSafe(format!("select {},case when m.role='dependent' then h.tzid else m.tzid end,m.deleted_at is null and m.role<>'dependent' from porchlight.notification_prefs p join porchlight.household_members m on m.id=p.member_id join porchlight.households h on h.id=p.household_id where p.member_id=$1 and p.household_id=$2 for update of p skip locked", PREFS_JSON)))
+    let p:Option<(Json<NotificationPrefs>,String,bool)>=sqlx::query_as(sqlx::AssertSqlSafe(format!("select {},porchlight.pl_effective_member_zone(m.role,m.tzid,h.tzid),m.deleted_at is null and m.role<>'dependent' from porchlight.notification_prefs p join porchlight.household_members m on m.id=p.member_id join porchlight.households h on h.id=p.household_id where p.member_id=$1 and p.household_id=$2 for update of p skip locked", PREFS_JSON)))
             .bind(member).bind(household).fetch_optional(&mut *tx).await?;
     let Some((Json(p), zone, live)) = p else {
         tx.rollback().await?;
@@ -385,6 +507,8 @@ async fn consume_recipient(
     let zone = time::parse_tz(&zone).ok_or_else(|| anyhow::anyhow!("invalid stored zone"))?;
     let events:Vec<Source>=sqlx::query_as("select e.id,e.kind,e.item_id,e.occurrence_id,e.entity_type,e.entity_id,e.actor_member_id,e.actor_label,m.display_name as actor_name,e.created_at,case when jsonb_typeof(e.payload->'conflicting')='boolean' then (e.payload->>'conflicting')::boolean end as conflicting from porchlight.notification_events e left join porchlight.household_members m on m.id=e.actor_member_id where e.recipient_member_id=$1 and e.household_id=$2 and e.processed_at is null and e.created_at<=$3 and not exists(select 1 from porchlight.notification_event_delivery d where d.event_id=e.id and d.retry_at>$3) order by e.created_at,e.id limit 500")
             .bind(member).bind(household).bind(now).fetch_all(&mut *tx).await?;
+    #[cfg(feature = "testing")]
+    crate::testing::record_notification_source_query(events.len());
     // Physical purge takes item -> event(id) -> notification locks. Reserve
     // all referenced items without waiting (notification INSERT has an item FK),
     // then all batch events in UUID order BEFORE touching any notification.
@@ -430,6 +554,7 @@ async fn consume_recipient(
     let mut transient_failed = false;
     // N1: 55P03/57014 cost seconds each; allow one per recipient pass.
     let mut timeout_stopped = false;
+    let mut successful = Vec::new();
     for event in events.into_iter().filter(|e| locked_events.contains(&e.id)) {
         // The recipient prefs lock serializes consumers. An event savepoint keeps
         // notification/source/outbox/processed_at atomic without losing earlier
@@ -451,19 +576,27 @@ async fn consume_recipient(
                 .await?;
         let held = cat != "reminders" && release.is_some();
         if live && visible && p.enabled(cat) && (!held || p.digest) {
-            let target:Option<Uuid>=sqlx::query_scalar("select id from porchlight.notifications where recipient_member_id=$1 and (($2 and category='digest' and release_at=$3) or (not $2 and read_at is null and category<>'digest' and (category='reminders')=$4 and window_start<=$5 and $5<window_start+interval '30 seconds')) order by window_start desc,id desc limit 1 for update")
+            let target:Option<(Uuid,i32)>=sqlx::query_as("select id,count from porchlight.notifications where recipient_member_id=$1 and (($2 and category='digest' and release_at=$3) or (not $2 and read_at is null and category<>'digest' and (category='reminders')=$4 and window_start<=$5 and $5<window_start+interval '30 seconds')) order by window_start desc,id desc limit 1 for update")
                     .bind(member).bind(held).bind(release.unwrap_or(now)).bind(cat=="reminders").bind(event.created_at).fetch_optional(&mut *event_tx).await?;
-            let id = if let Some(id) = target {
+            let id = if let Some((id, _)) = target {
                 id
             } else {
                 sqlx::query_scalar("insert into porchlight.notifications(household_id,recipient_member_id,kind,category,item_id,occurrence_id,entity_type,entity_id,actor_member_id,actor_label,window_start,release_at,released_at,summary) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) returning id")
                         .bind(household).bind(member).bind(&event.kind).bind(if held {"digest"} else {cat}).bind(event.item_id).bind(event.occurrence_id).bind(&event.entity_type).bind(event.entity_id).bind(event.actor_member_id).bind(&event.actor_label).bind(event.created_at).bind(release.filter(|_|held).unwrap_or(now)).bind(if held {None} else {Some(now)}).bind(Json(serde_json::to_value(summary(std::slice::from_ref(&event),held))?)).fetch_one(&mut *event_tx).await?
             };
             sqlx::query("insert into porchlight.notification_sources(notification_id,event_id) values($1,$2)").bind(id).bind(event.id).execute(&mut *event_tx).await?;
-            if target.is_some() {
-                let sources = visible_sources(&mut event_tx, id, member, household).await?;
+            if let Some((_, count)) = target {
+                // Digest presentation needs only the count; history is immutable and
+                // this stored projection never authorizes a read. Rechecking every
+                // historical source here made one quiet-hours batch quadratic.
+                let summary = if held {
+                    digest_summary(count as usize + 1, false)
+                } else {
+                    visible_source_summaries(&mut event_tx, &[id], member, household)
+                        .await?.first().ok_or_else(|| anyhow::anyhow!("missing visible notification source"))?.summary(false)
+                };
                 sqlx::query("update porchlight.notifications set count=count+1,kind='summary',category=case when category=$3 then category when category='digest' then 'digest' else 'activity' end,summary=$2,item_id=null,occurrence_id=null,actor_member_id=null,actor_label=null where id=$1")
-                        .bind(id).bind(Json(serde_json::to_value(summary(&sources,held))?)).bind(cat).execute(&mut *event_tx).await?;
+                        .bind(id).bind(Json(serde_json::to_value(summary)?)).bind(cat).execute(&mut *event_tx).await?;
             }
         }
         sqlx::query("update porchlight.notification_events set processed_at=$2 where id=$1")
@@ -476,10 +609,7 @@ async fn consume_recipient(
         match result {
             Ok(()) => {
                 event_tx.commit().await?;
-                sqlx::query("delete from porchlight.notification_event_delivery where event_id=$1")
-                    .bind(event.id)
-                    .execute(&mut *tx)
-                    .await?;
+                successful.push(event.id);
                 processed += 1;
             }
             Err(error) => {
@@ -540,6 +670,13 @@ async fn consume_recipient(
                 }
             }
         }
+    }
+    // Successful savepoints and retry cleanup commit in the same recipient transaction.
+    if !successful.is_empty() {
+        sqlx::query("delete from porchlight.notification_event_delivery where event_id=any($1)")
+            .bind(&successful)
+            .execute(&mut *tx)
+            .await?;
     }
     if transient_failed {
         backoff_in(&mut tx, now, member).await?;
@@ -603,7 +740,7 @@ pub async fn reminders(c: &mut PgConnection, now: DateTime<Utc>) -> anyhow::Resu
         .bind(now.to_rfc3339())
         .execute(&mut *c)
         .await?;
-    sqlx::query("select porchlight.pl_emit_notification_event(r.household_id,r.member_id,'reminder','occurrence',r.occurrence_id,jsonb_build_object('local_alarm',true),r.item_id,r.occurrence_id,'reminder:'||r.occurrence_id::text||':'||r.member_id::text||':'||r.reminder_id::text) from porchlight.scheduled_reminders r join porchlight.item_occurrences o on o.id=r.occurrence_id join porchlight.items i on i.id=r.item_id join porchlight.item_derivation d on d.item_id=i.id and d.requested_gen=d.applied_gen join porchlight.household_members m on m.id=r.member_id where r.fire_at<=$1 and r.fire_at>$1-make_interval(days=>$2) and o.status not in ('done','skipped') and o.disposition<>'expired' and i.deleted_at is null and m.deleted_at is null and m.role<>'dependent' and porchlight.pl_item_can_read(i.id,m.id) and not exists(select 1 from porchlight.notification_events e where e.household_id=r.household_id and e.dedupe_key='reminder:'||r.occurrence_id::text||':'||r.member_id::text||':'||r.reminder_id::text)")
+    sqlx::query("select porchlight.pl_emit_notification_event(r.household_id,r.member_id,'reminder','occurrence',r.occurrence_id,jsonb_build_object('local_alarm',true),r.item_id,r.occurrence_id,'reminder:'||r.occurrence_id::text||':'||r.member_id::text||':'||r.reminder_id::text) from porchlight.scheduled_reminders r join porchlight.item_occurrences o on o.id=r.occurrence_id join porchlight.items i on i.id=r.item_id join porchlight.item_derivation d on d.item_id=i.id and d.requested_gen=d.applied_gen join porchlight.household_members m on m.id=r.member_id where r.fire_at<=$1 and r.fire_at>$1-make_interval(days=>$2) and o.status not in ('done','skipped') and i.deleted_at is null and m.deleted_at is null and m.role<>'dependent' and porchlight.pl_item_can_read(i.id,m.id) and not exists(select 1 from porchlight.notification_events e where e.household_id=r.household_id and e.dedupe_key='reminder:'||r.occurrence_id::text||':'||r.member_id::text||':'||r.reminder_id::text)")
         .bind(now).bind(porchlight_db::derive::NOTIFICATION_EVENT_RETENTION_DAYS).execute(c).await?;
     Ok(())
 }
@@ -652,4 +789,19 @@ pub async fn dependents(c: &mut PgConnection, now: DateTime<Utc>) -> anyhow::Res
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod audit_bl_server {
+    use super::*;
+    #[sqlx::test(migrations = "../db/migrations")]
+    async fn final_catalog_accepts_every_delivery_error_class(pool: PgPool) {
+        let h = porchlight_db::testing::seed_household(&pool).await.unwrap();
+        let event: Uuid = sqlx::query_scalar("INSERT INTO porchlight.notification_events(household_id,recipient_member_id,kind,entity_type,entity_id) VALUES ($1,$2,'assigned','item',$2) RETURNING id")
+            .bind(h.id).bind(h.super_admin).fetch_one(&pool).await.unwrap();
+        for class in DeliveryErrorClass::ALL {
+            sqlx::query("INSERT INTO porchlight.notification_event_delivery(event_id,attempts,retry_at,last_error) VALUES ($1,1,now(),$2) ON CONFLICT(event_id) DO UPDATE SET last_error=excluded.last_error")
+                .bind(event).bind(class.as_str()).execute(&pool).await.unwrap();
+        }
+    }
 }

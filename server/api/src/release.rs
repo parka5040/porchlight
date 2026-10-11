@@ -7,9 +7,9 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{File, OpenOptions},
     io::{Read, Seek},
-    os::unix::fs::OpenOptionsExt,
+    os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 type Result<T> = std::result::Result<T, &'static str>;
@@ -109,10 +109,33 @@ pub struct ClientRelease {
     pub desktop: DesktopRelease,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FileVersion {
+    len: u64,
+    inode: u64,
+    device: u64,
+    mtime: (i64, i64),
+    ctime: (i64, i64),
+}
+impl FileVersion {
+    fn of(file: &File) -> Result<Self> {
+        let meta = file.metadata().map_err(|_| "metadata")?;
+        Ok(Self {
+            len: meta.len(),
+            inode: meta.ino(),
+            device: meta.dev(),
+            mtime: (meta.mtime(), meta.mtime_nsec()),
+            ctime: (meta.ctime(), meta.ctime_nsec()),
+        })
+    }
+}
 pub struct Store {
     root: PathBuf,
+    verified: BTreeMap<String, Mutex<Option<FileVersion>>>,
     pub advertised: ClientRelease,
     files: BTreeMap<String, DigestInfo>,
+    #[cfg(feature = "testing")]
+    pub verification_starts: std::sync::atomic::AtomicUsize,
 }
 impl Store {
     /// The release mount is operator-owned and read-only, as for backup downloads.
@@ -159,9 +182,9 @@ impl Store {
         }
         Ok(())
     }
-    fn verify_file(root: &Path, name: &str, expected: &DigestInfo) -> Result<File> {
-        let mut file = Self::open_member(root, name)?;
-        if file.metadata().map_err(|_| "metadata")?.len() != expected.size {
+    fn verify_file(file: &mut File, expected: &DigestInfo) -> Result<FileVersion> {
+        let before = FileVersion::of(file)?;
+        if before.len != expected.size {
             return Err("file_size");
         }
         let mut hash = Sha256::new();
@@ -176,8 +199,11 @@ impl Store {
         if hex::encode(hash.finalize()) != expected.sha256 {
             return Err("file_digest");
         }
+        if FileVersion::of(file)? != before {
+            return Err("file_changed");
+        }
         file.rewind().map_err(|_| "seek")?;
-        Ok(file)
+        Ok(before)
     }
     fn load(path: &Path, public_key: &str) -> Result<Self> {
         if path.ancestors().any(|p| p.is_symlink()) || !path.is_dir() {
@@ -234,11 +260,17 @@ impl Store {
         }
         names.insert(metadata.android.apk.clone());
         let mut files = BTreeMap::new();
+        let mut verified = BTreeMap::new();
         for name in names {
             let info = manifest.files.get(&name).ok_or("unlisted_file")?;
-            Self::verify_file(&root, &name, info)?;
+            let mut file = Self::open_member(&root, &name)?;
+            let version = Self::verify_file(&mut file, info)?;
+            verified.insert(name.clone(), Mutex::new(Some(version)));
             files.insert(name, info.clone());
         }
+        // These small signed metadata files are first verified on download against the bytes read above.
+        verified.insert("manifest.json".into(), Mutex::new(None));
+        verified.insert("manifest.json.minisig".into(), Mutex::new(None));
         files.insert("manifest.json".into(), Self::digest(&manifest_bytes));
         files.insert(
             "manifest.json.minisig".into(),
@@ -272,6 +304,9 @@ impl Store {
         Ok(Self {
             root,
             files,
+            verified,
+            #[cfg(feature = "testing")]
+            verification_starts: std::sync::atomic::AtomicUsize::new(0),
             advertised: ClientRelease {
                 version: metadata.version,
                 android,
@@ -279,10 +314,22 @@ impl Store {
             },
         })
     }
+    pub(crate) fn info(&self, name: &str) -> Result<&DigestInfo> {
+        self.files.get(name).ok_or("unlisted_file")
+    }
     pub(crate) fn open(&self, name: &str) -> Result<(File, u64, String)> {
-        let info = self.files.get(name).ok_or("unlisted_file")?;
-        // Revalidate on download too: no changed inode is served with an old checksum/ETag.
-        let file = Self::verify_file(&self.root, name, info)?;
+        let info = self.info(name)?;
+        let mut file = Self::open_member(&self.root, name)?;
+        // One cache entry per allowlisted path; simultaneous opens share verification.
+        let mut verified = self.verified[name].lock().map_err(|_| "cache_poisoned")?;
+        let current = FileVersion::of(&file)?;
+        if *verified != Some(current) {
+            *verified = None;
+            #[cfg(feature = "testing")]
+            self.verification_starts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            *verified = Some(Self::verify_file(&mut file, info)?);
+        }
         Ok((file, info.size, info.sha256.clone()))
     }
 }
@@ -299,9 +346,18 @@ pub async fn initialize(state: &AppState) {
                 return None;
             };
             let (dir, key) = (dir.clone(), key.clone());
-            let result = tokio::task::spawn_blocking(move || Store::load(&dir, &key))
+            let permit = state
+                .release_hash_slots
+                .clone()
+                .acquire_owned()
                 .await
-                .unwrap_or(Err("worker"));
+                .ok()?;
+            let result = tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                Store::load(&dir, &key)
+            })
+            .await
+            .unwrap_or(Err("worker"));
             match result {
                 Ok(store) => Some(Arc::new(store)),
                 Err(reason) => {

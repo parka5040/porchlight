@@ -12,7 +12,7 @@ class AttachmentVisibilityGranularityTest {
     @Test fun missingAttachmentConfirmsParentInsteadOfEvictingVisibleItem() = runTest {
         for (parentStatus in listOf(200, 404, 403, 503)) for (thumbnail in listOf(false, true)) {
             val now = Instant.parse("2026-10-06T12:00:00Z")
-            val cache = memoryCache { now }; var parentGets = 0
+            var parentGets = 0
             val row = attachmentFixture().copy(hasThumbnail = true)
             val removed = mutableSetOf<String>()
             val store = object : AttachmentStore {
@@ -23,6 +23,7 @@ class AttachmentVisibilityGranularityTest {
                 override suspend fun removeView(id: String) { removed += id }
                 override suspend fun cleanup(before: Instant) = Unit
             }
+            val cache = memoryCache(store) { now }
             val api = KtorApiTransport(HttpClient(MockEngine { req ->
                 val isParent = req.url.encodedPath == "/v1/items/${row.itemId}"
                 if (isParent) parentGets++
@@ -31,7 +32,7 @@ class AttachmentVisibilityGranularityTest {
                 else respond("""{"type":"urn:porchlight:problem:${if (status == 403) "forbidden" else "not-found"}","status":$status,"title":"Unavailable"}""", HttpStatusCode.fromValue(status), headersOf(HttpHeaders.ContentType, "application/problem+json"))
             }), listOf(testOrigin()), HeaderPolicy(ClientInfo("1.0.0"), { "UTC" }, { "unused" }), { false })
             try {
-                val data = HouseholdData(cache, GeneratedCall({ api }, { null }), { now }, attachmentStore = store)
+                val data = HouseholdData(cache, GeneratedCall({ api }, { null }), { now })
                 cache.install(emptySnapshot(1).copy(items = listOf(itemRead(row.itemId)), comments = listOf(commentFixture()), attachments = listOf(row)))
                 val problem = assertFailsWith<ApiProblem> { data.attachments.download(row, thumbnail) }
                 assertEquals(404, problem.status)

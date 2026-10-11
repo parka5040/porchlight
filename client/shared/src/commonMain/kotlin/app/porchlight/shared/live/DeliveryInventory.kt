@@ -9,7 +9,8 @@ import kotlinx.serialization.encodeToString
  * Crash between the two safely replaces the same OS tag. Local dismissal is a durable tombstone. */
 @Serializable data class DeliveryRecord(val key: String, val version: Long, val handle: Long = 0,
     val posted: Boolean = false, val dismissed: Boolean = false, val localAlarm: Boolean = false,
-    val itemId: String? = null, val occurrenceId: String? = null, val occurrenceVersion: Int? = null, val actionKey: String? = null)
+    val itemId: String? = null, val occurrenceId: String? = null, val occurrenceVersion: Int? = null, val actionKey: String? = null,
+    val inFlight: Boolean = false)
 /** The device controller gate exercises the same stored-key repository dispatch as this host-tested path. */
 suspend fun dismissDeliveredNotification(data: app.porchlight.shared.data.HouseholdData, inventory: DeliveryInventory, id: String) =
     dismissDeliveredNotification(data, id, inventory.requirePostedAction(id).actionKey!!)
@@ -30,14 +31,14 @@ class DeliveryInventory private constructor(private val rows: MutableMap<String,
     fun requirePostedAction(key: String): DeliveryRecord = checkNotNull(rows[key]).also {
         check(it.posted && !it.dismissed && it.actionKey != null) { "Device must have delivered the original alert" }
     }
-    fun posted(key: String, handle: Long = 0) { rows[key]?.let { rows[key] = it.copy(posted = true, handle = handle) } }
+    fun posted(key: String, handle: Long = 0) { rows[key]?.let { rows[key] = it.copy(posted = true, handle = handle, inFlight = false) } }
     fun dismissed(key: String) { rows[key]?.let { rows[key] = it.copy(dismissed = true) } }
     fun remove(key: String) { rows.remove(key) }
     fun serverToPost(view: CacheView) = view.notifications.filter { n ->
         n.readAt == null && n.releasedAt != null && !n.summary.localAlarm &&
-            (rows[n.id]?.let { it.version != n.version.toLong() || (!it.posted && !it.dismissed) } ?: true)
+            (rows[n.id]?.let { it.version != n.version.toLong() || (!it.posted && !it.dismissed && !it.inFlight) } ?: true)
     }
-    fun localToPost(view: CacheView) = records().filter { it.localAlarm && !it.posted && !it.dismissed && localValid(it, view) }
+    fun localToPost(view: CacheView) = records().filter { it.localAlarm && !it.posted && !it.dismissed && !it.inFlight && localValid(it, view) }
     fun toCancel(view: CacheView): List<DeliveryRecord> {
         val notifications = view.notifications.associateBy { it.id }
         return records().filter { if (it.localAlarm) !localValid(it, view) else notifications[it.key]?.readAt != null || it.key !in notifications }
@@ -45,7 +46,7 @@ class DeliveryInventory private constructor(private val rows: MutableMap<String,
     private fun localValid(row: DeliveryRecord, view: CacheView) = view.notificationPrefs?.prefs?.reminders != false &&
         view.notifications.filter { it.summary.localAlarm && it.occurrenceId == row.occurrenceId }
             .maxByOrNull { it.createdAt }?.readAt == null &&
-        view.items.any { it.id == row.itemId } && view.occurrences.any { it.id == row.occurrenceId && it.status in setOf("todo", "doing") }
+        view.items.any { it.id == row.itemId } && view.occurrences.any { it.id == row.occurrenceId && it.status.isOpenForReminders() }
     fun encode() = WireJson.encodeToString(records())
     companion object {
         fun decode(value: String): DeliveryInventory {

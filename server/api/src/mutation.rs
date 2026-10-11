@@ -75,12 +75,14 @@ where
 /// The body is parsed by Mutation; header authentication by Caller; authority is checked again
 /// after the claim wait in begin. Agent tokens need write or admin scope.
 /// Callbacks borrow AppState and IdemTx for the same lifetime. Ordinary business
-/// errors are sealed; ApiError::transient and retryable SQLSTATEs roll back without
+/// errors are sealed; ApiError::transient_conflict and retryable SQLSTATEs roll back without
 /// storing a response, allowing the same key/body to execute again.
 /// All callback SQL (including reads and helper calls) MUST use `&mut *tx.tx`,
 /// never `state.pool` or a separate connection/transaction: otherwise effects escape
 /// rollback/replay and locks may self-block. State is for settings, limits, hub and
 /// scheduler access, not SQL. Callbacks must not begin, seal or commit themselves.
+/// `scripts/check-mutation-context.py` guards direct callback pool access in CI;
+/// helper calls remain subject to this same transaction-only contract.
 pub async fn run<T, F>(
     state: &AppState,
     caller: Caller,

@@ -1,0 +1,9 @@
+-- Clients recreate disposable caches on schema upgrades; never infer coverage from old row counts.
+CREATE TABLE CacheCommentHistory (
+ item_id TEXT NOT NULL PRIMARY KEY,
+ next_cursor TEXT,
+ started INTEGER NOT NULL,
+ complete INTEGER NOT NULL,
+ older_pages INTEGER NOT NULL
+);
+DELETE FROM SyncState;

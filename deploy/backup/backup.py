@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Independent backup producer. Errors are sanitized; diagnostics never echo DB/key values."""
+from contextlib import contextmanager
 import datetime as dt
 import fcntl
 import hashlib
@@ -50,7 +51,8 @@ def command(args, input=None, text=False, env=None, capture=False):
     p = spawn(args, stdin=sp.PIPE if input is not None else sp.DEVNULL,
               stdout=sp.PIPE if capture else sp.DEVNULL, stderr=sp.DEVNULL, text=text, env=env)
     try:
-        output, _ = p.communicate(input)
+        with bounded_phase():
+            output, _ = p.communicate(input, timeout=600)
         if p.returncode: raise sp.CalledProcessError(p.returncode, args)
         return output
     finally:
@@ -82,7 +84,6 @@ def work_root(backups, disk=False):
 def recover_locked(backups):
     # Called only under the shared filesystem lock: no active run can be mistaken for stale.
     root = work_root(backups)
-    sql("UPDATE porchlight.backup_runs SET status='failed',finished_at=clock_timestamp(),error='backup interrupted; recovered at startup' WHERE status='running';")
     for directory in (root, work_root(backups, disk=True)):
         for p in directory.glob('work-*'):
             if p.is_symlink() or p.is_file(): p.unlink()
@@ -92,6 +93,9 @@ def recover_locked(backups):
         if p.is_symlink() or p.is_file(): p.unlink()
         elif p.is_dir(): shutil.rmtree(p)
     for p in backups.glob('.partial-*'): p.unlink()
+    # Free disposable disk space even if PostgreSQL cannot write (e.g. after ENOSPC).
+    # A failed repair still aborts this attempt: never start a backup with stale metadata.
+    sql("UPDATE porchlight.backup_runs SET status='failed',finished_at=clock_timestamp(),error='backup interrupted; recovered at startup' WHERE status='running';")
     return root
 
 
@@ -126,9 +130,10 @@ class Snapshot:
             raise
 
     def query(self, query):
-        self.p.stdin.write(query + '\n')
-        self.p.stdin.flush()
-        self.result = self.p.stdout.readline().strip()
+        with bounded_phase():
+            self.p.stdin.write(query + '\n')
+            self.p.stdin.flush()
+            self.result = self.p.stdout.readline().strip()
         if not self.result:
             raise RuntimeError('snapshot query failed')
         heartbeat()
@@ -179,15 +184,16 @@ def referenced_blobs(snapshot, lease_id):
 
 
 def copy_private(source, destination):
-    if source.is_symlink() or any(parent.is_symlink() for parent in source.parents):
-        raise ValueError('symlink secret or blob path')
-    if source.is_dir():
-        for p in source.rglob('*'):
-            if p.is_symlink():
-                raise ValueError('symlink data')
-        shutil.copytree(source, destination)
-    else:
-        shutil.copy2(source, destination)
+    with bounded_phase():
+        if source.is_symlink() or any(parent.is_symlink() for parent in source.parents):
+            raise ValueError('symlink secret or blob path')
+        if source.is_dir():
+            for p in source.rglob('*'):
+                if p.is_symlink():
+                    raise ValueError('symlink data')
+            shutil.copytree(source, destination)
+        else:
+            shutil.copy2(source, destination)
 
 
 class ProgressReader:
@@ -219,14 +225,11 @@ def open_private_file(path):
 
 
 def external_digest(path):
-    h = hashlib.sha256()
-    size = 0
     with open_private_file(path) as f:
         reader = ProgressReader(f)
-        for chunk in iter(lambda: reader.read(1024 * 1024), b''):
-            h.update(chunk)
-            size += len(chunk)
-    return {'sha256': h.hexdigest(), 'size': size}
+        while reader.read(1024 * 1024):
+            pass
+        return reader.identity()
 
 
 def dump_snapshot(snapshot, destination):
@@ -356,14 +359,55 @@ def run():
             if partial is not None: partial.unlink(missing_ok=True)
 
 
+# Queries and small private copies do not expose byte progress. Their health is
+# a fixed phase deadline, not a periodic liveness pulse. Nested work cannot extend it.
+phase_active = False
+
+
+@contextmanager
+def bounded_phase():
+    global phase_active
+    if phase_active:
+        yield
+        return
+    root = Path(os.environ.get('PORCHLIGHT_BACKUP_DIR', '/backups'))
+    phase = root / '.phase'
+    pending = root / '.phase-pending'
+    deadline = time.monotonic() + 600
+    pending.write_text(str(deadline))
+    pending.chmod(0o600)
+    os.replace(pending, phase)
+    phase_active = True
+    try:
+        yield
+    finally:
+        phase_active = False
+        phase.unlink(missing_ok=True)
+        # The phase has ended; this is actual main-loop progress, not a timer thread.
+        (root / '.heartbeat').touch(mode=0o600)
+
+
 def heartbeat():
     if active_lease is not None: active_lease.renew()
     Path(os.environ.get('PORCHLIGHT_BACKUP_DIR', '/backups'), '.heartbeat').touch(mode=0o600)
 
 
 def health():
-    assert sql('SELECT 1;') == '1'
-    assert time.time() - Path(os.environ.get('PORCHLIGHT_BACKUP_DIR', '/backups'), '.heartbeat').stat().st_mtime < 180
+    global phase_active
+    # The probe must not publish/refresh the worker's phase or heartbeat.
+    previous = phase_active
+    phase_active = True
+    try:
+        assert sql('SELECT 1;') == '1'
+    finally:
+        phase_active = previous
+    root = Path(os.environ.get('PORCHLIGHT_BACKUP_DIR', '/backups'))
+    try:
+        deadline = float((root / '.phase').read_text())
+    except FileNotFoundError:
+        assert time.time() - (root / '.heartbeat').stat().st_mtime < 180
+    else:
+        assert 0 < deadline - time.monotonic() <= 600
 
 
 def daemon():
@@ -371,14 +415,17 @@ def daemon():
     backups.mkdir(mode=0o700, parents=True, exist_ok=True)
     heartbeat()
     active = False
+    recovered = False
     try:
-        with open(backups / '.backup.lock', 'a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            recover_locked(backups)
         while True:
             heartbeat()
             delay = 60
             try:
+                if not recovered:
+                    with open(backups / '.backup.lock', 'a') as lock:
+                        fcntl.flock(lock, fcntl.LOCK_EX)
+                        recover_locked(backups)
+                    recovered = True
                 latest = json.loads(sql("SELECT COALESCE((SELECT json_build_object('finished_at',finished_at,'next_due_at',next_due_at) FROM porchlight.backup_runs WHERE status='success' ORDER BY finished_at DESC LIMIT 1),'{}'::json);"))
                 if ops.backup_due(latest.get('finished_at'), latest.get('next_due_at'), ops.now()):
                     active = True

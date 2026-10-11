@@ -6,11 +6,12 @@ root=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$root"
 . scripts/env.sh
 unset POSTGRES_PASSWORD PORCHLIGHT_MIGRATOR_PASSWORD PORCHLIGHT_APP_PASSWORD PORCHLIGHT_AGENT_PASSWORD PORCHLIGHT_BACKUP_PASSWORD PORCHLIGHT_VERSION
-keep=0 bundle='' bundle_supplied=0 receipt='' source='' identity=$root/var/backup-recovery.key
+keep=0 bundle='' bundle_supplied=0 receipt='' source='' installer='' identity=$root/var/backup-recovery.key
 while (($#)); do
   case $1 in
     --keep) keep=1; shift ;;
     --source) source=${2:?}; shift 2 ;;
+    --installer) installer=${2:?}; shift 2 ;;
     --identity) identity=${2:?}; shift 2 ;;
     --receipt) receipt=${2:?}; shift 2 ;;
     *)
@@ -28,6 +29,9 @@ PY
 )
 fi
 [[ -s $bundle && -s $identity ]] || { printf 'FAIL drill bundle or identity missing\n'; exit 1; }
+# Trust is established by the operator, not by the old bundle's artifact version.
+[[ -n $installer && -f $installer && ! -L $installer ]] || { printf 'FAIL --installer must select the newest verified installer (not the matching old release)\n'; exit 2; }
+installer=$(realpath "$installer")
 # age on this laptop sees only the repository mount. Cold desktop copies must be staged and reverified first.
 if [[ -n $receipt ]]; then bundle=$(python3 -I deploy/scripts/stage-pulled-bundle.py "$bundle" "$receipt"); fi
 bundle=$(realpath "$bundle")
@@ -74,11 +78,11 @@ cp "$drill/bundle/manifest.json" "$drill/manifest.json"
 printf 'PASS bundle manifest hashes\n'
 version=$(python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$drill/manifest.json")
 source=${source:-$root/dist/$version}
-if ! bash "$source/install.sh" restore "$bundle" --source "$source" --identity "$identity" \
+if ! bash "$installer" restore "$bundle" --source "$source" --identity "$identity" \
   --root "$PORCHLIGHT_ROOT" --run-dir "$PORCHLIGHT_RUN_DIR" --project porchlight-drill --no-funnel --no-backup --no-start > "$drill/restore.log" 2>&1; then exit 1; fi
 printf 'PASS isolated restore and migrate\n'
 # Compare before any API/projector/derivation or backup writer starts.
-if ! python3 -I - "$drill" 2> "$drill/counts.log" <<'PY'
+if ! python3 -I - "$drill" "$root/deploy/lib/blob_integrity.py" 2> "$drill/counts.log" <<'PY'
 import hashlib,json,pathlib,re,subprocess,sys
 p=pathlib.Path(sys.argv[1]);m=json.loads((p/'manifest.json').read_text())
 base=['docker','compose','-p','porchlight-drill','--env-file',str(p/'stack/.env'),'-f',str(p/'stack/release-current/compose.yml'),'exec','-T','postgres','psql','-X','-qAt','-U','postgres','-d','porchlight','-v','ON_ERROR_STOP=1']
@@ -94,7 +98,7 @@ assert query("SELECT encode(ca_fingerprint,'hex') FROM porchlight.install_state 
 assert (p/'stack/data/pki/ca.crt').read_bytes()==(p/'bundle/pki/ca.crt').read_bytes()
 # Trusted local helper; never import from the decrypted bundle or caller's cwd.
 import importlib.util
-spec=importlib.util.spec_from_file_location('blob_integrity',pathlib.Path.cwd()/'deploy/lib/blob_integrity.py')
+spec=importlib.util.spec_from_file_location('blob_integrity',sys.argv[2])
 blobs=importlib.util.module_from_spec(spec);spec.loader.exec_module(blobs)
 blobs.verify_restored(query,p/'stack/data/blobs')
 print('PASS restored main and thumbnail blob identities')

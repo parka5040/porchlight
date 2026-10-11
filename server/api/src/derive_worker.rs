@@ -73,6 +73,20 @@ async fn process_job(
     now: DateTime<Utc>,
     immediate: bool,
 ) -> anyhow::Result<bool> {
+    process_job_checked(pool, item, now, immediate, || std::future::ready(())).await
+}
+// The acquisition seam lets tests attempt a raw reopen between occurrence and job locks.
+async fn process_job_checked<F, Fut>(
+    pool: &PgPool,
+    item: uuid::Uuid,
+    now: DateTime<Utc>,
+    immediate: bool,
+    after_occurrences: F,
+) -> anyhow::Result<bool>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = ()>,
+{
     let mut tx = begin_as(pool, &Actor::system()).await?;
     let locked: Option<uuid::Uuid> =
         sqlx::query_scalar("select id from porchlight.items where id=$1 for update skip locked")
@@ -93,6 +107,7 @@ async fn process_job(
     .bind(item)
     .fetch_all(&mut *tx)
     .await?;
+    after_occurrences().await;
     sqlx::query(
         "select item_id from porchlight.item_derivation where item_id=$1 for update nowait",
     )
@@ -215,5 +230,63 @@ pub async fn run_with_clock(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod audit_bl_server {
+    use super::*;
+    #[sqlx::test(migrations = "../db/migrations")]
+    async fn worker_item_lock_blocks_raw_reopen_before_job_acquisition(pool: PgPool) {
+        let h = porchlight_db::testing::seed_household(&pool).await.unwrap();
+        let item = porchlight_db::testing::insert_appointment(&pool, &h)
+            .await
+            .unwrap();
+        let now = "2026-10-05T12:00:00Z".parse().unwrap();
+        assert!(drain_candidate(&pool, item, now).await.unwrap());
+        let occurrence: uuid::Uuid = sqlx::query_scalar(
+            "SELECT id FROM porchlight.item_occurrences WHERE item_id=$1 ORDER BY seq LIMIT 1",
+        )
+        .bind(item)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE porchlight.item_occurrences SET status='skipped' WHERE id=$1")
+            .bind(occurrence)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let claimed = process_job_checked(&pool, item, now, true, || async {
+            // The worker did not lock this closed occurrence and has not locked its
+            // job. Reopen still cannot commit: task_events' item FK needs KEY SHARE,
+            // incompatible with the worker's already-held item FOR UPDATE.
+            let mut raw = begin_as(&pool, &Actor::system()).await.unwrap();
+            sqlx::query("SET LOCAL lock_timeout='100ms'")
+                .execute(&mut *raw)
+                .await
+                .unwrap();
+            let error =
+                sqlx::query("UPDATE porchlight.item_occurrences SET status='todo' WHERE id=$1")
+                    .bind(occurrence)
+                    .execute(&mut *raw)
+                    .await
+                    .unwrap_err();
+            assert_eq!(
+                error.as_database_error().unwrap().code().as_deref(),
+                Some("55P03")
+            );
+            raw.rollback().await.unwrap();
+        })
+        .await
+        .unwrap();
+        assert!(claimed);
+        // Once the worker commits, the same raw operation succeeds and is derived
+        // in a new item-first attempt, not folded into a stale acquired open set.
+        sqlx::query("UPDATE porchlight.item_occurrences SET status='todo' WHERE id=$1")
+            .bind(occurrence)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(drain_candidate(&pool, item, now).await.unwrap());
     }
 }

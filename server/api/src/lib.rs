@@ -1,8 +1,10 @@
 //! Porchlight server library: TLS listeners, HTTP routers, shared state and the outbox projector.
 
+pub mod admin_recovery;
 pub mod blobs;
 pub mod calendar;
 pub mod collaboration;
+pub mod concurrency;
 pub mod config;
 pub mod db;
 pub mod derive_worker;
@@ -16,6 +18,7 @@ pub mod lifecycle;
 pub mod list_types;
 pub mod lists;
 pub mod lists_policy;
+pub mod maintenance;
 pub mod mutation;
 pub mod openapi;
 pub mod outbound;

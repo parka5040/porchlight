@@ -13,6 +13,8 @@ fun releaseSetting(name: String): String? = providers.gradleProperty(name).orNul
     ?: providers.environmentVariable(name).orNull
 val releaseKeystore = releaseSetting("PORCHLIGHT_KEYSTORE")
 val releasePasswordFile = releaseSetting("PORCHLIGHT_KEYSTORE_PASSWORD_FILE")
+// Opt-in instrumentation against release code/rules, without production signing keys or debug fixtures.
+val minifiedSmoke = providers.gradleProperty("porchlight.minifiedSmoke").orNull == "true"
 require((releaseKeystore == null) == (releasePasswordFile == null)) {
     "Both PORCHLIGHT_KEYSTORE and PORCHLIGHT_KEYSTORE_PASSWORD_FILE are required for signing"
 }
@@ -49,6 +51,28 @@ android {
         buildTypes.getByName("release").signingConfig = signingConfigs.getByName("release")
     }
     // Missing both settings intentionally produces an unsigned CI release APK.
+    buildTypes.getByName("release") {
+        isMinifyEnabled = true
+        isShrinkResources = true
+        proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+    }
+    buildTypes.create("minified") {
+        initWith(buildTypes.getByName("release"))
+        signingConfig = signingConfigs.getByName("debug")
+        applicationIdSuffix = ".minified"
+        matchingFallbacks += "release"
+        // AndroidX instrumentation resolves this shared-library ABI from the target APK.
+        // Never apply these test-only roots to the shipping release build.
+        proguardFiles("proguard-minified-test.pro")
+    }
+    if (minifiedSmoke) {
+        testBuildType = "minified"
+        // Debug's instrumentation uses fixture activities that must never enter a release-like APK.
+        sourceSets.getByName("androidTest") {
+            java.setSrcDirs(listOf("src/minifiedAndroidTest/kotlin"))
+            kotlin.setSrcDirs(listOf("src/minifiedAndroidTest/kotlin"))
+        }
+    }
 
     lint { checkDependencies = true } // shared androidMain API guards must be scanned too.
 
@@ -99,7 +123,7 @@ val generateUpdateSignerFixture by tasks.registering(GenerateUpdateSignerFixture
         outputDirectory.get().asFile.absolutePath)
 }
 androidComponents.onVariants { variant ->
-    variant.androidTest?.sources?.assets?.addGeneratedSourceDirectory(generateUpdateSignerFixture) { it.outputDirectory }
+    if (!minifiedSmoke) variant.androidTest?.sources?.assets?.addGeneratedSourceDirectory(generateUpdateSignerFixture) { it.outputDirectory }
 }
 
 // c1a: AGP carries the generator dependency to every resource-processing task.
@@ -112,6 +136,8 @@ androidComponents.onVariants { variant ->
 dependencies {
     implementation(project(":shared"))
     implementation(libs.androidx.activity.compose)
+    // Trust helper theme uses Theme.AppCompat; pin the already-locked transitive artifact explicitly.
+    runtimeOnly(libs.androidx.appcompat)
     // LocalLifecycleOwner (QR scanner); debug got it only transitively, so release builds failed without it.
     implementation(libs.jetbrains.lifecycle.runtime.compose)
     implementation(libs.androidx.camera.camera2)
@@ -119,12 +145,17 @@ dependencies {
     implementation(libs.androidx.camera.view)
     implementation(libs.zxing.core)
     implementation(libs.androidx.work.runtime.ktx)
+    // Already in shared's runtime; only the minified-only probe calls Json directly from this module.
+    add("minifiedImplementation", libs.kotlinx.serialization.json)
 
-    // c3b: key-screen instrumented equivalents use the same already-cached shared UI/model libraries.
-    androidTestImplementation(libs.compose.foundation)
-    androidTestImplementation(libs.kotlinx.datetime)
-    androidTestImplementation(libs.kotlinx.serialization.json)
-    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+    // c3b: debug key-screen instrumentation uses shared UI/model libraries. The minified smoke
+    // stays black-box: Compose test internals can reference methods inlined away from release.
+    if (!minifiedSmoke) {
+        androidTestImplementation(libs.compose.foundation)
+        androidTestImplementation(libs.kotlinx.datetime)
+        androidTestImplementation(libs.kotlinx.serialization.json)
+        androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+    }
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.ext.junit)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
@@ -140,6 +171,10 @@ val verifyManagedDeviceFilter by tasks.registering {
             "Managed-device runs must exclude @ControllerOnly (UTP treats assumption skips as failures)"
         }
     }
+}
+// These task types are internal AGP APIs: a plugin bump requires rechecking all three filter hooks.
+check(com.android.Version.ANDROID_GRADLE_PLUGIN_VERSION == "9.4.1") {
+    "Revalidate the managed-device filter hooks before changing the pinned AGP version"
 }
 tasks.withType<com.android.build.gradle.internal.tasks.ManagedDeviceInstrumentationTestTask>().configureEach {
     dependsOn(verifyManagedDeviceFilter)

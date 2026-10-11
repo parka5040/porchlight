@@ -27,6 +27,7 @@ class HeaderPolicy(private val info: ClientInfo, private val zone: () -> String?
 }
 
 class ApiProblem(val type: String, val status: Int, val title: String, val detail: String? = null, val extras: Map<String, JsonElement> = emptyMap(), val retryAfterMillis: Long? = null) : Exception("$status $type") {
+    val maintenanceMessage: String? get() = if (status == 503 && type == "maintenance") "Server is updating — try again shortly" else null
     override fun toString() = "ApiProblem($status $type)" // no raw bodies/password/token echoes
     companion object {
         fun decode(body: String, retryAfterMillis: Long? = null): ApiProblem = try {
@@ -115,7 +116,7 @@ class KtorApiTransport(
             }
             val text = try { response.bodyAsText() } catch (e: Exception) { throw classifyFailure(e) }
             if (response.status.value !in 200..299) {
-                if (response.contentType()?.withoutParameters() == ContentType.parse("application/problem+json")) throw ApiProblem.decode(text, response.headers[HttpHeaders.RetryAfter]?.toLongOrNull()?.takeIf { it >= 0 }?.coerceAtMost(86_400)?.times(1000))
+                if (response.contentType()?.withoutParameters() == ContentType.parse("application/problem+json")) throw ApiProblem.decode(text, retryAfterMillis(response.headers[HttpHeaders.RetryAfter]))
                 throw ApiProblem("http-error", response.status.value, "Request failed")
             }
             val json = if (text.isBlank()) buildJsonObject {} else try { WireJson.parseToJsonElement(text).jsonObject }
@@ -138,7 +139,7 @@ class KtorApiTransport(
                     opened = true
                     if (response.status.value !in 200..299) {
                         val text = response.bodyAsText()
-                        throw ApiProblem.decode(text)
+                        throw ApiProblem.decode(text, retryAfterMillis(response.headers[HttpHeaders.RetryAfter]))
                     }
                     if (response.contentType()?.withoutParameters() != ContentType.Text.EventStream) throw app.porchlight.shared.live.InvalidStream()
                     val parser = app.porchlight.shared.live.SseParser()
@@ -170,7 +171,8 @@ class KtorApiTransport(
         for ((index, endpoint) in endpoints.withIndex()) {
             val response = try { client.post(endpoint + path) {
                 policy.headers("POST", session, key).forEach { (k, v) -> header(k, v) }
-                timeout { requestTimeoutMillis = 600_000; socketTimeoutMillis = 30_000 }
+                // Server ingest may run after the last upload byte. The engine separately limits write idle.
+                timeout { requestTimeoutMillis = 600_000; socketTimeoutMillis = 600_000 }
                 setBody(data); onUpload { sent, total -> progress(sent, total ?: data.contentLength ?: bytes.size.toLong()) }
             } } catch (e: CancellationException) { throw e }
             catch (e: Exception) { if (!connectFailure(e)) throw classifyFailure(e); if (index == endpoints.lastIndex) throw ConnectFailure(); continue }
@@ -181,7 +183,7 @@ class KtorApiTransport(
         throw ConnectFailure()
     }
     override suspend fun download(path: String, session: String?, stepUp: String?, consume: suspend (ByteArray) -> Unit) {
-        require(path in setOf("/v1/export/member", "/v1/admin/export/household"))
+        require(path.isExportPath())
         streamDownload(path, session, null, null, stepUp, {}, consume)
     }
     override suspend fun download(path: String, session: String?, range: String?, ifRange: String?,
@@ -193,21 +195,28 @@ class KtorApiTransport(
     private suspend fun streamDownload(path: String, session: String?, range: String?, ifRange: String?, stepUp: String?,
         begin: suspend (app.porchlight.shared.backups.DownloadHead) -> Unit, chunk: suspend (ByteArray) -> Unit) {
         val attachment = path.startsWith("/v1/attachments/")
-        val export = path in setOf("/v1/export/member", "/v1/admin/export/household")
+        val export = path.isExportPath()
         val headers = policy.headers("GET", session, stepUp = stepUp)
         for ((index, endpoint) in endpoints.withIndex()) {
             val statement = client.prepareGet(endpoint + path) {
                 headers.forEach { (key, value) -> header(key, value) }
                 range?.let { header(HttpHeaders.Range, it) }
                 ifRange?.let { header(HttpHeaders.IfRange, it) }
+                // Member exports finish their disk spool before headers. OkHttp honors this
+                // per-request socket timeout; the body loop keeps its shorter idle deadline.
+                if (export) timeout { socketTimeoutMillis = 900_000 }
             }
             var received = false
             try {
                 // execute prevents eager buffering; callbacks and body errors must never replay.
                 statement.execute { response ->
                     received = true
-                    if (if (export) response.status.value !in 200..299 else response.status.value !in listOf(200, 206))
-                        throw binaryProblem(response.status.value, response.contentType(), response.bodyAsText(), response.headers[HttpHeaders.RetryAfter], if (export) "Download failed" else "Request failed")
+                    if (if (export) response.status.value !in 200..299 else response.status.value !in listOf(200, 206)) {
+                        val text = if (export) exportRead {
+                            response.bodyAsText()
+                        } else response.bodyAsText()
+                        throw binaryProblem(response.status.value, response.contentType(), text, response.headers[HttpHeaders.RetryAfter], if (export) "Download failed" else if (path == "/v1/backups/latest/download") "Backup download failed" else "Request failed")
+                    }
                     val length = response.headers[HttpHeaders.ContentLength]?.toLongOrNull()
                     if (attachment && (length ?: 0) > ATTACHMENT_LIMIT) throw attachmentTooLarge()
                     begin(app.porchlight.shared.backups.DownloadHead(response.status.value, response.headers[HttpHeaders.ETag],
@@ -216,7 +225,7 @@ class KtorApiTransport(
                     val buffer = ByteArray(64 * 1024)
                     var total = 0L
                     while (true) {
-                        val count = if (export) kotlinx.coroutines.withTimeout(300_000) {
+                        val count = if (export) exportRead {
                             channel.readAvailable(buffer, 0, buffer.size)
                         } else channel.readAvailable(buffer, 0, buffer.size)
                         if (count < 0) break
@@ -226,6 +235,8 @@ class KtorApiTransport(
                             chunk(buffer.copyOf(count))
                         }
                     }
+                    if (attachment && length != null && total != length)
+                        throw ApiProblem("invalid-response", 502, "Incomplete attachment download")
                 }
                 return
             } catch (e: CancellationException) { throw e }
@@ -238,12 +249,18 @@ class KtorApiTransport(
         throw ConnectFailure()
     }
     private fun binaryProblem(status: Int, type: ContentType?, text: String, retry: String?, failureTitle: String = "Request failed"): ApiProblem =
-        if (type?.withoutParameters() == ContentType.parse("application/problem+json")) ApiProblem.decode(text, retry?.toLongOrNull()?.takeIf { it >= 0 }?.coerceAtMost(86_400)?.times(1000))
+        if (type?.withoutParameters() == ContentType.parse("application/problem+json")) ApiProblem.decode(text, retryAfterMillis(retry))
         else ApiProblem("http-error", status, failureTitle)
     override fun close() { client.close() }
 }
 
 fun jsonBody(vararg fields: Pair<String, String>) = buildJsonObject { fields.forEach { (key, value) -> put(key, value) } }
+
+private fun retryAfterMillis(value: String?) = value?.toLongOrNull()?.takeIf { it >= 0 }?.coerceAtMost(86_400)?.times(1000)
+private fun String.isExportPath() = this in setOf("/v1/export/member", "/v1/admin/export/household")
+private suspend fun <T : Any> exportRead(block: suspend () -> T): T =
+    kotlinx.coroutines.withTimeoutOrNull(300_000) { block() }
+        ?: throw ApiProblem("export-timeout", 504, "Export download stalled. Retry the export.")
 
 private const val ATTACHMENT_LIMIT = 25 * 1024 * 1024
 private fun attachmentTooLarge() = ApiProblem("attachment-too-large", 413, "Download exceeds limit")

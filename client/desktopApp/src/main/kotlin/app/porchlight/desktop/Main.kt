@@ -36,7 +36,7 @@ fun main(args: Array<String>) {
     }
     val controller = remember { services.trust.controller }
     DisposableEffect(services, controller) { onDispose { controller.close(); services.close(); instance.close() } }
-    Window(visible = visible, onCloseRequest = { if (app.porchlight.shared.live.desktopCloseHides(services.trayAvailable.value == true, services.runtimeNotice.value)) visible = false else exitApplication() }, title = "Porchlight", icon = PorchlightWindowIcon()) {
+    Window(visible = visible, onCloseRequest = { if (app.porchlight.shared.live.desktopCloseHides(services.trayAvailable.value == true)) visible = false else exitApplication() }, title = "Porchlight", icon = PorchlightWindowIcon()) {
         DisposableEffect(window, controller) {
             val listener = object : java.awt.event.WindowFocusListener {
                 override fun windowGainedFocus(event: java.awt.event.WindowEvent) { controller.onForeground(); services.updates.onResume() }

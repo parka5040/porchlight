@@ -53,6 +53,27 @@ pub fn print(command: &Command, value: &Value, json_output: bool) -> Result<()> 
             value["client_release"]["android_version_code"],
             text(value, "upgrade_command")
         ),
+        Command::SecurityEvents { .. } => {
+            println!(
+                "OCCURRED AT\tKIND\tOUTCOME\tTARGET\tACTOR MEMBER\tACTOR DEVICE\tACTOR TOKEN\tREQUEST"
+            );
+            if let Some(items) = value["items"].as_array() {
+                for e in items {
+                    println!(
+                        "{}\t{}\t{}\t{}:{}\t{}\t{}\t{}\t{}",
+                        text(e, "occurred_at"),
+                        text(e, "kind"),
+                        text(e, "outcome"),
+                        text(e, "target_type"),
+                        text(e, "target_id"),
+                        text(&e["actor"], "member_id"),
+                        text(&e["actor"], "device_id"),
+                        text(&e["actor"], "token_id"),
+                        text(&e["actor"], "request_id")
+                    );
+                }
+            }
+        }
         Command::Backups => println!(
             "Last success: {}\nNext due: {}\nLast error: {}",
             text(value, "last_success"),

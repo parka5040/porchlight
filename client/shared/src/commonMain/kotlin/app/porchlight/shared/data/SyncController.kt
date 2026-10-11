@@ -38,7 +38,8 @@ class SyncController(private val api: ReadsApi, private val cache: ReadCache,
      * stays and [status] reports the failure. [authoritative] (R81, stream resnapshot): replace without re-applying
      * responses received while the snapshot loaded; otherwise newer ones are re-applied (c2b N-1) unless the snapshot
      * predates the cursor installed at request time (restore/rollback). */
-    suspend fun refresh(authoritative: Boolean = false) = cache.inSession { mutex.withLock {
+    internal var fetchListScopes: suspend (app.porchlight.shared.api.models.SnapshotRead) -> List<app.porchlight.shared.api.models.ListResponse>? = { null }
+    suspend fun refresh(authoritative: Boolean = false) = cache.inSession { fence -> mutex.withLock {
         mutableStatus.value = SyncStatus.Refreshing
         overlapLock.withLock { snapshotInFlight = true; overlapped.clear() }
         try {
@@ -48,8 +49,8 @@ class SyncController(private val api: ReadsApi, private val cache: ReadCache,
             val snapshot = api.readsSnapshot(version)
             val projections = fetchProjections()
             // Atomically with the switch, re-apply write responses newer than the snapshot's rows (undated too).
-            cache.installStaged(snapshot, now(), projections, receivedAfter = mark.receipts, requestCursor = mark.cursor,
-                authoritative = authoritative)
+            cache.installStaged(fence, snapshot, now(), projections, receivedAfter = mark.receipts, requestCursor = mark.cursor,
+                authoritative = authoritative, scopedChecks = fetchListScopes(snapshot))
             // Re-reads that ran meanwhile (write follow-ups, C4 tickles) are repeated once for the parent item, its
             // dated and undated occurrences and both projections. A failure reports Failed; the installed snapshot stays.
             val again = overlapLock.withLock { snapshotInFlight = false; overlapped.toSet().also { overlapped.clear() } }
@@ -69,11 +70,11 @@ class SyncController(private val api: ReadsApi, private val cache: ReadCache,
         return Projections(board.fetch(), agenda.fetch(at - 180.days, at + 548.days))
     }
     /** Refetches both projections, then replaces their rows in place together; a failure leaves both untouched. */
-    suspend fun refreshProjections() = cache.inSession { cache.replaceProjections(fetchProjections()) }
+    suspend fun refreshProjections() = cache.inSession { fence -> cache.replaceProjections(fence, fetchProjections()) }
     /** C4's ID-only tickles use authoritative GETs. No occurrence GET exists: fetch its parent collection.
      * An unknown occurrence tickle requires a snapshot. 404 evicts rather than retaining hidden data. */
     suspend fun refetchByIds(itemIds: Set<String> = emptySet(), occurrenceIds: Set<String> = emptySet(),
-                            memberIds: Set<String> = emptySet(), settingsChanged: Boolean = false) = cache.inSession {
+                            memberIds: Set<String> = emptySet(), settingsChanged: Boolean = false) = cache.inSession { fence ->
         // Zone/authority derivation may change every affected occurrence, not just the member row.
         if (memberIds.isNotEmpty()) { refresh(); return@inSession }
         val byId = cache.view.value.occurrences.associateBy { it.id }
@@ -100,20 +101,32 @@ class SyncController(private val api: ReadsApi, private val cache: ReadCache,
         failure?.let { throw it }
     }
     /** Occurrence write follow-up: the affected entities (parent item, its occurrences) and both projections in place. */
-    internal suspend fun afterOccurrenceWrite(itemId: String) = cache.inSession {
+    internal suspend fun afterOccurrenceWrite(itemId: String) = cache.inSession { fence ->
         refetchItems(setOf(itemId))
         refreshProjections()
     }
     suspend fun evictItem(id: String) = cache.evictItem(id)
     // Never wait for a network-held refresh mutex to clear credentials' cached projections.
-    internal var clearFiles: suspend () -> Unit = {}
-    suspend fun clear() { cache.clear(); clearFiles(); mutableStatus.value = SyncStatus.Idle }
+    suspend fun clear() {
+        try { cache.clear(); mutableStatus.value = SyncStatus.Idle }
+        catch (e: CancellationException) { throw e }
+        catch (e: Exception) { mutableStatus.value = SyncStatus.Failed("attachment-cleanup-failed"); throw e }
+    }
+    /** Binding-owned retries keep the identity collector alive, without admitting a new session's reads first.
+     * Explicit logout still uses clear(): its durable logout marker must survive failed file cleanup. */
+    internal suspend fun awaitCleared() {
+        while (true) {
+            try { clear(); return }
+            catch (e: CancellationException) { throw e }
+            catch (_: Exception) { delay(1000) }
+        }
+    }
 }
 class SyncUnavailable : Exception("Household refresh failed; cached data remains available")
 
 /** Downstream C3/C4 composition API. Owns no HTTP client; every generated call uses the trust coordinator. */
 class HouseholdData(val cache: ReadCache, call: GeneratedCall, now: () -> Instant,
-                    val writes: WriteCoordinator = WriteCoordinator(), version: String = BuildInfo.VERSION, attachmentStore: AttachmentStore = MemoryAttachmentStore()) {
+                    val writes: WriteCoordinator = WriteCoordinator(), version: String = BuildInfo.VERSION) {
     private val now = now
     private val reads = ReadsApi(call)
     private val itemApi = ItemsApi(call)
@@ -135,7 +148,7 @@ class HouseholdData(val cache: ReadCache, call: GeneratedCall, now: () -> Instan
     val deviceAdmin = DeviceAdminRepository(call, writes, cache)
     val lists = ListRepository(call, cache, writes, version)
     val comments = CommentRepository(call, cache, writes, version)
-    val attachments = AttachmentRepository(call, cache, writes, attachmentStore, now)
+    val attachments = AttachmentRepository(call, cache, writes, now)
     val search = SearchRepository(reads, version)
     val sync = SyncController(reads, cache, items, occurrences, household, agenda, board, now, version)
     init {
@@ -149,13 +162,14 @@ class HouseholdData(val cache: ReadCache, call: GeneratedCall, now: () -> Instan
         imports.afterCommit = { sync.refresh() }
         planning.afterAccept = { sync.refresh() }
         items.afterWrite = { _ -> sync.refresh() }
-        sync.clearFiles = { attachments.clearFiles() }
+        sync.fetchListScopes = { lists.fetchRetainedScopes(it) }
         lists.afterWrite = { sync.refresh() }; comments.afterWrite = { sync.refresh() }; attachments.afterWrite = { sync.refresh() }
         occurrences.afterWrite = { id -> sync.afterOccurrenceWrite(id) }
     }
     /** Application lifetime, not composition lifetime; cancellation prevents a late old-session sync promotion. */
-    fun bindTrust(controller: TrustController, scope: CoroutineScope, onIdentityEpoch: ((Long) -> Unit)? = null, onIdentityEnded: suspend () -> Unit = {},
-        streamEnabled: StateFlow<Boolean> = MutableStateFlow(true), refreshWhenInactive: Boolean = true, resumeFromCursor: Boolean = false): Job {
+    fun bindTrust(controller: TrustController, scope: CoroutineScope, onIdentityEpoch: ((Long) -> Unit)? = null, onIdentityEnded: suspend (Long) -> Unit = {},
+        streamEnabled: StateFlow<Boolean> = MutableStateFlow(true), refreshWhenInactive: Boolean = true, resumeFromCursor: Boolean = false,
+        onIdentityStarting: suspend (CacheOwner, Long) -> Unit = { _, _ -> }): Job {
         val source = app.porchlight.shared.live.StreamSource { after, receive ->
             if (!controller.backgroundSessionUsable()) throw HouseholdLocked()
             val epoch = controller.sessionEpoch.value
@@ -170,7 +184,7 @@ class HouseholdData(val cache: ReadCache, call: GeneratedCall, now: () -> Instan
             catch (e: app.porchlight.shared.transport.DeviceCertificateRevoked) { if (epoch == controller.sessionEpoch.value) controller.onTransportError(e); throw e }
         }
         live = app.porchlight.shared.live.LiveSync(source, { cache.sync.value?.cursor }, { frame ->
-            cache.inSession {
+            cache.inSession { fence ->
                 when {
                     frame.evicted && frame.entityType == "item" -> sync.evictItem(frame.entityId)
                     frame.kind == "item.changed" || frame.kind == "item.access_changed" -> sync.refresh()
@@ -178,36 +192,88 @@ class HouseholdData(val cache: ReadCache, call: GeneratedCall, now: () -> Instan
                     // Only the snapshot carries scheduled reminder identities, so reconcile them atomically too.
                     frame.kind == "derived" -> sync.refresh()
                     frame.kind.startsWith("notification.") -> notifications.refresh()
-                    // Member/private and collaboration entities have no cache-safe narrow read here yet.
+                    frame.entityType == "list" -> lists.refetchByIds(setOf(frame.entityId))
+                    frame.entityType == "list_entry" -> {
+                        val ids = cache.view.value.lists.filter { row -> (row.propertyEntries + row.gotIt).any { it.id == frame.entityId } }.mapTo(mutableSetOf()) { it.id }
+                        if (ids.isEmpty()) sync.refresh() else lists.refetchByIds(ids)
+                    }
+                    // Member/private and other collaboration entities need a snapshot.
                     else -> sync.refresh()
                 }
             }
-        }, { seq -> cache.inSession { cache.acknowledgeCursor(seq) } },
+        }, { seq -> cache.inSession { fence -> cache.acknowledgeCursor(seq) } },
             // R81: a terminal `resnapshot` frame (cursor expired / epoch changed) replaces the cache authoritatively,
             // without re-applying older receipts. Also used for the cursor-less start, which has no receipts to keep.
             { sync.refresh(authoritative = true) }, now)
+        cache.ownerBindingRequired = true
         cache.sessionEpoch = { controller.sessionEpoch.value }
         cache.sessionCommitMutex = controller.sessionCommitMutex
-        // Logout/re-enroll await this clear attempt; the epoch-change retry is best-effort.
-        // Both attempts can fail on a closed cache; rows remain until a successful open-cache clear.
-        controller.identityEnded = { sync.clear(); onIdentityEnded() }
+        // Install before restore: logout's durable marker survives failed/closed-cache clears and
+        // restores this obligation on next start. Cleanup and owner admission share this binding-local lock.
+        val cleanupMutex = Mutex()
+        val admissionFailed = MutableStateFlow(false)
+        var cleanedEpoch: Long? = null
+        var boundEpoch: Long? = null
+        suspend fun clearIdentityLocked(expected: Long) {
+            if (expected != controller.sessionEpoch.value || cleanedEpoch == expected || boundEpoch == expected) return
+            sync.clear()
+            if (expected != controller.sessionEpoch.value) return
+            onIdentityEnded(expected)
+            if (expected == controller.sessionEpoch.value) {
+                cleanedEpoch = expected
+                controller.identityCleanupCompleted(expected)
+            }
+        }
+        suspend fun clearIdentity(expected: Long) = cleanupMutex.withLock { clearIdentityLocked(expected) }
+        controller.identityStarting = { value -> cleanupMutex.withLock {
+            try {
+                // A failed native clear is still an admission obligation even if owner reconciliation could succeed.
+                val epoch = controller.sessionEpoch.value
+                if (controller.identityCleanupRequired(epoch)) clearIdentityLocked(epoch)
+                cache.initialize(value.cacheOwner())
+                // Native inventories have their own durable owner: a prior process may have cleared only SQL/files.
+                onIdentityStarting(value.cacheOwner(), epoch)
+                boundEpoch = epoch
+                admissionFailed.value = false
+            } catch (e: Exception) { admissionFailed.value = true; throw e }
+        } }
+        suspend fun awaitIdentityCleared(expected: Long) {
+            while (expected == controller.sessionEpoch.value) {
+                try { clearIdentity(expected); return }
+                catch (e: CancellationException) { throw e }
+                catch (_: Exception) { delay(1000) }
+            }
+        }
+        // A synchronous attempt is optional: cancellation/failure leaves the epoch obligation for this binding's retry.
+        controller.identityEnded = { clearIdentity(controller.sessionEpoch.value) }
         var previousEpoch = controller.sessionEpoch.value
         var notifiedEpoch: Long? = null
         return scope.launch {
-            cache.initialize()
-            launch { attachments.watchEvictions() }
+            // A failed owner bind is a gate, not a Ready UI with a background-only retry.
+            launch {
+                while (currentCoroutineContext().isActive) {
+                    combine(controller.state, cache.storageNotice, admissionFailed) { state, notice, failed ->
+                        state is TrustState.LocalTrustLost && (notice != null || failed)
+                    }.first { it }
+                    delay(1000)
+                    if (controller.state.value is TrustState.LocalTrustLost && (cache.storageNotice.value != null || admissionFailed.value))
+                        controller.restore()
+                }
+            }
             launch { controller.state.collect { if (it == TrustState.Ready) controller.refreshWhenReady() } }
-            combine(controller.state, controller.sessionEpoch, controller.sessionRevision, streamEnabled) { state, epoch, revision, enabled ->
+            combine(controller.state, controller.sessionEpoch, controller.sessionRevision, streamEnabled, cache.storageRevision) { state, epoch, revision, enabled, storage ->
                 // Ready <-> PinRequired is the SAME session: do not cancel/refetch/reconnect on a UI relock.
-                Triple(if (state == TrustState.PinRequired) TrustState.Ready else state, epoch, revision) to enabled
-            }.distinctUntilChanged().collectLatest { (session, enabled) ->
+                val active = state == TrustState.Ready || state == TrustState.PinRequired
+                // Storage loss restarts an admitted stream, not the ownerless clear that emitted it.
+                Triple(Triple(if (state == TrustState.PinRequired) TrustState.Ready else state, epoch, revision), enabled, storage.takeIf { active })
+            }.distinctUntilChanged().collectLatest { (session, enabled, _) ->
                 val (state, epoch, _) = session
                 if (notifiedEpoch != epoch) {
                     onIdentityEpoch?.let { callback -> withContext(Dispatchers.Main.immediate) { callback(epoch) } }
                     notifiedEpoch = epoch
                 }
-                // The epoch moves only when the identity ends or changes (logout, re-enroll, another device/member).
-                if (epoch != previousEpoch) { sync.clear(); previousEpoch = epoch }
+                // Retry the whole epoch obligation, but never repeat a completed clear after replacement admission.
+                if (epoch != previousEpoch) { awaitIdentityCleared(epoch); previousEpoch = epoch }
                 when (state) {
                     TrustState.Ready -> try { withBackgroundSession(controller) {
                         controller.busy.first { !it }
@@ -219,7 +285,7 @@ class HouseholdData(val cache: ReadCache, call: GeneratedCall, now: () -> Instan
                         currentCoroutineContext().ensureActive() // a fenced stale-session reply is not our cancellation
                     } catch (_: Exception) { /* status is redacted */ }
                     // No live identity owns the data: covers a process that died before an earlier clear committed.
-                    TrustState.Enrollment, TrustState.ReEnroll -> { sync.clear() }
+                    TrustState.Enrollment, TrustState.ReEnroll -> { awaitIdentityCleared(epoch) }
                     // Login (cold start after expiry/logout), SessionExpired, PIN, wallet, upgrade and local-trust retry
                     // keep the persisted cache, hidden behind the gate, for the same identity.
                     else -> Unit

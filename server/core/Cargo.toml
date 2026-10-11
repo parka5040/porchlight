@@ -23,11 +23,11 @@ icalendar.workspace = true
 image.workspace = true
 infer.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

@@ -47,8 +47,8 @@ class LiveThreadWindowUiTest {
         val services = services(data)
         try {
             val comments = List(120) { commentFixture().copy(id = "comment-$it", body = "Message $it", createdAt = now + it.seconds) }
-            cache.putComments(comments)
             val item = itemRead(collabId("item")).copy(capabilities = listOf("view"))
+            cache.install(emptySnapshot(1).copy(items = listOf(item), comments = comments))
             runDesktopComposeUiTest(width = 700, height = 900) {
                 setContent { CompositionLocalProvider(LocalScreenServices provides services) { PorchlightTheme(ThemeMode.Daylight, false) {
                     Column(Modifier.verticalScroll(rememberScrollState())) { CollaborationSection(item) {} }

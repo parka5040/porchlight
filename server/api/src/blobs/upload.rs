@@ -1,7 +1,10 @@
 use super::*;
 use futures_util::StreamExt;
-use std::time::Duration;
-use tokio::io::AsyncWriteExt;
+use std::{
+    io::{Seek, SeekFrom},
+    sync::Arc,
+    time::Duration,
+};
 
 pub const UPLOAD_IDLE: Duration = Duration::from_secs(30);
 pub const UPLOAD_TOTAL: Duration = Duration::from_secs(10 * 60);
@@ -47,11 +50,33 @@ impl UploadStreams {
 }
 /// The RAII temp owns cleanup on rejection, replay, cancellation, timeout and decode failure.
 pub struct Upload {
-    pub temp: tempfile::NamedTempFile,
+    pub temp: Arc<UploadTemp>,
     _stream: tokio::sync::OwnedSemaphorePermit,
+    _disk: Arc<DiskReservation>,
     permit: Option<tokio::sync::OwnedSemaphorePermit>,
     pub name: String,
     pub mime: Option<String>,
+}
+/// The final owner unlinks and retires the physical charge together, even on cancellation.
+pub struct UploadTemp {
+    file: Option<tempfile::NamedTempFile>,
+    budget: DiskBudget,
+}
+impl UploadTemp {
+    pub fn path(&self) -> &Path {
+        self.file.as_ref().expect("live upload temp").path()
+    }
+    pub fn reopen(&self) -> std::io::Result<std::fs::File> {
+        self.file.as_ref().expect("live upload temp").reopen()
+    }
+}
+impl Drop for UploadTemp {
+    fn drop(&mut self) {
+        let file = self.file.take().expect("live upload temp");
+        let path = file.path().to_owned();
+        // Failed unlinks remain charged; GC can retry them later.
+        let _ = self.budget.change(&[&path], || file.close());
+    }
 }
 pub struct UploadMutation(pub Mutation<Upload>);
 fn multipart_error(e: axum::extract::multipart::MultipartError) -> ApiError {
@@ -83,11 +108,21 @@ impl FromRequest<AppState> for UploadMutation {
         tokio::fs::create_dir_all(&tmp)
             .await
             .map_err(|_| ApiError::internal("upload_tmp"))?;
+        let disk = state.disk_budget.reserve(
+            &tmp,
+            MAX_UPLOAD as u64,
+            state.settings.disk_reserve_bytes,
+        )?;
         let temp = tempfile::Builder::new()
             .prefix(".")
             .suffix(".tmp")
             .tempfile_in(tmp)
             .map_err(|_| ApiError::internal("upload_tmp"))?;
+        let temp = Arc::new(UploadTemp {
+            file: Some(temp),
+            budget: state.disk_budget.clone(),
+        });
+        let disk = Arc::new(disk);
         let (parts, body) = req.into_parts();
         // Idle means no incoming nonempty data, not no complete multipart field. Header trickles
         // also count as progress, but can never extend the independent ten-minute overall cap.
@@ -136,24 +171,31 @@ impl FromRequest<AppState> for UploadMutation {
             }
             let name = field.file_name().unwrap_or("attachment").to_owned();
             let mime = field.content_type().map(str::to_owned);
-            let mut file = tokio::fs::File::from_std(
-                temp.reopen()
-                    .map_err(|_| ApiError::internal("upload_tmp"))?,
-            );
             let mut len = 0;
             while let Some(chunk) = field.chunk().await.map_err(multipart_error)? {
                 if chunk.len() > MAX_UPLOAD - len {
                     return Err(ApiError::new(Problem::AttachmentTooLarge));
                 }
                 len += chunk.len();
-                file.write_all(&chunk)
-                    .await
-                    .map_err(|_| ApiError::internal("upload_tmp_write"))?;
-            }
-            file.flush()
+                let (temp, disk, state) = (temp.clone(), disk.clone(), state.clone());
+                tokio::task::spawn_blocking(move || {
+                    // The task retains the linked temp and both reservations through cancellation.
+                    let _disk = disk;
+                    let _quota = state
+                        .disk_budget
+                        .reserve_quota(chunk.len() as u64, state.settings.attachment_quota_bytes)?;
+                    state
+                        .disk_budget
+                        .change(&[temp.path()], || {
+                            let mut file = temp.reopen()?;
+                            file.seek(SeekFrom::End(0))?;
+                            file.write_all(&chunk)
+                        })
+                        .map_err(|_| ApiError::internal("upload_tmp_write"))
+                })
                 .await
-                .map_err(|_| ApiError::internal("upload_tmp_write"))?;
-            drop(file);
+                .map_err(|_| ApiError::internal("upload_tmp_task"))??;
+            }
             drop(field);
             if multipart
                 .next_field()
@@ -168,6 +210,7 @@ impl FromRequest<AppState> for UploadMutation {
                 name,
                 mime,
                 _stream: stream_slot,
+                _disk: disk,
                 permit: None,
             })
         };
@@ -225,7 +268,7 @@ pub async fn admit_ingest(state: &AppState, upload: &mut Upload) -> Result<(), A
             state.ingest_slots.clone().acquire_owned(),
         )
         .await
-        .map_err(|_| ApiError::transient(Problem::Conflict).retry(1))?
+        .map_err(|_| ApiError::transient_conflict().retry(1))?
         .map_err(|_| ApiError::internal("ingest_slot"))?,
     );
     Ok(())
@@ -240,6 +283,7 @@ pub async fn safe_ingest(
         .ok_or_else(|| ApiError::internal("ingest_not_admitted"))?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
+        let upload = upload; // Retain cleanup/reservations, not just the fields read below.
         let bytes =
             std::fs::read(upload.temp.path()).map_err(|_| ApiError::internal("upload_tmp_read"))?;
         let r = contain_ingest(|| {

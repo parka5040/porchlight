@@ -34,6 +34,7 @@ class DesktopSecretWallet internal constructor(
     constructor(serviceName: String = SERVICE, accountName: String = ACCOUNT) :
         this(serviceName, accountName, DirectSecretService(serviceName, accountName), useKeyring = true)
     override fun read(): String? = attempt { access({ getPassword(serviceName, accountName) }, { direct.read() }) }
+    internal fun deleteProbe() = direct.deleteProbe()
     override fun write(value: String) { attempt { access({ setPassword(serviceName, accountName, value) }, { direct.write(value) }) } }
     override fun <T> attempt(block: () -> T): T = direct.attempt(block)
     private fun <T> access(block: Keyring.() -> T, fallback: () -> T): T {
@@ -74,6 +75,16 @@ class DirectSecretService internal constructor(
     }
     fun requireUnlocked() { connected { } }
     override fun read(): String? = connected { it.read(attrs) }
+    internal fun deleteProbe() {
+        require(attrs["service"] == "app.porchlight.test")
+        connected { connection ->
+            val prompt = connection.delete(attrs)
+            if (prompt != NO_PROMPT) {
+                val completed = try { connection.prompt(prompt, promptTimeoutMillis) } catch (e: Exception) { throw WalletUnlockDismissed(e) }
+                if (!completed) throw WalletUnlockDismissed()
+            }
+        }
+    }
     override fun write(value: String) {
         connected { connection ->
             val prompt = connection.write(attrs, "Porchlight device key", value)
@@ -120,6 +131,7 @@ internal interface SecretServiceConnection : AutoCloseable {
     fun read(attributes: Map<String, String>): String?
     /** Creates or replaces the item in the default collection; returns the prompt to run ([NO_PROMPT] when none). */
     fun write(attributes: Map<String, String>, label: String, value: String): String
+    fun delete(attributes: Map<String, String>): String
     override fun close()
 }
 
@@ -166,6 +178,7 @@ interface SecretCollection : DBusInterface {
 interface SecretItem : DBusInterface {
     fun GetSecret(session: DBusPath): SecretValue
     fun SetSecret(secret: SecretValue)
+    fun Delete(): DBusPath
 }
 @DBusInterfaceName("org.freedesktop.Secret.Session")
 interface SecretSession : DBusInterface { fun Close() }
@@ -246,5 +259,6 @@ private class DbusSecretServiceConnection(private val conn: DBusConnection) : Se
                 "org.freedesktop.Secret.Item.Attributes" to Variant(attributes, "a{ss}")), secret, true).prompt.path
         }
     }
+    override fun delete(attributes: Map<String, String>): String = item(attributes)?.Delete()?.path ?: NO_PROMPT
     override fun close() = conn.close()
 }

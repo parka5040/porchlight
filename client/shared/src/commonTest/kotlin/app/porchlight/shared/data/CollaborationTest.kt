@@ -14,9 +14,9 @@ import kotlin.time.Duration.Companion.minutes
 
 fun collabId(name: String): String = "01999999-0000-7000-8000-" + (listOf("home", "self", "item", "list", "comment", "attachment", "a", "b", "c", "one", "two", "occurrence", "deleted").indexOf(name) + 1).toString().padStart(12, '0')
 private val collabNow = Instant.parse("2026-10-06T12:00:00Z")
-fun listFixture(occurrence: String? = null) = ListResponse(collabId("list"), collabId("home"), collabId("self"), "Groceries", if (occurrence == null) ListMode.persistent else ListMode.per_occurrence,
-    ListVisibility.household, 1, collabNow, collabNow, emptyList(), listOf("view", "manage", "check"),
-    listOf(entryFixture("a", "a0"), entryFixture("b", "a1")), emptyList(), itemId = if (occurrence == null) null else collabId("item"), occurrenceId = occurrence?.let(::collabId))
+fun listFixture(occurrence: String? = null) = ListResponse(id = collabId("list"), householdId = collabId("home"), ownerId = collabId("self"), name = "Groceries", mode = if (occurrence == null) ListMode.persistent else ListMode.per_occurrence,
+    visibility = ListVisibility.household, version = 1, createdAt = collabNow, updatedAt = collabNow, viewers = emptyList(), capabilities = listOf("view", "manage", "check"),
+    propertyEntries = listOf(entryFixture("a", "a0"), entryFixture("b", "a1")), gotIt = emptyList(), itemId = if (occurrence == null) null else collabId("item"), occurrenceId = occurrence?.let(::collabId))
 fun entryFixture(id: String, position: String) = EntryResponse(collabId(id), collabId("home"), collabId("list"), id, "", "", position, 1, collabNow, collabNow)
 fun commentFixture() = Comment(collabId("comment"), collabId("item"), "Hello @Alex", listOf(collabId("self")), collabNow, 1, authorId = collabId("self"))
 fun attachmentFixture() = Attachment(collabId("attachment"), collabId("item"), "notes.txt", collabNow, 1, 5, "text/plain", false, uploaderId = collabId("self"))

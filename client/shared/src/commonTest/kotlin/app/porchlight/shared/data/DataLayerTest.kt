@@ -10,7 +10,8 @@ import kotlinx.serialization.json.*
 import kotlin.test.*
 import kotlin.time.Instant
 
-expect fun memoryCache(now: () -> Instant): ReadCache
+fun memoryCache(now: () -> Instant): ReadCache = memoryCache(MemoryAttachmentStore(), now)
+expect fun memoryCache(attachmentStore: AttachmentStore, now: () -> Instant): ReadCache
 
 class DataLayerTest {
     private val now = Instant.parse("2026-10-06T12:00:00Z")

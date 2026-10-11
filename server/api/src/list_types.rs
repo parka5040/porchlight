@@ -58,14 +58,63 @@ pub struct EntryResponse {
     pub occurrence_id: Option<Uuid>,
 }
 #[derive(Serialize, ToSchema)]
+pub struct ListFields {
+    pub id: Uuid,
+    pub item_id: Option<Uuid>,
+    pub owner_id: Uuid,
+    pub mode: ListMode,
+    pub version: i32,
+    /// Present only on cleanup descriptors whose parent ACL denies content access.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub redacted: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub household_id: Option<Uuid>,
+    /// Absent on redacted cleanup descriptors; clients display "Private list".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<ListVisibility>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<Option<DateTime<Utc>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<DateTime<Utc>>,
+}
+#[derive(Serialize, ToSchema)]
 pub struct ListResponse {
     #[serde(flatten)]
-    pub fields: ListRow,
+    pub fields: ListFields,
     pub viewers: Vec<Uuid>,
     pub capabilities: Vec<String>,
     pub entries: Vec<EntryResponse>,
     pub got_it: Vec<EntryResponse>,
     pub occurrence_id: Option<Uuid>,
+}
+impl ListResponse {
+    pub fn cleanup(r: ListRow) -> Self {
+        Self {
+            fields: ListFields {
+                id: r.id,
+                item_id: r.item_id,
+                owner_id: r.owner_id,
+                mode: r.mode,
+                version: r.version,
+                redacted: Some(true),
+                household_id: None,
+                name: None,
+                visibility: None,
+                deleted_at: None,
+                created_at: None,
+                updated_at: None,
+            },
+            viewers: vec![],
+            capabilities: vec!["delete".into()],
+            entries: vec![],
+            got_it: vec![],
+            occurrence_id: None,
+        }
+    }
 }
 #[derive(Serialize, ToSchema)]
 pub struct ListsPage {
@@ -79,6 +128,7 @@ pub struct ListsQuery {
     pub limit: Option<u16>,
     pub item_id: Option<Uuid>,
     /// Include deleted-parent lists owned by the caller (or app super admin / admin agent) for cleanup.
+    /// Content requires the parent's retained ACL; otherwise only a redacted delete descriptor is returned.
     #[serde(default)]
     pub include_orphaned: bool,
 }

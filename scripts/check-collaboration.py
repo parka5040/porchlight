@@ -47,7 +47,7 @@ for table, columns in schema.items():
     for column in columns:
         assert any(f"`{column}`" in row for row in rows), f"Undocumented column: {table}.{column}"
 for name in ["comment.changed", "attachment.changed", "pl_take_blob_lease", "emit_comment_notifications_s4b",
-             "snapshot_comments_s4b", "snapshot_attachments_s4b", "COMMENT_SEARCH_SOURCE"]:
+             "snapshot_comments_s4b", "snapshot_attachments_s4b", "comment_search_source()"]:
     assert name in matrix, f"Undocumented collaboration contract: {name}"
 for contract in ["S7b collaboration and blob locks", "UNION", "ascending", "GC", "pl_take_blob_lease", "one household per data volume"]:
     assert contract in locks, f"Undocumented collaboration lock rule: {contract}"
@@ -56,7 +56,8 @@ reads = (root / "server/api/src/routes/reads.rs").read_text()
 for hook in ["snapshot_comments_s4b", "snapshot_attachments_s4b"]:
     assert hook in reads, f"Unwired snapshot hook: {hook}"
 source = (root / "server/api/src/collaboration.rs").read_text()
-assert "UNION ALL {comments}" in reads and "COMMENT_SEARCH_SOURCE" in reads, "Unwired comment FTS source"
+assert "UNION ALL {comments}" in reads and "comment_search_source()" in reads, "Unwired comment FTS source"
+assert "pub fn comment_search_source() -> String" in source, "Missing ACL-complete comment FTS function"
 assert "c.search_document" in source and "WHERE {VISIBLE}" in source, "Missing shared comment FTS/ACL source"
 for path in ["server/api/src/collaboration.rs", "server/api/src/blobs.rs"]:
     assert ("TODO" + "(S4b)") not in (root / path).read_text(), f"Deferred integration marker: {path}"

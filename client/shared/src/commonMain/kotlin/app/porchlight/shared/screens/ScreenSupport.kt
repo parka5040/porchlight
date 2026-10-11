@@ -1,5 +1,7 @@
 package app.porchlight.shared.screens
 
+import app.porchlight.shared.theme.PorchlightTokens
+
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -28,10 +30,33 @@ class ScreenSession(private val dispatcher: CoroutineDispatcher = Dispatchers.Ma
         private set
     fun rejectSuggestion(row: SuggestionResponse) { rejectedSuggestions = rejectedSuggestions + suggestionRejectionKey(row) }
     val planningDrafts = mutableMapOf<String, app.porchlight.shared.screens.planning.PlanningDraft>()
-    val drafts = mutableMapOf<String, app.porchlight.shared.screens.item.EditorDraft>()
+    private var cache: ReadCache? = null
+    private val editors = mutableMapOf<String, RetainedCacheValue<app.porchlight.shared.screens.item.ItemEditorState>>()
+    /** Compatibility/read-only view of currently authorized drafts, not a second retained copy. */
+    val drafts: Map<String, app.porchlight.shared.screens.item.EditorDraft> get() {
+        val view = cache?.view?.value ?: return emptyMap()
+        return buildMap { editors.forEach { (id, retained) -> retained.current(view)?.takeIf { it.present }?.let {
+            put(id, it.draft); put("$id:baseline", it.baseline)
+        } } }
+    }
+    fun bindCache(value: ReadCache) { cache = value; writers.values.forEach { it.bindCache(value) } }
+    fun forgetCompletedCreation(id: String, view: CacheView): Boolean {
+        val editor = editors[id]?.current(view) ?: return true
+        if (editor.present) return false
+        editors.remove(id)
+        return true
+    }
+    fun editor(id: String, view: CacheView, creating: Boolean): RetainedCacheValue<app.porchlight.shared.screens.item.ItemEditorState> {
+        editors.entries.removeAll { it.value.current(view) == null }
+        return editors.getOrPut(id) { view.retainDraft(if (creating) emptySet() else setOf(CacheResource("Item", id)),
+            app.porchlight.shared.screens.item.ItemEditorState(app.porchlight.shared.screens.item.EditorDraft(
+                tzid = view.members.find { it.id == view.settings?.memberId }?.tzid ?: "UTC"), creating)) }
+    }
+    private val uploads = mutableMapOf<String, app.porchlight.shared.screens.collaboration.UploadAttempt>()
+    fun upload(id: String) = uploads.getOrPut(id) { app.porchlight.shared.screens.collaboration.UploadAttempt() }
     val attachmentPicks = app.porchlight.shared.screens.collaboration.AttachmentPicks()
-    fun bind(value: Long) { if (epoch != value) { writeScope.cancel(); writeScope = CoroutineScope(SupervisorJob() + dispatcher); writers.clear(); drafts.clear(); planningDrafts.clear(); attachmentPicks.clear(); rejectedSuggestions = emptySet(); epoch = value } }
-    fun writes(id: String): ScreenWrites = writers.getOrPut(id) { ScreenWrites() }
+    fun bind(value: Long) { if (epoch != value) { writeScope.cancel(); writeScope = CoroutineScope(SupervisorJob() + dispatcher); writers.clear(); editors.clear(); planningDrafts.clear(); uploads.clear(); attachmentPicks.clear(); rejectedSuggestions = emptySet(); epoch = value } }
+    fun writes(id: String): ScreenWrites = writers.getOrPut(id) { ScreenWrites() }.also { writer -> cache?.let(writer::bindCache) }
 }
 fun kotlinx.coroutines.CoroutineScope.refreshSafely(data: HouseholdData) = launch {
     try { data.sync.refresh() } catch (e: CancellationException) { throw e } catch (_: Exception) { /* sync.status exposes the redacted failure */ }
@@ -41,7 +66,7 @@ val LocalScreenServices = staticCompositionLocalOf<AppServices?> { null }
     val services = LocalScreenServices.current
     val fallback = remember { ScreenSession() }
     val session = services?.screenSession ?: fallback
-    services?.data?.cache?.sessionEpoch?.invoke()?.let(session::bind)
+    services?.data?.cache?.let { cache -> session.bind(cache.sessionEpoch()); session.bindCache(cache) }
     return session.writes(id)
 }
 inline fun <reified T> WriteResult<T>.feedback(): WriteResult<JsonElement> = when (this) {
@@ -49,9 +74,11 @@ inline fun <reified T> WriteResult<T>.feedback(): WriteResult<JsonElement> = whe
     is WriteResult.VersionConflict -> this
 }
 @Composable fun WriteStatus(writer: ScreenWrites, reapply: (() -> Unit)? = null, comparison: List<FieldComparison> = emptyList(), showFieldErrors: Boolean = true, onDiscard: () -> Unit = {}, successLabel: String = "Saved") {
-    val state by writer.state.collectAsState()
+    val observed by writer.state.collectAsState()
+    val view = LocalScreenServices.current?.data?.cache?.view?.collectAsState()?.value
+    val state = observed.let { if (view == null) it else writer.visible(view) }
     val scope = applicationWriteScope()
-    Column(Modifier.fillMaxWidth().heightIn(max = 220.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(Modifier.fillMaxWidth().heightIn(max = PorchlightTokens.feedbackMaxHeight.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceSm.dp)) {
         if (state.busy) Text("Saving…")
         state.error?.let { Text(it, color = LocalPorchlightPalette.current.errorText) }
         if (showFieldErrors) state.fieldErrors.forEach { (field, error) -> Text("${fieldLabel(field)}: $error", color = LocalPorchlightPalette.current.errorText) }
@@ -61,13 +88,14 @@ inline fun <reified T> WriteResult<T>.feedback(): WriteResult<JsonElement> = whe
         if (state.retryKey != null) ShellButton("Retry identical request", onClick = { scope.launchRetry(writer) })
         if (state.retryKey != null) ShellButton("Abandon retry (request may have committed)", onClick = { writer.discard(); onDiscard() })
         if (state.conflict) {
-            comparison.forEach { diff ->
+            val visibleComparison = if (state.current != null) comparison else emptyList()
+            visibleComparison.forEach { diff ->
                 Text(diff.label, style = MaterialTheme.typography.titleSmall)
                 Text("Yours: ${diff.yours}")
                 Text("Current: ${diff.current}")
             }
-            if (comparison.isEmpty()) Text("Current version changed. Discard and refetch before another action.")
-            if (reapply != null) ShellButton("Reapply after comparison", onClick = reapply)
+            if (visibleComparison.isEmpty()) Text("Current version changed. Discard and refetch before another action.")
+            if (reapply != null && state.current != null) ShellButton("Reapply after comparison", onClick = reapply)
             ShellButton("Discard changes", onClick = { writer.discard(); onDiscard() })
         }
     }
@@ -79,6 +107,7 @@ private fun kotlinx.coroutines.CoroutineScope.launchRetry(writer: ScreenWrites) 
     val view by data.cache.view.collectAsState()
     when {
         error != null -> { OfflineState(); ErrorState(error, retry) }
+        status == SyncStatus.Failed("attachment-cleanup-failed") -> ErrorState("Private attachment cleanup failed. Check local storage; Porchlight will retry automatically.", retry)
         status is SyncStatus.Failed -> { OfflineState(); ErrorState("Could not refresh. Saved data may be out of date.", retry) }
         status == SyncStatus.Refreshing -> Text("Refreshing…")
         view.sync == null -> Text("Waiting for initial sync…")

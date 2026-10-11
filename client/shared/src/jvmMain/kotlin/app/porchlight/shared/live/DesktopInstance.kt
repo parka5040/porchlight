@@ -89,4 +89,4 @@ fun resolveDesktopLauncher(packagedPath: String?, command: String?, stablePath: 
 }
 
 @Suppress("UNUSED_PARAMETER")
-fun desktopCloseHides(trayAvailable: Boolean, notice: String?): Boolean = trayAvailable
+fun desktopCloseHides(trayAvailable: Boolean): Boolean = trayAvailable
