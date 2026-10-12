@@ -56,13 +56,12 @@ internal class DesktopKeyBackends(
             directory: Path,
             override: String? = System.getenv(KEY_STORE_ENV),
             bus: SecretServiceBus = DbusSecretServiceBus.Session,
-            useKeyring: Boolean = true,
             wait: () -> Unit = secretServicePollWait,
             keyDirectory: Path = directory.resolve(KEY_DIRECTORY),
         ) = DesktopKeyBackends(
             keyDirectory,
-            DesktopSecretWallet(DesktopSecretWallet.SERVICE, DesktopSecretWallet.ACCOUNT,
-                DirectSecretService(DesktopSecretWallet.SERVICE, DesktopSecretWallet.ACCOUNT, bus, SECRET_SERVICE_PROMPT_TIMEOUT_MILLIS, wait), useKeyring),
+            DesktopSecretWallet(DirectSecretService(DesktopSecretWallet.SERVICE, DesktopSecretWallet.ACCOUNT, bus,
+                SECRET_SERVICE_PROMPT_TIMEOUT_MILLIS, wait)),
             OwnerOnlyKeyFile(keyDirectory),
         ) { selectKeyProtection(override, bus, wait) }
 

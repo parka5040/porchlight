@@ -83,7 +83,6 @@ kotlin {
         jvmMain.dependencies {
             implementation(libs.ktor.client.okhttp)
             implementation(libs.sqldelight.sqlite.driver)
-            implementation(libs.java.keyring)
             implementation(libs.dbus.java.core)
             implementation(libs.dbus.java.transport.native.unixsocket)
             implementation(libs.bouncycastle.bcpkix)
@@ -148,9 +147,9 @@ tasks.register<Exec>("packagedDesktopSmoke") {
     val tests = kotlin.targets.getByName("jvm").compilations.getByName("test")
     val desktopRuntime = project(":desktopApp").configurations.named("runtimeClasspath").get()
     val testOnly = tests.output.allOutputs + (checkNotNull(tests.runtimeDependencyFiles) - desktopRuntime - main.output.allOutputs)
-    val image = rootProject.layout.projectDirectory.dir("desktopApp/build/compose/binaries/main/app/porchlight").asFile
+    val image = rootProject.layout.projectDirectory.dir("desktopApp/build/compose/binaries/main-release/app/porchlight").asFile
     val harness = rootProject.layout.projectDirectory.file("../deploy/tests/audit-desktop-smoke.py").asFile
-    dependsOn(tests.compileTaskProvider, ":desktopApp:createDistributable")
+    dependsOn(tests.compileTaskProvider, ":desktopApp:createReleaseDistributable")
     inputs.files(testOnly)
     inputs.dir(image)
     inputs.file(harness)

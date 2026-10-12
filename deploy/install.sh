@@ -55,7 +55,9 @@ while (($#)); do
     *) printf 'unknown option\n' >&2; exit 2 ;;
   esac
 done
-[[ $api_health_timeout =~ ^[1-9][0-9]{0,2}$ ]] && ((api_health_timeout <= 600)) || { printf 'API health timeout must be 1-600 seconds\n' >&2; exit 2; }
+if ! [[ $api_health_timeout =~ ^[1-9][0-9]{0,2}$ ]] || ((api_health_timeout > 600)); then
+  printf 'API health timeout must be 1-600 seconds\n' >&2; exit 2
+fi
 if ((funnel)); then printf 'Install LAN first, then use install.sh funnel (not server --funnel)\n' >&2; exit 2; fi
 [[ $stackroot == /* && $stackroot != / && $run_dir == /* && $run_dir != / ]] || { printf 'absolute non-root paths required\n' >&2; exit 2; }
 if [[ -n $release_request || $repo_given == 1 ]]; then
@@ -67,6 +69,7 @@ if [[ $mode != desktop ]]; then
   if [[ $mode != server && $mode != restore && ! -d $stackroot ]]; then
     printf 'Existing installed stack required\n' >&2; exit 2
   fi
+  # shellcheck disable=SC2174 # umask 077 at startup also makes any newly created parents private.
   mkdir -m 700 -p "$stackroot"
   [[ ! -L $stackroot/.installer.lock ]] || { printf 'installer lock must not be a symlink\n' >&2; exit 2; }
   if [[ ${PORCHLIGHT_INSTALL_LOCK_ROOT:-} != "$stackroot" || ! /proc/$$/fd/9 -ef $stackroot/.installer.lock ]]; then
@@ -163,6 +166,7 @@ export PORCHLIGHT_ROOT="$stackroot" PORCHLIGHT_RUN_DIR="$run_dir"
 # Private staging belongs to runtime state even for desktop installs.
 runtime=${XDG_STATE_HOME:-$HOME/.local/state}/porchlight
 if [[ $mode != desktop ]]; then runtime=$stackroot/tmp; fi
+# shellcheck disable=SC2174 # umask 077 at startup also makes any newly created parents private.
 mkdir -m 700 -p "$runtime"
 stage=$(mktemp -d "$runtime/install.XXXXXX")
 desktop_stage='' niri_pending='' desktop_autostart_pending='' api_stopped=0 funnel_pending=0 enroll_pending=0
@@ -170,7 +174,7 @@ install_error='' cert_error_log='' cert_rotated=0 endpoints_updated=0 funnel_fqd
 # Preserve the caller's diagnostic channel even when EXIT runs inside a logged upgrade step.
 exec {install_stderr}>&2
 # Even a dead SSH pipe/tty must not turn diagnostics into another failure.
-say() { (trap '' PIPE; printf "$@" 2>/dev/null) >&"$install_stderr" || true; }
+say() { (trap '' PIPE; printf '%s\n' "$@" 2>/dev/null) >&"$install_stderr" || true; }
 report() { (trap '' PIPE; "$@" 2>/dev/null || true); }
 fail_install() { install_error=$1; return 1; }
 cleanup_install() {
@@ -183,16 +187,16 @@ cleanup_install() {
   if ((upgrade_pending)); then
     code=1
     if rollback_upgrade > "$stage/rollback.log" 2>&1; then
-      say 'ROLLED BACK to %s; logs: %s\n' "$old_version" "$stage"
+      say "ROLLED BACK to $old_version; logs: $stage"
     else
-      say 'ROLLBACK FAILED; logs: %s\n' "$stage"
+      say "ROLLBACK FAILED; logs: $stage"
       report_rollback
     fi
   fi
   # Every handled exit releases the SQL login gate, after any destructive rollback has finished.
   if ! resume_agent > "$stage/agent-resume.log" 2>&1; then
     code=1
-    say 'Could not restore porchlight_agent LOGIN; inspect PostgreSQL privately and restore LOGIN after recovery.\n'
+    say 'Could not restore porchlight_agent LOGIN; inspect PostgreSQL privately and restore LOGIN after recovery.'
   fi
   # Complete ALL state restoration before emitting anything to the caller's output channel.
   if ((enroll_pending)); then
@@ -226,8 +230,8 @@ cleanup_install() {
   if ((upgrade_exposed && code)); then
     # Never restore a pre-exposure snapshot over acknowledged writes.
     rm -f -- "$rollback_dump"
-    if ((maintenance_owned)); then rm -f -- "$run_dir/maintenance" || say 'Could not remove maintenance fence; writes remain disabled\n'; fi
-    say 'FORWARD RECOVERY: new API is exposed; keeping release %s and its database. Inspect private logs: %s\n' "$version" "$stage"
+    if ((maintenance_owned)); then rm -f -- "$run_dir/maintenance" || say 'Could not remove maintenance fence; writes remain disabled'; fi
+    say "FORWARD RECOVERY: new API is exposed; keeping release $version and its database. Inspect private logs: $stage"
     report_aux_recovery_command
   elif (( ! upgrade_pending )); then
     if ((code)) && [[ $mode == funnel || $mode == server-cert || $mode == enroll-host ]]; then
@@ -243,57 +247,57 @@ cleanup_install() {
           done
         } > "$diagnostic/summary.txt"
         chmod 600 "$diagnostic/summary.txt"
-        say 'Private sanitized failure diagnostics: %s\n' "$diagnostic"
+        say "Private sanitized failure diagnostics: $diagnostic"
       fi
     fi
     rm -rf -- "$stage" >/dev/null 2>&1
   fi
-  if [[ -n $incoming_dir ]]; then say 'Incoming release retained: %s\n' "$incoming_dir"; fi
-  [[ -z $install_error ]] || say '%s\n' "$install_error"
-  [[ -z $cert_error ]] || say '%s\n' "$cert_error"
+  if [[ -n $incoming_dir ]]; then say "Incoming release retained: $incoming_dir"; fi
+  [[ -z $install_error ]] || say "$install_error"
+  [[ -z $cert_error ]] || say "$cert_error"
   if ((funnel_pending)); then
     if ((remove_failed)); then
-      say 'ERROR: cannot confirm sidecar removal; manually remove tailscale using the Funnel Compose override before treating this stack as LAN-only.\n'
+      say 'ERROR: cannot confirm sidecar removal; manually remove tailscale using the Funnel Compose override before treating this stack as LAN-only.'
     elif (( ! disable_failed )); then
-      say 'Funnel sidecar stopped and removed; leaving LAN-only (FUNNEL_ENABLED=0).\n'
+      say 'Funnel sidecar stopped and removed; leaving LAN-only (FUNNEL_ENABLED=0).'
     fi
-    if ((disable_failed)); then say 'ERROR: could not persist Funnel disabled state; repair .env before upgrade/backup.\n'; fi
+    if ((disable_failed)); then say 'ERROR: could not persist Funnel disabled state; repair .env before upgrade/backup.'; fi
     if ((key_retained)); then
-      say 'Staged auth key retained privately (0600); auth reference must remain disabled. Retry the same install.sh funnel command without --ts-authkey-file, or supply a new key if expired.\n'
+      say 'Staged auth key retained privately (0600); auth reference must remain disabled. Retry the same install.sh funnel command without --ts-authkey-file, or supply a new key if expired.'
     else
-      say 'Node state retained. Retry the same install.sh funnel command with --no-authkey.\n'
+      say 'Node state retained. Retry the same install.sh funnel command with --no-authkey.'
     fi
     if ((cert_rotated)); then
       if ((endpoints_updated)); then
-        say 'Certificate/endpoints already include %s; rerun the same install.sh funnel command with --no-authkey to complete.\n' "$funnel_fqdn"
+        say "Certificate/endpoints already include $funnel_fqdn; rerun the same install.sh funnel command with --no-authkey to complete."
       else
-        say 'Certificate already includes %s; endpoints not updated; rerun the same install.sh funnel command with --no-authkey to complete.\n' "$funnel_fqdn"
+        say "Certificate already includes $funnel_fqdn; endpoints not updated; rerun the same install.sh funnel command with --no-authkey to complete."
       fi
     else
-      say 'Certificate/endpoints unchanged by this activation.\n'
+      say 'Certificate/endpoints unchanged by this activation.'
     fi
-    say 'Check HTTPS, tag/nodeAttr and host VPN prerequisites. Inspect docker compose logs --tail 30 tailscale privately; never paste credentials or login URLs.\n'
+    say 'Check HTTPS, tag/nodeAttr and host VPN prerequisites. Inspect docker compose logs --tail 30 tailscale privately; never paste credentials or login URLs.'
   fi
   if ((enroll_pending)); then
     if ((enroll_restore_failed)); then
-      say 'ERROR: could not restore previous ENROLL_HOST; repair .env before generating enrollment URIs.\n'
+      say 'ERROR: could not restore previous ENROLL_HOST; repair .env before generating enrollment URIs.'
     elif ((recover_failed)); then
-      say 'previous ENROLL_HOST restored; API recovery failed; retry API recreation.\n'
+      say 'previous ENROLL_HOST restored; API recovery failed; retry API recreation.'
     else
-      say 'previous ENROLL_HOST restored; API recovery succeeded.\n'
+      say 'previous ENROLL_HOST restored; API recovery succeeded.'
     fi
-    if ((enroll_backup_failed)); then say 'Backup recovery failed; recreate backup to refresh its .env bind mount.\n'; fi
+    if ((enroll_backup_failed)); then say 'Backup recovery failed; recreate backup to refresh its .env bind mount.'; fi
     if ((recover_failed || enroll_restore_failed)); then report_api_recovery_command; fi
   fi
   if [[ $mode == server-cert ]] && ((cert_rotated && api_recreate_failed)); then
     if ((recover_failed)); then
-      say 'API not running or not healthy; API recovery failed. The certificate remains rotated.\n'
+      say 'API not running or not healthy; API recovery failed. The certificate remains rotated.'
     else
-      say 'API recovery succeeded; the certificate remains rotated (initial API recreate failed).\n'
+      say 'API recovery succeeded; the certificate remains rotated (initial API recreate failed).'
     fi
     report_api_recovery_command
   elif [[ $mode != enroll-host ]] && ((recover_failed)); then
-    say 'API recovery failed; start api with the installed Compose files\n'
+    say 'API recovery failed; start api with the installed Compose files'
   fi
   return "$code"
 }
@@ -338,7 +342,7 @@ report_api_recovery_command() {
   if funnel_enabled; then args+=(-f "$release/compose.funnel.yml" --profile funnel); fi
   args+=(up -d --no-deps --force-recreate --wait --wait-timeout "$api_health_timeout" api)
   printf -v command '%q ' "${args[@]}"
-  say 'Recovery command: %s\n' "${command% }"
+  say "Recovery command: ${command% }"
 }
 report_aux_recovery_command() {
   local release command
@@ -353,7 +357,7 @@ report_aux_recovery_command() {
     if funnel_enabled; then args+=(tailscale); fi
   fi
   printf -v command '%q ' "${args[@]}"
-  say 'Fix the reported backup/sidecar error, then run (do not restore the old dump):\nRecovery command: %s\n' "${command% }"
+  say 'Fix the reported backup/sidecar error, then run (do not restore the old dump):' "Recovery command: ${command% }"
 }
 set_stack_env() {
   # Preserve unrelated settings/secrets, replacing each installer-owned key exactly once.
@@ -456,6 +460,7 @@ upgrade_from_release() {
   [[ $release_request == latest || $release_request == "$version" ]] || { printf 'requested release version mismatch\n' >&2; exit 2; }
   check_upgrade_version
   [[ ! -L $stackroot/incoming ]] || { printf 'incoming directory must not be a symlink\n' >&2; return 1; }
+  # shellcheck disable=SC2174 # umask 077 at startup also makes any newly created parents private.
   mkdir -m 700 -p "$stackroot/incoming"
   incoming_dir=$(mktemp -d "$stackroot/incoming/install.XXXXXX")
   mv "$stage/manifest.json" "$stage/manifest.json.minisig" "$incoming_dir/"
@@ -538,9 +543,11 @@ restore_db() {
 }
 report_rollback() {
   if [[ -n $rollback_bundle ]]; then
-    say 'Rollback: use the newest verified installer restore %q --source <matching-release> --identity <laptop-age-identity> --root %q --run-dir %q --project %q --force\n' "$rollback_bundle" "$stackroot" "$run_dir" "$project"
+    local command
+    printf -v command 'Rollback: use the newest verified installer restore %q --source <matching-release> --identity <laptop-age-identity> --root %q --run-dir %q --project %q --force' "$rollback_bundle" "$stackroot" "$run_dir" "$project"
+    say "$command"
   else
-    say 'Pre-upgrade backup did not complete; inspect private logs and restore the last verified encrypted bundle using the newest verified installer, matching release artifacts and the owner age identity.\n'
+    say 'Pre-upgrade backup did not complete; inspect private logs and restore the last verified encrypted bundle using the newest verified installer, matching release artifacts and the owner age identity.'
   fi
 }
 rollback_upgrade() {
@@ -564,7 +571,10 @@ rollback_upgrade() {
   # The database is back on the dump; the pinned encrypted bundle stays the long-term recovery point.
   if ((dump_created)); then rm -f -- "$rollback_dump"; fi
 }
-prepare_backup_work() { mkdir -m 700 -p "$stackroot/backup-work"; chmod 700 "$stackroot/backup-work"; }
+prepare_backup_work() {
+  # shellcheck disable=SC2174 # umask 077 at startup also makes any new backup-work parents private.
+  mkdir -m 700 -p "$stackroot/backup-work"; chmod 700 "$stackroot/backup-work"
+}
 start() {
   prepare_backup_work || return
   dc up -d "$@" --wait api || return
@@ -909,6 +919,7 @@ case $mode in
       password_file=$stage/admin.pass; printf '%s\n' "$password" > "$password_file"; unset password
     fi
     [[ -s $password_file ]] || { printf 'password file required\n' >&2; exit 2; }
+    # shellcheck disable=SC2174 # umask 077 at startup also makes any newly created parents private.
     mkdir -m 700 -p "$stackroot/data" "$stackroot/backups" "$stackroot/backup-work" "$run_dir"
     python3 -I -B - "$stage/initial.env" "$version" <<'PY'
 import os,secrets,sys
@@ -1014,6 +1025,7 @@ PY_SAN
     cp -p -- "$stackroot/.env" "$stage/env-before-upgrade"
     if [[ -f $stackroot/porchlight-upgrade ]]; then cp -p -- "$stackroot/porchlight-upgrade" "$stage/upgrade-before"; fi
     # The new process must see the fence on its first request, before health polling.
+    # shellcheck disable=SC2174 # umask 077 at startup also makes any newly created parents private.
     mkdir -m 700 -p "$run_dir"
     (set -o noclobber; : > "$run_dir/maintenance")
     maintenance_owned=1
@@ -1033,6 +1045,7 @@ PY
     report printf 'PASS pre-upgrade backup pinned outside nightly retention\n'
     report_rollback
     [[ ! -L $stackroot/rollback ]] || { printf 'rollback directory must not be a symlink\n' >&2; exit 1; }
+    # shellcheck disable=SC2174 # umask 077 at startup also makes any newly created parents private.
     mkdir -m 700 -p "$stackroot/rollback"
     chmod 700 "$stackroot/rollback"
     # Never overwrite an unexpected recovery point, even while holding the installer lock.
@@ -1088,6 +1101,7 @@ PY_TARGET_ID
     elif [[ -n $running ]]; then
       printf 'existing project belongs to another/missing root; choose a separate project/root\n' >&2; exit 2
     fi
+    # shellcheck disable=SC2174 # umask 077 at startup also makes any newly created parents private.
     mkdir -m 700 -p "$stackroot/data" "$stackroot/backups" "$stackroot/backup-work" "$run_dir"
     # Keep displaced state for forensic inspection; never silently merge old PKI/blob trees.
     if [[ -n $(ls -A "$stackroot/data") ]]; then mv "$stackroot/data" "$stackroot/data.before-restore.$(date -u +%Y%m%dT%H%M%S)"; mkdir -m 700 "$stackroot/data"; fi

@@ -24,6 +24,7 @@ pin_rollback_bundle() {
   local bundle=$1 filename=${1##*/} directory pinned
   [[ -f $bundle && ! -L $bundle && $filename =~ ^porchlight-[0-9]{8}T[0-9]{12}Z\.tar\.age$ ]] || return 1
   directory=$(dirname "$bundle")/rollback
+  # shellcheck disable=SC2174 # The validated bundle's parent already exists; only rollback is created.
   mkdir -m 700 -p "$directory"
   pinned=$directory/$filename
   if [[ -e $pinned ]]; then cmp -s "$bundle" "$pinned" || return 1; else ln -- "$bundle" "$pinned"; fi
@@ -49,6 +50,7 @@ verify_release_subset() {
 fetch_source() {
   local source=$1 destination=$2 kind
   kind=$(source_kind "$source") || return
+  # shellcheck disable=SC2174 # Installer supplies an existing private mktemp stage as the parent.
   mkdir -m 700 -p "$destination"
   case $kind in
     local) cp -a -- "$source/." "$destination/" ;;

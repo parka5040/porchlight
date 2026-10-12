@@ -5,6 +5,7 @@ set +x
 umask 077
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 # Machine-specific values come from the environment or the gitignored .env (see .env.example); none default here.
+# shellcheck disable=SC1091 # Repo-relative helper is available at runtime; this check does not follow sources.
 . "$repo/scripts/local-env.sh"
 porchlight_local_env "$repo"
 HOST=${PORCHLIGHT_DEPLOY_HOST:-}
@@ -211,6 +212,7 @@ valid_fqdn() {
 }
 private_local_dir() {
   [[ ! -L $repo/var && ! -L $1 ]] || die 2 'local state directory must not be a symlink'
+  # shellcheck disable=SC2174 # Startup umask 077 also keeps any new local-state parents private.
   mkdir -m 700 -p -- "$1"; chmod 700 -- "$1"
 }
 # The server's LAN address is machine-specific and stays out of the repo: it sets the enrollment CIDR and IP SAN.
@@ -291,6 +293,7 @@ python3 -I -c 'import pathlib,re,sys; lines=re.findall(r\"^PASS funnel ([a-z0-9.
   valid_fqdn "$fqdn" || die 1 'FAIL funnel FQDN'
   private_local_dir "$repo/var/m9"
   pending=$(mktemp "$repo/var/m9/.funnel-fqdn.XXXXXX")
+  # shellcheck disable=SC2064 # Capture the local now; quote_command escapes each word, including spaces/quotes.
   trap "$(quote_command rm -f -- "$pending")" EXIT
   printf '%s\n' "$fqdn" > "$pending"
   python3 -I - "$pending" "$repo/var/m9/funnel-fqdn" <<'PY_SAVE'
@@ -439,6 +442,7 @@ cat $(quote_command "$ROOT/data/pki/ca.crt")" < /dev/null
   esac
   private_local_dir "$directory"
   pending=$(mktemp "$directory/.ca.XXXXXX")
+  # shellcheck disable=SC2064 # Capture the local now; quote_command escapes each word, including spaces/quotes.
   trap "$(quote_command rm -f -- "$pending")" EXIT
   if remote bash -c "# funnel-ca
 cat $(quote_command "$ROOT/data/pki/ca.crt")" < /dev/null > "$pending" && [[ -s $pending ]]; then
@@ -448,6 +452,7 @@ cat $(quote_command "$ROOT/data/pki/ca.crt")" < /dev/null > "$pending" && [[ -s 
   fi
   # M9-R5: ssl verifies identity, then requires the specific empty-client-chain TLS alert.
   pending=$(mktemp "$directory/.tls.XXXXXX")
+  # shellcheck disable=SC2064 # Capture the local now; quote_command escapes each word, including spaces/quotes.
   trap "$(quote_command rm -f -- "$pending")" EXIT
   timeout --signal=KILL 22 python3 -I -c "$probe" "$fqdn" "$directory/ca.crt" \
     < /dev/null > "$pending" 2> "$directory/tls-check.log" || probe_rc=$?
@@ -569,6 +574,7 @@ cli=\"\$release/porch-\$version-x86_64-linux-musl\"
 \"\$cli\" --socket $(quote_command "$RUN_DIR/agent.sock") --token-file \"\$tmp/token\" --json enroll --user $(quote_command "$username") --device $(quote_command "$device")"
     if [[ $DRY_RUN == 1 ]]; then remote bash -c "$script"; else
       directory=$(dirname "$output")
+      # shellcheck disable=SC2174 # Startup umask 077 also keeps any new enrollment-output parents private.
       mkdir -m 700 -p -- "$directory"; chmod 700 -- "$directory"
       pending=$(mktemp "$directory/.enroll.XXXXXX")
       trap 'rm -f -- "$pending"' EXIT

@@ -12,7 +12,7 @@ avd=${1:-porch-api35}
 mkdir -p "$root/var"
 
 cd "$root/client"
-./gradlew --offline --console=plain --max-workers=4 -q :androidApp:assembleDebug :desktopApp:createDistributable
+./gradlew --offline --console=plain --max-workers=4 -q :androidApp:assembleDebug :desktopApp:createReleaseDistributable
 
 # Find a running emulator for this AVD; never touch physical devices or other AVDs.
 serial=""
@@ -34,9 +34,11 @@ terminate() {  # TERM, wait up to 5 s, then KILL; safe to call repeatedly
   kill -9 "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
 }
+profile=""
 cleanup() {
   [[ -z $desktop_pid ]] || terminate "$desktop_pid"
   desktop_pid=""
+  [[ -z $profile ]] || rm -rf -- "$profile"
   if [[ -n $emu_pid ]]; then
     adb -s "$serial" emu kill >/dev/null 2>&1 || true
     terminate "$emu_pid"
@@ -70,8 +72,14 @@ grep -q 'topResumedActivity=.*app.porchlight/.android.MainActivity' <<<"$activit
   || { echo "android: MainActivity is not resumed" >&2; exit 1; }
 echo "android: MainActivity resumed on $avd"
 
-launcher=desktopApp/build/compose/binaries/main/app/porchlight/bin/porchlight
-"$launcher" >"$root/var/smoke-desktop.log" 2>&1 &
+launcher=desktopApp/build/compose/binaries/main-release/app/porchlight/bin/porchlight
+# A private, unenrolled profile: never the user's real Porchlight data, trust, single-instance lock or home server.
+# The session bus/display (XDG_RUNTIME_DIR, DISPLAY, WAYLAND_DISPLAY) stay real so tray/portal code paths run.
+profile=$(mktemp -d "$root/var/smoke-desktop-profile.XXXXXX")
+chmod 700 "$profile"
+mkdir -p "$profile"/{data,config,state,cache}
+env HOME="$profile" XDG_DATA_HOME="$profile/data" XDG_CONFIG_HOME="$profile/config" XDG_STATE_HOME="$profile/state" \
+  XDG_CACHE_HOME="$profile/cache" PORCHLIGHT_KEY_STORE=file "$launcher" >"$root/var/smoke-desktop.log" 2>&1 &
 desktop_pid=$!
 sleep 8
 kill -0 "$desktop_pid" 2>/dev/null || { echo "desktop: app exited early, see var/smoke-desktop.log" >&2; desktop_pid=""; exit 1; }

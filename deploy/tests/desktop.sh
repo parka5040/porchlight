@@ -49,6 +49,7 @@ PY_RELEASE
 make_release 0.1.0
 # Friendly symlink refusals, invalid first extraction and failed first activation must leave niri unchanged.
 (
+  # shellcheck disable=SC2030 # Each subshell intentionally isolates its own XDG fixture overrides.
   export XDG_DATA_HOME="$fixture/invalid-data" XDG_CONFIG_HOME="$fixture/invalid-config" XDG_STATE_HOME="$fixture/invalid-state"
   mkdir -p "$XDG_CONFIG_HOME/niri"
   printf 'keep invalid first install\n' > "$XDG_CONFIG_HOME/niri/config.kdl"
@@ -62,6 +63,7 @@ make_release 0.1.0
   [[ ! -e $XDG_DATA_HOME/porchlight/current && ! -e $XDG_CONFIG_HOME/autostart/porchlight.desktop ]]
 )
 (
+  # shellcheck disable=SC2030,SC2031 # Each subshell intentionally isolates its own XDG fixture overrides.
   export XDG_DATA_HOME="$fixture/first-data" XDG_CONFIG_HOME="$fixture/first-config" XDG_STATE_HOME="$fixture/first-state"
   mkdir -p "$XDG_CONFIG_HOME/niri"
   printf 'original niri\n' > "$fixture/first-original"
@@ -90,25 +92,35 @@ SH_MV
   rm "$fixture/bin/mv"
 )
 printf 'PASS friendly niri symlink refusal and failed first install autostart cleanup\n'
+# shellcheck disable=SC2031 # Use parent XDG paths; the earlier fixture overrides are intentionally subshell-only.
 mkdir -p "$XDG_CONFIG_HOME/niri"
+# shellcheck disable=SC2031 # Use parent XDG paths; the earlier fixture overrides are intentionally subshell-only.
 printf ' // keep trailing spaces  \n' > "$XDG_CONFIG_HOME/niri/config.kdl"
+# shellcheck disable=SC2031 # Use parent XDG paths; the earlier fixture overrides are intentionally subshell-only.
 cp "$XDG_CONFIG_HOME/niri/config.kdl" "$fixture/original.kdl"
 bash "$fixture/release-0.1.0/install.sh" desktop --source "$fixture/release-0.1.0" --niri
+# shellcheck disable=SC2031 # Use parent XDG paths; the earlier fixture overrides are intentionally subshell-only.
 [[ $(readlink "$XDG_DATA_HOME/porchlight/current") == releases/0.1.0 ]]
+# shellcheck disable=SC2031 # Use parent XDG paths; the earlier fixture overrides are intentionally subshell-only.
 [[ -x $XDG_DATA_HOME/porchlight/current/app/bin/porchlight ]]
 bash "$fixture/release-0.1.0/install.sh" desktop --source "$fixture/release-0.1.0" --niri
+# shellcheck disable=SC2031 # Use parent XDG paths; the earlier fixture overrides are intentionally subshell-only.
 [[ $(wc -l < "$XDG_CONFIG_HOME/niri/config.kdl") == 2 ]]
 # Existing minimized startup is the same mechanism; reinstall must not append a tray instance.
+# shellcheck disable=SC2031 # Use parent XDG paths; the earlier fixture overrides are intentionally subshell-only.
 python3 -I - "$XDG_CONFIG_HOME/niri/config.kdl" <<'PY'
 from pathlib import Path
 import sys
 p = Path(sys.argv[1]); p.write_text(p.read_text().replace('"--tray"', '"--minimized"'))
 PY
 bash "$fixture/release-0.1.0/install.sh" desktop --source "$fixture/release-0.1.0" --niri
+# shellcheck disable=SC2031 # Use parent XDG paths; the earlier fixture overrides are intentionally subshell-only.
 [[ $(wc -l < "$XDG_CONFIG_HOME/niri/config.kdl") == 2 ]]
 printf 'PASS niri existing minimized startup deduplicated\n'
 
+# shellcheck disable=SC2031 # Use parent XDG paths; the earlier fixture overrides are intentionally subshell-only.
 [[ ! -e $XDG_CONFIG_HOME/autostart/porchlight.desktop ]] # one mechanism: explicit niri, no installer XDG entry
+# shellcheck disable=SC2031 # Use parent XDG paths; the earlier fixture overrides are intentionally subshell-only.
 cmp "$fixture/original.kdl" "$XDG_CONFIG_HOME/niri/config.kdl.bak"
 make_release 0.2.0
 python3 -I -B - "$fixture" <<'PY_SUBSET'
@@ -123,6 +135,7 @@ if "$HOME/.local/bin/porchlight-update" "$fixture/missing-subset" > "$fixture/su
 cp -a "$fixture/subset" "$fixture/extra-subset"
 printf 'unlisted' > "$fixture/extra-subset/extra"
 if "$HOME/.local/bin/porchlight-update" "$fixture/extra-subset" > "$fixture/subset.log" 2>&1; then exit 1; fi
+# shellcheck disable=SC2031 # Use parent XDG paths; the earlier fixture overrides are intentionally subshell-only.
 [[ $(readlink "$XDG_DATA_HOME/porchlight/current") == releases/0.1.0 ]]
 cat > "$fixture/bin/rsync" <<'SH_RSYNC'
 #!/usr/bin/env bash
@@ -132,16 +145,19 @@ cp -a "$DESKTOP_REMOTE_FIXTURE/." "${@: -1}"
 SH_RSYNC
 chmod 755 "$fixture/bin/rsync"
 DESKTOP_REMOTE_FIXTURE="$fixture/subset" "$HOME/.local/bin/porchlight-update" stackuser@release-host:/release/new
+# shellcheck disable=SC2031 # Use parent XDG paths; the earlier fixture overrides are intentionally subshell-only.
 [[ $(readlink "$XDG_DATA_HOME/porchlight/current") == releases/0.2.0 ]]
 status=0
 "$HOME/.local/bin/porchlight-update" "$fixture/release-0.1.0" > "$fixture/downgrade.log" 2>&1 || status=$?
 [[ $status == 2 && $(< "$fixture/downgrade.log") == *'refusing downgrade; use porchlight-update --rollback'* ]]
+# shellcheck disable=SC2031 # Use parent XDG paths; the earlier fixture overrides are intentionally subshell-only.
 python3 -I -B - "$XDG_DATA_HOME/porchlight/current" "$fixture/current-before" <<'PY_CURRENT'
 import pathlib,sys
 p=pathlib.Path(sys.argv[1]);pathlib.Path(sys.argv[2]).write_text(str(p.lstat().st_mtime_ns))
 PY_CURRENT
 "$HOME/.local/bin/porchlight-update" "$fixture/subset" > "$fixture/same.log"
 [[ $(< "$fixture/same.log") == *'PASS already installed 0.2.0'* ]]
+# shellcheck disable=SC2031 # Use parent XDG paths; the earlier fixture overrides are intentionally subshell-only.
 python3 -I -B - "$XDG_DATA_HOME/porchlight/current" "$fixture/current-before" "$fixture" <<'PY_CURRENT'
 import pathlib,sys
 assert str(pathlib.Path(sys.argv[1]).lstat().st_mtime_ns)==pathlib.Path(sys.argv[2]).read_text()
@@ -150,8 +166,10 @@ PY_CURRENT
 printf 'PASS desktop subset, missing/extra refusal, downgrade guard and same-version no-op\n'
 # Reinstall the current release must not erase rollback history.
 bash "$fixture/release-0.2.0/install.sh" desktop --source "$fixture/release-0.2.0"
+# shellcheck disable=SC2031 # Use parent XDG paths; the earlier fixture overrides are intentionally subshell-only.
 [[ $(readlink "$XDG_DATA_HOME/porchlight/previous") == releases/0.1.0 ]]
 "$HOME/.local/bin/porchlight-update" --rollback
+# shellcheck disable=SC2031 # Use parent XDG paths; the earlier fixture overrides are intentionally subshell-only.
 [[ $(readlink "$XDG_DATA_HOME/porchlight/current") == releases/0.1.0 ]]
 if REJECT_SIGNATURE=1 "$HOME/.local/bin/porchlight-update" "$fixture/release-0.2.0" >/dev/null 2>&1; then exit 1; fi
 # A malicious sibling lib must never be sourced/executed, even by a standalone copied installer.
@@ -164,6 +182,7 @@ if "$HOME/.local/bin/porchlight-update" "$fixture/release-0.2.0" >/dev/null 2>&1
 [[ ! -e $fixture/compromised ]]
 printf corrupt >> "$fixture/release-0.2.0/porchlight.svg"
 if "$HOME/.local/bin/porchlight-update" "$fixture/release-0.2.0" >/dev/null 2>&1; then exit 1; fi
+# shellcheck disable=SC2031 # Use parent XDG paths; the earlier fixture overrides are intentionally subshell-only.
 [[ $(readlink "$XDG_DATA_HOME/porchlight/current") == releases/0.1.0 ]]
 printf 'PASS desktop install, XDG paths, update, rollback, tamper rejection\n'
 # Server/restore guards must detect a running Compose project even when a different target root has no metadata.

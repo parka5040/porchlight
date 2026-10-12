@@ -61,7 +61,7 @@ class DesktopE2eTest {
             wallet.write(value)
             assertTrue(wallet.read() == value)
             assertTrue(DirectSecretService("app.porchlight.test", account).read() == value)
-            // Also exercise the dbus-java 5 adapter directly, not just whichever java-keyring backend works.
+            // Also exercise the dbus-java 5 adapter directly, not only through the wallet.
             direct.write(value)
             assertTrue(direct.read() == value)
         } finally {

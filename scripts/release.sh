@@ -59,7 +59,7 @@ docker save -o "$out/porchlight-api-$version.tar" "porchlight-api:$version"
 docker save -o "$out/porchlight-backup-$version.tar" "porchlight-backup:$version"
 cp "$work/cli/porch" "$out/porch-$version-x86_64-linux-musl"
 export PORCHLIGHT_KEYSTORE=$keys/porchlight-release.jks PORCHLIGHT_KEYSTORE_PASSWORD_FILE=$keys/keystore.pass
-(cd client && ./gradlew --offline --max-workers=4 --no-configuration-cache --console=plain :androidApp:assembleRelease :desktopApp:createDistributable)
+(cd client && ./gradlew --offline --max-workers=4 --no-configuration-cache --console=plain :androidApp:assembleRelease :desktopApp:createReleaseDistributable)
 apk=$root/client/androidApp/build/outputs/apk/release/androidApp-release.apk
 [[ -f $apk ]] || { printf 'signed APK missing; refusing unsigned release\n' >&2; exit 1; }
 # Verify signing without passing the password anywhere.
@@ -83,7 +83,8 @@ if signers!=pins: raise SystemExit(f'APK signer mismatch: APK {sorted(signers)};
 pathlib.Path(sys.argv[3]).write_text(json.dumps(sorted(signers)))
 PY
 cp "$apk" "$out/porchlight-$version.apk"
-app=$root/client/desktopApp/build/compose/binaries/main/app
+# The shipping desktop image is the ProGuard-shrunk release distributable (desktopApp/proguard-rules.pro).
+app=$root/client/desktopApp/build/compose/binaries/main-release/app
 [[ -x $app/porchlight/bin/porchlight && -d $app/porchlight/lib/runtime ]] || { printf 'bundled desktop runtime missing\n' >&2; exit 1; }
 # Dereference app-image links when packaging: installer forbids archive links/traversal.
 tar --hard-dereference -chzf "$out/porchlight-desktop-$version-linux-x86_64.tar.gz" -C "$app" porchlight

@@ -1,5 +1,8 @@
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
+import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
+import java.util.zip.ZipOutputStream
 
 plugins {
     alias(libs.plugins.kotlin.jvm)
@@ -47,6 +50,13 @@ compose.desktop {
         mainClass = "app.porchlight.desktop.MainKt"
         mainJar.set(tasks.named<Jar>("jar").flatMap { it.archiveFile })
         jvmArgs += listOf("--enable-native-access=ALL-UNNAMED", "--sun-misc-unsafe-memory-access=allow", "-Dslf4j.internal.verbosity=ERROR") // Skiko loads its native library
+        // Release images are shrunk (shrink only, names kept); createDistributable stays unshrunk for dev demos.
+        buildTypes.release.proguard {
+            isEnabled.set(true)
+            obfuscate.set(false)
+            optimize.set(false)
+            configurationFiles.from(project.file("proguard-rules.pro"))
+        }
         nativeDistributions {
             packageName = "porchlight"
             packageVersion = rootProject.file("../VERSION").readText().trim()
@@ -59,10 +69,51 @@ compose.desktop {
     }
 }
 
+// ProGuard rewrites classes but copies upstream signature files (BouncyCastle ships signed jars). A signature that no
+// longer matches its entries makes the JVM reject classes from that jar, so shrunk jars are published unsigned. Service
+// descriptors may also name classes shrinking removed (BouncyCastle's PQC provider); ServiceLoader would then fail with
+// ServiceConfigurationError, so such lines are dropped. Untouched descriptors stay byte-identical.
+tasks.matching { it.name == "proguardReleaseJars" }.configureEach {
+    val shrunk = layout.buildDirectory.dir("compose/tmp/main-release/proguard")
+    doLast {
+        val signature = Regex("META-INF/[^/]+\\.(SF|RSA|DSA|EC)", RegexOption.IGNORE_CASE)
+        val jars = shrunk.get().asFile.listFiles { file -> file.extension == "jar" }.orEmpty().sortedBy { it.name }
+        val contents = jars.associateWith { jar -> ZipFile(jar).use { zip -> zip.entries().toList().map { it to zip.getInputStream(it).readBytes() } } }
+        val classes = contents.values.flatten().map { it.first.name }.filter { it.endsWith(".class") }
+            .map { it.removeSuffix(".class").replace('/', '.') }.toSet()
+        contents.forEach { (jar, entries) ->
+            val output = entries.mapNotNull { (entry, bytes) ->
+                when {
+                    signature.matches(entry.name) -> null
+                    entry.name.startsWith("META-INF/services/") && !entry.isDirectory -> {
+                        val lines = String(bytes, Charsets.UTF_8).lines()
+                        val kept = lines.filter { line -> line.substringBefore('#').trim().let { it.isEmpty() || it in classes } }
+                        when {
+                            kept.size == lines.size -> entry to bytes
+                            kept.none { it.substringBefore('#').isNotBlank() } -> null
+                            else -> entry to kept.joinToString("\n").toByteArray(Charsets.UTF_8)
+                        }
+                    }
+                    else -> entry to bytes
+                }
+            }
+            if (output.size == entries.size && output.zip(entries).all { (a, b) -> a.second === b.second }) return@forEach
+            val rewritten = File(jar.path + ".rewritten")
+            ZipOutputStream(rewritten.outputStream()).use { out ->
+                output.forEach { (entry, bytes) ->
+                    out.putNextEntry(ZipEntry(entry.name).apply { time = entry.time })
+                    out.write(bytes); out.closeEntry()
+                }
+            }
+            Files.move(rewritten.toPath(), jar.toPath(), REPLACE_EXISTING)
+        }
+    }
+}
+
 // Keep the installer/desktop/autostart entry point, but decide AWT's WM mode before the JVM starts.
-val wrapDesktopLauncher by tasks.registering {
+fun wrapLauncher(name: String, image: String) = tasks.register(name) {
     val wrapperSource = layout.projectDirectory.file("launcher/porchlight.sh")
-    val imageDirectory = layout.buildDirectory.dir("compose/binaries/main/app/porchlight")
+    val imageDirectory = layout.buildDirectory.dir(image)
     inputs.file(wrapperSource)
     // No up-to-date shortcut: jpackage may have recreated the native launcher since the last wrap.
     doLast {
@@ -84,4 +135,7 @@ val wrapDesktopLauncher by tasks.registering {
         check(launcher.toFile().setExecutable(true, false)) { "Cannot make launcher wrapper executable" }
     }
 }
+val wrapDesktopLauncher = wrapLauncher("wrapDesktopLauncher", "compose/binaries/main/app/porchlight")
+val wrapReleaseDesktopLauncher = wrapLauncher("wrapReleaseDesktopLauncher", "compose/binaries/main-release/app/porchlight")
 tasks.matching { it.name == "createDistributable" }.configureEach { finalizedBy(wrapDesktopLauncher) }
+tasks.matching { it.name == "createReleaseDistributable" }.configureEach { finalizedBy(wrapReleaseDesktopLauncher) }

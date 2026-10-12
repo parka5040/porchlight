@@ -217,6 +217,7 @@ python3 "$root/deploy/tests/compose-env.py"
 step "development LAN discovery (offline fake ip)"
 python3 -I "$root/scripts/test-dev-lan.py"
 for script in operations desktop github-upgrade backup release publish; do bash "$root/deploy/tests/$script.sh"; done
+PYTHONDONTWRITEBYTECODE=1 python3 -I "$root/deploy/tests/audit-shellcheck.py"
 PYTHONDONTWRITEBYTECODE=1 python3 -I "$root/deploy/tests/audit-installer.py"
 PYTHONDONTWRITEBYTECODE=1 python3 -I "$root/deploy/tests/audit-installer-fix1.py"
 PYTHONDONTWRITEBYTECODE=1 python3 -I "$root/deploy/tests/audit-installer-fix2.py"

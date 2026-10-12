@@ -55,13 +55,14 @@ PY
 cat > "$fixture/client/gradlew" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-mkdir -p androidApp/build/outputs/apk/release desktopApp/build/compose/binaries/main/app/porchlight/bin desktopApp/build/compose/binaries/main/app/porchlight/lib/runtime
+[[ " $* " == *" :desktopApp:createReleaseDistributable "* ]] || { echo 'release must package the shrunk desktop image' >&2; exit 1; }
+mkdir -p androidApp/build/outputs/apk/release desktopApp/build/compose/binaries/main-release/app/porchlight/bin desktopApp/build/compose/binaries/main-release/app/porchlight/lib/runtime
 printf 'not a signed APK' > androidApp/build/outputs/apk/release/androidApp-release.apk
-printf '#!/bin/sh\nexit 0\n' > desktopApp/build/compose/binaries/main/app/porchlight/bin/porchlight
-chmod 755 desktopApp/build/compose/binaries/main/app/porchlight/bin/porchlight
-printf 'fake runtime' > desktopApp/build/compose/binaries/main/app/porchlight/lib/runtime/fixture
-ln -sf fixture desktopApp/build/compose/binaries/main/app/porchlight/lib/runtime/link1
-ln -sf fixture desktopApp/build/compose/binaries/main/app/porchlight/lib/runtime/link2
+printf '#!/bin/sh\nexit 0\n' > desktopApp/build/compose/binaries/main-release/app/porchlight/bin/porchlight
+chmod 755 desktopApp/build/compose/binaries/main-release/app/porchlight/bin/porchlight
+printf 'fake runtime' > desktopApp/build/compose/binaries/main-release/app/porchlight/lib/runtime/fixture
+ln -sf fixture desktopApp/build/compose/binaries/main-release/app/porchlight/lib/runtime/link1
+ln -sf fixture desktopApp/build/compose/binaries/main-release/app/porchlight/lib/runtime/link2
 SH
 cat > "$fixture/scripts/bin/git" <<'SH'
 #!/usr/bin/env bash
@@ -137,7 +138,7 @@ expect_refusal 2 'release key differs from deploy/release-keys/minisign.pub' bas
 cp "$fixture/var/release/minisign.pub" "$fixture/deploy/release-keys/minisign.pub"
 expect_refusal 2 'invalid PORCHLIGHT_RELEASE_REPO' env PORCHLIGHT_RELEASE_REPO=bad/slug/extra bash "$fixture/scripts/release.sh" --force
 [[ $(wc -l < "$BUILD_LOG") == "$before" ]]
-PORCHLIGHT_RELEASE_REPO= bash "$fixture/scripts/release.sh" --force
+PORCHLIGHT_RELEASE_REPO='' bash "$fixture/scripts/release.sh" --force
 python3 -I - "$fixture/dist/0.1.0/release.json" <<'PY'
 import json,pathlib,sys
 assert json.loads(pathlib.Path(sys.argv[1]).read_text())['source']['github'] is None

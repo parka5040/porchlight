@@ -34,7 +34,7 @@ class DesktopKeyBackendTest {
         return Files.createTempDirectory(base, prefix)
     }
     private fun keys(dir: Path, bus: FakeSecretService, env: String? = null, keyDirectory: Path = dir.resolve(KEY_DIRECTORY)) =
-        DesktopKeyStore(dir, DesktopKeyBackends.system(dir, env, bus, useKeyring = false, wait = {}, keyDirectory = keyDirectory)) { TestCertificates.date }
+        DesktopKeyStore(dir, DesktopKeyBackends.system(dir, env, bus, wait = {}, keyDirectory = keyDirectory)) { TestCertificates.date }
     private fun mode(path: Path) = Files.getPosixFilePermissions(path, LinkOption.NOFOLLOW_LINKS)
     private fun record(dir: Path) = Files.readString(dir.resolve(KEY_DIRECTORY).resolve(KEY_BACKEND_RECORD))
     private fun fileSecret(dir: Path) = dir.resolve(KEY_DIRECTORY).resolve(KEY_FILE_SECRET)

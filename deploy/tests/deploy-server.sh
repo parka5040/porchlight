@@ -379,16 +379,24 @@ unset MOCK_EXEC_ENROLL
 printf 'PASS enrollment stdout problem diagnostics, redaction, token-file guards and cleanup\n'
 # Checkout aliases and output aliases must use physical paths consistently.
 ln -s "$fixture" "$fixture/checkout-link"
+# shellcheck disable=SC2030 # The checkout-alias override is intentionally confined to this subshell.
 (fixture="$fixture/checkout-link"; run 0 enroll-uri --device laptop)
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 run 0 enroll-uri --device laptop --out "$fixture/checkout-link/var/m9/absolute.json"
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 ln -s m9 "$fixture/var/inside"
 run 0 enroll-uri --device laptop --out var/inside/relative.json
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 [[ -f $fixture/var/m9/absolute.json && -f $fixture/var/m9/relative.json ]]
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 ln -s "$fixture/elsewhere" "$fixture/var/escape"
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 for output in var/escape/enroll.json var/../elsewhere/enroll.json "$fixture/var-other/enroll.json"; do
   run 2 enroll-uri --device laptop --out "$output"
+  # shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
   [[ ! -s $SHIM_LOG && $(< "$fixture/var/stderr") == *'under this checkout var/'* ]]
 done
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 [[ ! -e $fixture/elsewhere/enroll.json && ! -e $fixture/var-other ]]
 printf 'PASS physical checkout/output paths and var confinement\n'
 run 0 enroll-uri --device 'Main laptop' --user owner --token-file /srv/data/porchlight/private.pat --out var/other/enroll.json
@@ -427,7 +435,9 @@ assert base+'[exec] [-T] [api] [/usr/local/bin/porchlight] [healthcheck]' in r.s
 print('PASS upgrade argv and actual status program (mocked Docker)')
 PY
 run 0 backup
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 [[ $(< "$fixture/var/stdout") == 'PASS backup porchlight-20261007T030000000000Z.tar.age' ]]
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 python3 -I - "$SHIM_LOG" "$fixture" <<'PY'
 import json,pathlib,shlex,subprocess,sys
 p=pathlib.Path(sys.argv[2]);stack=p/'remote/stack';release=stack/'releases/0.1.0'
@@ -444,6 +454,7 @@ PY
 export PORCHLIGHT_DEPLOY_DRY_RUN=1
 run 0 enroll-host 192.168.77.50
 [[ ! -s $SHIM_LOG ]]
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 python3 -I - "$fixture/var/stdout" <<'PY'
 import pathlib,shlex,sys
 args=shlex.split(pathlib.Path(sys.argv[1]).read_text())
@@ -459,37 +470,48 @@ for cmd in 'install 0.1.0 --admin-name Owner' 'upgrade 0.1.0' preflight status b
   [[ ! -s $SHIM_LOG ]]
 done
 # Machine values never live in the repo: the environment, else the gitignored .env, else refuse (no defaults).
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 printf '# fixture profile\nPORCHLIGHT_DEPLOY_HOST=env-file-host\nPORCHLIGHT_DEPLOY_DATA_MOUNT=/srv/other\nPORCHLIGHT_DEPLOY_LAN=192.168.88.20/24\n' > "$fixture/.env"
 (unset PORCHLIGHT_DEPLOY_HOST PORCHLIGHT_DEPLOY_DATA_MOUNT PORCHLIGHT_DEPLOY_LAN; run 0 install 0.1.0 --admin-name Owner)
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 [[ $(< "$fixture/var/stdout") == *"ssh -t env-file-host "*"'ENROLL_CIDRS=192.168.88.0/24'"*"'/srv/other/porchlight-dist/0.1.0/install.sh'"*"'--san-ip' '192.168.88.20'"* ]]
 run 0 install 0.1.0 --admin-name Owner   # exported variables beat the file
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 [[ $(< "$fixture/var/stdout") == *"ssh -t offline-test-host "*"'ENROLL_CIDRS=192.168.77.0/24'"*"'/srv/data/porchlight-dist/0.1.0/install.sh'"* ]]
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 rm -- "$fixture/.env"
 for key in PORCHLIGHT_DEPLOY_HOST PORCHLIGHT_DEPLOY_DATA_MOUNT PORCHLIGHT_DEPLOY_LAN; do
   (unset "$key"; run 2 install 0.1.0 --admin-name Owner)
+  # shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
   [[ $(< "$fixture/var/stderr") == *"set $key in .env"* ]]
 done
 (unset PORCHLIGHT_DEPLOY_LAN; run 2 funnel-check --fqdn quiet-node.example.ts.net)
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 [[ $(< "$fixture/var/stderr") == *'set PORCHLIGHT_DEPLOY_LAN in .env'* ]]
 for bad in /srv/data/ srv/data /srv/../etc; do
   (export PORCHLIGHT_DEPLOY_DATA_MOUNT=$bad; run 2 status)
+  # shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
   [[ $(< "$fixture/var/stderr") == *'must be an absolute path'* ]]
 done
 for bad in 192.168.77.50 192.168.77.50/32 not-an-address; do
   (export PORCHLIGHT_DEPLOY_LAN=$bad; run 2 install 0.1.0 --admin-name Owner)
+  # shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
   [[ $(< "$fixture/var/stderr") == *'invalid server LAN address'* ]]
 done
 printf 'PASS machine values from the environment or .env, never defaulted\n'
 unset PORCHLIGHT_DEPLOY_DRY_RUN
 run 2 install '../escape' --admin-name Owner
 run 2 enroll-uri --device laptop --out dist/enroll.json
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 chmod 644 "$fixture/var/admin.pass"
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 run 2 install 0.1.0 --admin-name Owner --admin-password-file "$fixture/var/admin.pass"
 printf 'PASS deploy-server offline contracts (install, preflight, secrets, hashes, enrollment, upgrade, status, backup, dry-run)\n'
 
 # Funnel: execute the generated remote programs locally, never on an SSH server.
 image=tailscale/tailscale@sha256:$(printf '%064d' 0)
 fqdn=quiet-node.example.ts.net
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 key="$fixture/var/tailscale-authkey"
 printf 'TS-KEY-STDIN-ONLY\n' > "$key"; chmod 600 "$key"
 for hostname in '' Upper 'bad.name' 'bad;name' "$(printf 'a%.0s' {1..64})"; do
@@ -500,9 +522,15 @@ for ref in tailscale/tailscale:latest tailscale/tailscale@sha256:123 "${image%0}
   run 2 funnel --ts-hostname quiet-node --tailscale-image "$ref"
   [[ ! -s $SHIM_LOG ]]
 done
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 ln -s tailscale-authkey "$fixture/var/key-link"
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 mkdir "$fixture/var/key-dir"
-: > "$fixture/var/key-empty"; chmod 600 "$fixture/var/key-empty"
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
+: > "$fixture/var/key-empty"
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
+chmod 600 "$fixture/var/key-empty"
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 for badkey in "$fixture/var/key-link" "$fixture/var/key-dir" "$fixture/var/key-empty" "$fixture/var/missing"; do
   run 2 funnel --ts-hostname quiet-node --tailscale-image "$image" --ts-authkey-file "$badkey"
   [[ ! -s $SHIM_LOG ]]
@@ -512,12 +540,14 @@ run 2 funnel --ts-hostname quiet-node --tailscale-image "$image"
 [[ ! -s $SHIM_LOG ]]
 chmod 600 "$key"
 # Emulate foreign ownership, without chown privileges.
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 cat > "$fixture/bin/stat" <<'SH'
 #!/bin/bash
 if [[ ${MOCK_FOREIGN_KEY:-0} == 1 && ${*: -1} == "$FIXTURE/var/tailscale-authkey" ]]; then
   printf '600:99999\n'
 else exec /usr/bin/stat "$@"; fi
 SH
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 chmod 755 "$fixture/bin/stat"
 export MOCK_FOREIGN_KEY=1
 run 2 funnel --ts-hostname quiet-node --tailscale-image "$image"
@@ -525,6 +555,7 @@ run 2 funnel --ts-hostname quiet-node --tailscale-image "$image"
 unset MOCK_FOREIGN_KEY
 printf 'PASS Funnel local hostname/digest/key validation before transport\n'
 
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 cat > "$fixture/remote/stack/releases/0.1.0/install.sh" <<'SH'
 #!/bin/bash
 set -euo pipefail
@@ -575,50 +606,72 @@ case ${FUNNEL_RESULT:-good} in
   pass-fail) printf 'PASS funnel quiet-node.example.ts.net\n'; exit 1 ;;
 esac
 SH
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 chmod 755 "$fixture/remote/stack/releases/0.1.0/install.sh"
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 mkdir -p "$fixture/remote/stack/data/pki" "$fixture/remote/stack/tmp"
 # Every activation exit removes deploy-server's transport, but never its laptop source.
 for result in before-stage fail no-pass bad-pass non-ts-pass ip-pass pass-fail; do
+  # shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
   rm -rf "$fixture/remote/stack/tailscale"
+  # shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
   printf 'TRUNCATED-OLD-TRANSPORT\n' > "$fixture/remote/stack/tmp/m9-ts-authkey"
   export FUNNEL_RESULT=$result
   run 1 funnel --ts-hostname quiet-node --tailscale-image "$image"
+  # shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
   [[ ! -e $fixture/remote/stack/tmp/m9-ts-authkey && -f $key && ! -e $fixture/var/m9/funnel-fqdn ]]
+  # shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
   [[ $(< "$fixture/var/stderr") == *'Installer safe state diagnostic'* ]]
+  # shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
   [[ $(< "$fixture/var/stdout") == *'Installer public SAN metadata'* ]]
   if [[ $result == fail ]]; then
+    # shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
     [[ $(< "$fixture/var/stderr") == *'leaving LAN-only'* && $(< "$fixture/remote/stack/.env") == *FUNNEL_ENABLED=0* ]]
+    # shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
     cmp -s "$key" "$fixture/remote/stack/tailscale/authkey"
   fi
   # No source/state exists before staging: keyless retry must refuse, not get stuck on transport.
   if [[ $result == before-stage ]]; then
     unset FUNNEL_RESULT
     run 1 funnel --ts-hostname quiet-node --tailscale-image "$image" --no-authkey
+    # shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
     [[ $(< "$fixture/var/stderr") == *'Funnel requires an auth key or existing node state'* ]]
     run 0 funnel --ts-hostname quiet-node --tailscale-image "$image"
+    # shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
     rm -f "$fixture/var/m9/funnel-fqdn"
   fi
 done
 # A failed stdin write must clean both the private mktemp and any prior transport, before installer entry.
 export STREAM_WRITE_FAIL=1
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 printf 'TRUNCATED-OLD-TRANSPORT\n' > "$fixture/remote/stack/tmp/m9-ts-authkey"
 run 1 funnel --ts-hostname quiet-node --tailscale-image "$image"
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 [[ ! -e $fixture/remote/stack/tmp/m9-ts-authkey && $(< "$fixture/var/stderr") != *'Installer safe state diagnostic'* ]]
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 [[ $(ls -A "$fixture/remote/stack/tmp") == .m9-funnel.lock ]]
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 [[ $(stat -c %a "$fixture/remote/stack/tmp/.m9-funnel.lock") == 600 ]]
 unset STREAM_WRITE_FAIL
 # A failure after staging retries without a new stdin key and consumes part A's staged copy.
 export FUNNEL_RESULT=fail
 run 1 funnel --ts-hostname quiet-node --tailscale-image "$image"
 unset FUNNEL_RESULT
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 printf 'OLD-TRANSPORT\n' > "$fixture/remote/stack/tmp/m9-ts-authkey"
 run 0 funnel --ts-hostname quiet-node --tailscale-image "$image" --no-authkey
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 [[ ! -e $fixture/remote/stack/tmp/m9-ts-authkey && ! -e $fixture/remote/stack/tailscale/authkey ]]
 run 0 funnel --ts-hostname quiet-node --tailscale-image "$image"
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 [[ $(< "$fixture/var/stdout") == *"PASS funnel $fqdn"* ]]
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 [[ $(< "$fixture/var/stdout") == *'delete the laptop auth key'* ]]
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 [[ $(< "$fixture/var/m9/funnel-fqdn") == "$fqdn" && -f $key ]]
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 [[ ! -e $fixture/remote/stack/tmp/m9-ts-authkey ]]
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 [[ $(stat -c %a "$fixture/var/m9") == 700 && $(stat -c %a "$fixture/var/m9/funnel-fqdn") == 600 ]]
 python3 -I - "$SHIM_LOG" "$key" <<'PY'
 import json,pathlib,shlex,sys
@@ -630,9 +683,11 @@ assert 'mktemp' in script and 'mv -Tf' in script and 'trap' in script and 'umask
 assert '-T' in rows[0]['argv'] and '-t' not in rows[0]['argv'] and 'BatchMode=yes' in rows[0]['argv']
 PY
 # Explicit laptop path works from another cwd; input remains stdin only.
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 (cd "$fixture/elsewhere"; run 0 funnel --ts-hostname quiet-node --tailscale-image "$image" --ts-authkey-file "$key")
 export FUNNEL_RESULT=fail
 run 1 funnel --ts-hostname quiet-node --tailscale-image "$image" --no-authkey
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 [[ $(< "$fixture/var/m9/funnel-fqdn") == "$fqdn" ]]
 unset FUNNEL_RESULT
 run 0 funnel --ts-hostname quiet-node --tailscale-image "$image" --no-authkey
@@ -646,6 +701,7 @@ run 2 funnel --ts-hostname quiet-node --tailscale-image "$image" --no-authkey --
 printf 'PASS Funnel atomic stdin-only transport, all-exit cleanup, safe diagnostics, staged-key retry and FQDN publication\n'
 
 # Canned Docker output is consumed by the real assertions in the remote program.
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 cat > "$fixture/bin/docker" <<'PY'
 #!/usr/bin/env -S python3 -I
 import json,os,sys
@@ -665,17 +721,22 @@ elif '--show' in args:
  print(json.dumps({'current':{'dns':['porchlight.lan','localhost']+([] if bad=='sans' else [fqdn]),'ips':['127.0.0.1','192.168.77.50']}}))
 else: raise AssertionError('unexpected Docker operation')
 PY
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 chmod 755 "$fixture/bin/docker"
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 python3 -I "$root/deploy/tests/funnel-tls.py" "$fixture"
 
 export PORCHLIGHT_DEPLOY_DRY_RUN=1
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 rm -rf "$fixture/var/m9-funnel"
 for auth in --no-authkey '--ts-authkey-file var/tailscale-authkey'; do
   read -r -a args <<< "$auth"
   run 0 funnel --ts-hostname quiet-node --tailscale-image "$image" "${args[@]}"
+  # shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
   [[ ! -s $SHIM_LOG && ! -e $fixture/remote/stack/tmp/m9-ts-authkey ]]
 done
 run 0 funnel-check
+# shellcheck disable=SC2031 # Use the parent fixture; the checkout-alias override was subshell-only.
 [[ ! -s $SHIM_LOG && ! -e $fixture/var/m9-funnel ]]
 unset PORCHLIGHT_DEPLOY_DRY_RUN
 printf 'PASS Funnel dry-run executes no SSH/TLS probes or local state writes\n'

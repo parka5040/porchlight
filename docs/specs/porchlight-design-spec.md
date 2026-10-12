@@ -402,7 +402,7 @@ client/
 | API client | `openapi-generator` Kotlin multiplatform output (Ktor + kotlinx.serialization) |
 | Live updates | Ktor SSE plugin |
 | Read cache | SQLDelight; entries older than 180 days are purged |
-| Key storage | Android Keystore; desktop PKCS#12 encrypted with a secret in Secret Service (`java-keyring`, any provider, standard Unlock prompt), or in an owner-only file (0600 in a 0700 folder) when no Secret Service provider exists or, by the user's explicit choice at enrollment, when one is present but unusable; backend recorded at enrollment |
+| Key storage | Android Keystore; desktop PKCS#12 encrypted with a secret in Secret Service (own dbus-java binding, any provider, standard Unlock prompt), or in an owner-only file (0600 in a 0700 folder) when no Secret Service provider exists or, by the user's explicit choice at enrollment, when one is present but unusable; backend recorded at enrollment |
 
 ### Android
 

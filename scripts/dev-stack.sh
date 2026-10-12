@@ -4,16 +4,20 @@
 # Refuse before shell options, root resolution, or filesystem side effects.
 if [ -z "${BASH_VERSION:-}" ]; then
   printf '%s: bash is required; refusing without side effects\n' "dev-stack" >&2
+  # shellcheck disable=SC2317 # return when sourced; exit if return fails in an executed script.
   return 2 2>/dev/null || exit 2
 fi
 if [[ ${BASH_SOURCE[0]} != "$0" && $- == *i* ]]; then
   printf '%s: interactive sourcing is not supported\n' "dev-stack" >&2
   return 2
 fi
+# shellcheck disable=SC2317 # return when sourced; exit if return fails in an executed script.
 script_dir=$(dirname -- "${BASH_SOURCE[0]}") || { return 2 2>/dev/null || exit 2; }
+# shellcheck disable=SC2317 # return when sourced; exit if return fails in an executed script.
 root=$(cd -- "$script_dir/.." && pwd -P) || { return 2 2>/dev/null || exit 2; }
 if [[ $root == / || ! -f $root/scripts/dev-db.sh ]]; then
   printf '%s: invalid project root; refusing\n' "dev-stack" >&2
+  # shellcheck disable=SC2317 # return when sourced; exit if return fails in an executed script.
   return 2 2>/dev/null || exit 2
 fi
 set -euo pipefail
@@ -101,6 +105,7 @@ case ${1:-} in
     dc up --no-deps --force-recreate --exit-code-from migrate migrate
     rm -rf -- "$root/var/server" "$root/var/run" "$root/var/dev-clients"
     rm -f -- "$root/var/bootstrap.pat" "$root/var/init.json" "$root/var/dev-init.json"
+    # shellcheck disable=SC2174 # umask 077 above also makes any newly created parents private.
     mkdir -m 700 -p "$root/var/server" "$root/var/run"
     printf 'dev-stack: dev test data reset and migrated; run up, then dev-init\n'
     ;;

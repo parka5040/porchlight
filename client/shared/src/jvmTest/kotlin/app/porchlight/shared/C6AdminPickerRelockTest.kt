@@ -133,7 +133,10 @@ class C6AdminPickerRelockTest {
                 }
                 waitUntil(timeoutMillis = 10_000) { finished }
                 assertEquals(1, calls)
-                onNodeWithText(if (household) EXPORT_NOT_PRIVATE_WARNING else "Export saved").assertExists()
+                // finish() flips the flag before completed(...) publishes the result; wait for its recomposition.
+                val result = if (household) EXPORT_NOT_PRIVATE_WARNING else "Export saved"
+                waitUntil(timeoutMillis = 5_000) { onAllNodesWithText(result).fetchSemanticsNodes().isNotEmpty() }
+                onNodeWithText(result).assertExists()
                 runOnIdle { visible.value = false }
                 onNodeWithText("Locked").assertExists()
                 runOnIdle { visible.value = true }

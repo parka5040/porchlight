@@ -30,7 +30,6 @@ androidx-camera = "1.6.2"
 androidx-test-runner = "1.7.0"
 androidx-test-ext-junit = "1.3.0"
 bouncycastle = "1.86"
-java-keyring = "1.0.4"
 dbus-java = "5.2.2"
 zxing = "3.5.4"
 turbine = "1.2.1"
@@ -82,7 +81,6 @@ androidx-camera-view = { module = "androidx.camera:camera-view", version.ref = "
 zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
 
 # Desktop platform (Secret Service keyring, D-Bus tray/notifications)
-java-keyring = { module = "com.github.javakeyring:java-keyring", version.ref = "java-keyring" }
 dbus-java-core = { module = "com.github.hypfvieh:dbus-java-core", version.ref = "dbus-java" }
 dbus-java-transport-native-unixsocket = { module = "com.github.hypfvieh:dbus-java-transport-native-unixsocket", version.ref = "dbus-java" }
 

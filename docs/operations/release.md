@@ -90,3 +90,14 @@ Runtime modules: `:desktopApp:suggestModules` succeeded offline and suggested `j
 These plus reflection-loaded TLS provider `jdk.crypto.ec` are explicit; Compose adds its desktop baseline. The measured
 JDK 25 runtime is **80 MiB**, down from **164 MiB** with includeAllModules. The whole JDK is no longer bundled; verify
 graphical startup/keyring/tray after C1a/C4 merge and re-run discovery when desktop dependencies change.
+
+The shipped desktop image is `:desktopApp:createReleaseDistributable` (`build/compose/binaries/main-release`): ProGuard
+7.8.0, shrink only (no obfuscation/optimization), rules in `client/desktopApp/proguard-rules.pro`. Reflection-, JNI- and
+ServiceLoader-driven libraries and the application are kept whole; Compose and BouncyCastle are shrunk (0.1.7 tarball
+70 MB, 0.1.6 103.5 MB). A post-step removes stale upstream jar signatures and service lines naming removed classes.
+`deploy/tests/audit-desktop.py` checks the image (no signatures, every service class shipped, no `invokespecial` to a
+non-direct superinterface in any class, SQLite resources intact) and `:shared:packagedDesktopSmoke` runs trust, cache,
+launch and D-Bus tests on the shrunk jars with the bundled JVM. After a desktop dependency change, rebuild, rerun both and
+launch the image once in a scratch profile; ProGuard warnings about references missing from the classpath usually mean
+a library built against another version of a dependency (that is how java-keyring's dbus-java 4 binding was found).
+`createDistributable` (unshrunk) remains for development and demos.

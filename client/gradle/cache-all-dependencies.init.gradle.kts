@@ -5,7 +5,7 @@
 //   cd client && . ../scripts/env.sh
 //   ./gradlew -I gradle/cache-all-dependencies.init.gradle.kts cacheAllDependencies --write-locks --no-configuration-cache
 //
-// then run the real tasks once (assemble, tests, lint, createDistributable) so tool configurations resolved only at
+// then run the real tasks once (assemble, tests, lint, createReleaseDistributable) so tool configurations resolved only at
 // execution time (managed-device test platform, desktop packaging) are cached too.
 allprojects {
     tasks.register("cacheAllDependencies") {

@@ -19,6 +19,8 @@ TESTS = [
     "app.porchlight.shared.data.DesktopCacheTest",
     "app.porchlight.shared.data.RebaseDesktopCacheTest",
     "app.porchlight.shared.backups.DesktopLaunchTest",
+    # Real dbus-java adapter on an embedded bus: the release image is ProGuard-shrunk.
+    "app.porchlight.shared.AuditFinalClientCNativeNotifyTest",
 ]
 
 

@@ -9,6 +9,7 @@ export PYTHONDONTWRITEBYTECODE=1
 export O1_FIXTURE="$testdir" PORCHLIGHT_DATA_DIR="$testdir/data" PORCHLIGHT_BACKUP_DIR="$testdir/backups" PORCHLIGHT_ENV_FILE="$testdir/stack.env"
 export PORCHLIGHT_BACKUP_PASSWORD=not-a-real-password PORCHLIGHT_VERSION=0.1.0
 export TMPDIR="$testdir/work" PORCHLIGHT_DUMP_TMPDIR="$testdir/disk"
+# shellcheck disable=SC2174 # Both parents are the existing private mktemp testdir; only leaves are new.
 mkdir -m 700 -p "$TMPDIR" "$PORCHLIGHT_DUMP_TMPDIR"
 mkdir -p "$testdir/bin" "$testdir/data/pki" "$testdir/data/secrets" "$testdir/backups"
 export PATH="$testdir/bin:$PATH"

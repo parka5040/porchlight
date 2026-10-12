@@ -1,7 +1,5 @@
 package app.porchlight.shared.trust
 
-import com.github.javakeyring.Keyring
-import com.github.javakeyring.KeyringStorageType
 import org.freedesktop.dbus.DBusPath
 import org.freedesktop.dbus.Struct
 import org.freedesktop.dbus.Tuple
@@ -24,29 +22,17 @@ import java.util.concurrent.TimeoutException
 /** How long Porchlight waits for the user to answer the provider's unlock prompt before treating it as dismissed. */
 internal const val SECRET_SERVICE_PROMPT_TIMEOUT_MILLIS = 120_000L
 
-/** Prefer java-keyring's Secret Service backend; dbus-java 5 fallback. Neither ever writes to disk. */
+/** Secret Service over Porchlight's own dbus-java 5 binding; never writes to disk. (java-keyring's backend was
+ * built for dbus-java 4 and could not even be created on 5.x, so every access already used this binding.) */
 class DesktopSecretWallet internal constructor(
-    private val serviceName: String,
-    private val accountName: String,
     private val direct: DirectSecretService,
-    private val useKeyring: Boolean,
 ) : SecretWallet {
     constructor(serviceName: String = SERVICE, accountName: String = ACCOUNT) :
-        this(serviceName, accountName, DirectSecretService(serviceName, accountName), useKeyring = true)
-    override fun read(): String? = attempt { access({ getPassword(serviceName, accountName) }, { direct.read() }) }
+        this(DirectSecretService(serviceName, accountName))
+    override fun read(): String? = attempt { direct.read() }
     internal fun deleteProbe() = direct.deleteProbe()
-    override fun write(value: String) { attempt { access({ setPassword(serviceName, accountName, value) }, { direct.write(value) }) } }
+    override fun write(value: String) { attempt { direct.write(value) } }
     override fun <T> attempt(block: () -> T): T = direct.attempt(block)
-    private fun <T> access(block: Keyring.() -> T, fallback: () -> T): T {
-        // Unlock first (the provider's own prompt if the collection is locked), so java-keyring never meets a locked one.
-        direct.requireUnlocked()
-        if (useKeyring) {
-            try { return Keyring.create(KeyringStorageType.GNOME_KEYRING).use { it.block() } }
-            catch (_: LinkageError) { /* incompatible dbus-java API */ }
-            catch (_: Exception) { /* backend unavailable; use native D-Bus binding */ }
-        }
-        return fallback()
-    }
     companion object { const val SERVICE = "app.porchlight.device"; const val ACCOUNT = "pkcs12-password" }
 }
 

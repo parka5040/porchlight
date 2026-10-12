@@ -3,16 +3,20 @@
 # Scripts may source the helper; not meant for interactive shells: it sets # Refuse before shell options, root resolution, or filesystem side effects.
 if [ -z "${BASH_VERSION:-}" ]; then
   printf '%s: bash is required; refusing without side effects\n' "dev-db" >&2
+  # shellcheck disable=SC2317 # return when sourced; exit if return fails in an executed script.
   return 2 2>/dev/null || exit 2
 fi
 if [[ ${BASH_SOURCE[0]} != "$0" && $- == *i* ]]; then
   printf '%s: interactive sourcing is not supported\n' "dev-db" >&2
   return 2
 fi
+# shellcheck disable=SC2317 # return when sourced; exit if return fails in an executed script.
 script_dir=$(dirname -- "${BASH_SOURCE[0]}") || { return 2 2>/dev/null || exit 2; }
+# shellcheck disable=SC2317 # return when sourced; exit if return fails in an executed script.
 root=$(cd -- "$script_dir/.." && pwd -P) || { return 2 2>/dev/null || exit 2; }
 if [[ $root == / || ! -f $root/scripts/dev-db.sh ]]; then
   printf '%s: invalid project root; refusing\n' "dev-db" >&2
+  # shellcheck disable=SC2317 # return when sourced; exit if return fails in an executed script.
   return 2 2>/dev/null || exit 2
 fi
 set -euo pipefail
@@ -26,11 +30,14 @@ envfile=$("$root/scripts/dev-env.sh")
 set -a
 . "$envfile"
 set +a
-export PORCHLIGHT_UID=$(id -u) PORCHLIGHT_GID=$(id -g)
+PORCHLIGHT_UID=$(id -u)
+PORCHLIGHT_GID=$(id -g)
+export PORCHLIGHT_UID PORCHLIGHT_GID
 # This helper always addresses the dev project. The M2 demo has its own helper/env file.
 export PORCHLIGHT_VAR="$root/var"
 # Dev bundles must match the source release, not a stale label in dev.env.
-export PORCHLIGHT_VERSION=$(tr -d '\n\r' < "$root/VERSION")
+PORCHLIGHT_VERSION=$(tr -d '\n\r' < "$root/VERSION")
+export PORCHLIGHT_VERSION
 # Postgres creates its socket here; the container's entrypoint takes the directory over on first start.
 mkdir -p "$root/var/pgsock"
 [[ ! -O $root/var/pgsock ]] || chmod 1777 "$root/var/pgsock"
