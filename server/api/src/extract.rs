@@ -303,6 +303,8 @@ pub struct Mutation<T> {
     pub context: crate::idempotency::RequestContext,
     pub body: T,
     pub request_id: Uuid,
+    /// Calendar uploads only: dropped with the mutation, after the handler and commit.
+    pub(crate) _body_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 /// Validate visible ASCII against the database's CHECK (not arbitrary Unicode).
 pub fn idempotency_key(headers: &axum::http::HeaderMap) -> Result<String, ApiError> {
@@ -387,18 +389,33 @@ impl<T: DeserializeOwned + Send> FromRequest<AppState> for Mutation<T> {
         if content_type != "application/json" && !text_calendar {
             return Err(ApiError::new(crate::error::Problem::InvalidRequest));
         }
+        // Admit before buffering: concurrent multi-MiB bodies must not exhaust server memory.
+        let body_permit = if calendar_upload {
+            Some(
+                tokio::time::timeout(
+                    state.upload_limits.permit_wait,
+                    state.calendar_body_slots.clone().acquire_owned(),
+                )
+                .await
+                .map_err(|_| ApiError::transient_conflict().retry(1))?
+                .map_err(|_| ApiError::internal("calendar_body_slot"))?,
+            )
+        } else {
+            None
+        };
+        // Raw text is the content itself; only the JSON envelope pays for string escaping.
+        let limit = if text_calendar {
+            crate::calendar::fetch::MAX_BYTES + 64 * 1024
+        } else if calendar_upload {
+            crate::calendar::fetch::MAX_BYTES * 6 + 64 * 1024
+        } else {
+            64 * 1024
+        };
         #[cfg(feature = "testing")]
         state.mutation_body_started.notify_waiters();
         let bytes = tokio::time::timeout(
             state.settings.body_timeout,
-            to_bytes(
-                req.into_body(),
-                if calendar_upload {
-                    crate::calendar::fetch::MAX_BYTES * 6 + 64 * 1024
-                } else {
-                    64 * 1024
-                },
-            ),
+            to_bytes(req.into_body(), limit),
         )
         .await
         .map_err(|_| ApiError::new(crate::error::Problem::RequestTimeout))?
@@ -433,6 +450,7 @@ impl<T: DeserializeOwned + Send> FromRequest<AppState> for Mutation<T> {
             context,
             body,
             request_id,
+            _body_permit: body_permit,
         })
     }
 }

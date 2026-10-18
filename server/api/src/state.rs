@@ -10,6 +10,8 @@ pub struct AppInner {
     pub upload_limits: crate::blobs::UploadLimits,
     pub upload_streams: crate::blobs::UploadStreams,
     pub ingest_slots: Arc<tokio::sync::Semaphore>,
+    /// Calendar import bodies buffered at once (each up to ~30 MiB as JSON), held until commit.
+    pub calendar_body_slots: Arc<tokio::sync::Semaphore>,
     pub pool: PgPool,
     pub pki: Arc<ServerPki>,
     pub revoked: RevokedSet,
@@ -69,6 +71,7 @@ impl AppState {
             upload_limits: crate::blobs::UploadLimits::default(),
             upload_streams: crate::blobs::UploadStreams::default(),
             ingest_slots: Arc::new(tokio::sync::Semaphore::new(2)),
+            calendar_body_slots: Arc::new(tokio::sync::Semaphore::new(2)),
             pki,
             revoked,
             client_release: tokio::sync::OnceCell::new(),

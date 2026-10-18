@@ -244,6 +244,7 @@ impl FromRequest<AppState> for UploadMutation {
             context,
             body,
             request_id,
+            _body_permit: None,
         }))
     }
 }

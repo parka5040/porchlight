@@ -77,3 +77,71 @@ async fn audit_limits_exception_history_is_charged_before_writes(pool: PgPool) {
         .unwrap();
     assert_eq!(count, 0, "admission must precede domain writes");
 }
+
+#[sqlx::test(migrations = "../db/migrations")]
+async fn calendar_bodies_are_admitted_before_buffering(pool: PgPool) {
+    use porchlight_api::testing::agent_request;
+    let s = TestServer::start_with(
+        &pool,
+        TestOptions {
+            background_derivation: false,
+            upload_limits: porchlight_api::blobs::UploadLimits {
+                permit_wait: std::time::Duration::from_millis(200),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .await;
+    let text = |key: &str, content: Vec<u8>| {
+        let mut req = trust::req(
+            "POST",
+            &format!(
+                "/v1/imports/ics?member_id={}&scope=bounded",
+                s.init.admin_member_id
+            ),
+            json!({}),
+            key,
+        );
+        req.headers_mut()
+            .insert("content-type", "text/calendar".parse().unwrap());
+        *req.body_mut() = http_body_util::Full::new(hyper::body::Bytes::from(content));
+        req
+    };
+    let event = b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:bounded\r\nDTSTART:20261012T090000Z\r\nDTEND:20261012T100000Z\r\nSUMMARY:Appointment\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    // Raw text is never buffered beyond the import limit (the JSON escaping allowance is not granted).
+    let oversized = vec![b'x'; porchlight_api::calendar::fetch::MAX_BYTES + 64 * 1024 + 1];
+    let response = agent_request(
+        &s.agent_socket,
+        Some(s.bootstrap_token()),
+        text("oversized", oversized),
+    )
+    .await;
+    assert_eq!(response.status, 400);
+    // Every slot taken: the next body waits, then gets a retryable conflict without a claim.
+    let held = s
+        .state
+        .calendar_body_slots
+        .clone()
+        .acquire_many_owned(2)
+        .await
+        .unwrap();
+    let response = agent_request(
+        &s.agent_socket,
+        Some(s.bootstrap_token()),
+        text("queued", event.to_vec()),
+    )
+    .await;
+    assert_eq!(response.status, 409);
+    assert_eq!(response.headers["retry-after"], "1");
+    drop(held);
+    let response = agent_request(
+        &s.agent_socket,
+        Some(s.bootstrap_token()),
+        text("queued", event.to_vec()),
+    )
+    .await;
+    assert_eq!(response.status, 200);
+    assert_eq!(s.state.calendar_body_slots.available_permits(), 2);
+    s.stop().await;
+}
