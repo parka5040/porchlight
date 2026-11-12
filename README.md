@@ -500,3 +500,5 @@ deploy/scripts/m8-acceptance.sh --source dist/0.1.0 --upgrade-source dist/0.1.1 
 ## Client calendar data and planning (C6)
 
 Settings → CalendarData/Availability/Planning/Export adds ICS preview/commit, subscribed-feed administration, weekly windows, EDF accept/dismiss and dependent candidates, and verified export downloads. Super-admin Settings → Devices uses password-confirmed session revocation; own logout remains Account. Calendar shows availability and suggested-time cards. Server contract currently lacks dated availability exceptions, independent load limits and device expiry fields; screens explain these omissions. See `docs/operations/client-planning.md` for interfaces, file integrity, acceptance and exact controller checks.
+
+
