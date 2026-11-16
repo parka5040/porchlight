@@ -5,8 +5,8 @@ import kotlin.test.*
 
 class AuditClientDataFix2StructureTest {
     @Test fun everyCacheInstallRequiresAnExplicitRequestFence() {
-        val nonInstall = setOf("inSession", "initialize", "awaitInitialized", "itemWrite", "receiptMark", "snapshotMark",
-            "cleanup", "clear", "acknowledgeCursor", "evictOccurrence", "evictItem", "evictList", "evictListScope",
+        val nonInstall = setOf("inSession", "orderedRead", "initialize", "awaitInitialized", "itemWrite", "receiptMark", "snapshotMark",
+            "cleanup", "clear", "clearLocalCache", "retryAttachmentCleanup", "allowCleanupRetryNow", "acknowledgeCursor", "evictOccurrence", "evictItem", "evictList", "evictListScope",
             "evictComment", "evictAttachment", "withLiveAttachment", "keepListScope", "close")
         val writes = ReadCache::class.java.declaredMethods.filter {
             Modifier.isPublic(it.modifiers) && !it.isSynthetic &&

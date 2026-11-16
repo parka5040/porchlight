@@ -477,7 +477,7 @@ async fn upload_progress_idle_cleanup_and_permit_queue(pool: PgPool) {
         .state
         .ingest_slots
         .clone()
-        .acquire_many_owned(2)
+        .acquire_many_owned(porchlight_api::state::INGEST_SLOTS as u32)
         .await
         .unwrap();
     let req = upload(&d, &path, "queued.txt", "text/plain", b"queue").map(axum::body::Body::new);
@@ -711,7 +711,7 @@ async fn live_old_blob_download_lease_and_upload_regressions(pool: PgPool) {
         porchlight_api::scheduler::Scheduler::from_state(&s.state, std::sync::Arc::new(Fixed(now)))
             .await
             .unwrap();
-    assert_eq!(scheduler.tick().await.unwrap(), 9); // Six built-ins plus daily blob GC.
+    assert_eq!(scheduler.tick().await.unwrap(), 11); // Includes certificate renewal and disk headroom.
     let jobs: Vec<String> =
         sqlx::query_scalar("SELECT name FROM porchlight.scheduler_jobs ORDER BY name")
             .fetch_all(&pool)
@@ -722,13 +722,15 @@ async fn live_old_blob_download_lease_and_upload_regressions(pool: PgPool) {
         [
             "backup_stale",
             "blob_gc",
+            "disk_headroom",
             "extend_horizon",
             "notification_dependents",
             "notification_reminders",
             "refresh_dispositions",
             "refresh_ics_sources",
             "retention",
-            "schedule_suggestions"
+            "schedule_suggestions",
+            "server_certificate"
         ]
     );
     let registered:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM porchlight.scheduler_jobs WHERE name='blob_gc' AND last_success_at IS NOT NULL)").fetch_one(&pool).await.unwrap();

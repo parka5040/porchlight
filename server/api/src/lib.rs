@@ -4,6 +4,7 @@ pub mod admin_recovery;
 pub mod blobs;
 pub mod calendar;
 pub mod collaboration;
+pub mod compression;
 pub mod concurrency;
 pub mod config;
 pub mod db;
@@ -14,6 +15,7 @@ pub mod extract;
 pub mod idempotency;
 pub mod init;
 pub mod items;
+pub mod json_document;
 pub mod lifecycle;
 pub mod list_types;
 pub mod lists;
@@ -42,5 +44,6 @@ pub mod stream_hub;
 #[cfg(feature = "testing")]
 pub mod testing;
 pub mod tls;
+mod write_deadline;
 
 pub mod notifier;

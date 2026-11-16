@@ -11,15 +11,12 @@ internal class NativeDesktopSessionBus(address: String? = null) : AsyncDesktopSe
     private val submissionLock = Any()
     private val pending = java.util.concurrent.ConcurrentHashMap.newKeySet<java.util.concurrent.CompletableFuture<Long>>()
     private fun abandonReplies() {
-        val abandoned = synchronized(submissionLock) { lost = true; pending.toList() }
+        val abandoned = synchronized(submissionLock) { lost = true; pending.toTypedArray() }
         // dbus-java marks MethodCalls on disconnect but never invokes their asynchronous callbacks.
         abandoned.forEach { it.completeExceptionally(java.io.IOException("Notification connection lost after submission")) }
     }
     // Bound reply waits on THIS bus only. dbus-java's MethodCall reply timeout is process-wide and also governs the
     // Secret Service key store, portal and logind proxies (D-Bus activation of a keyring can exceed a second).
-    private val calls = java.util.concurrent.Executors.newSingleThreadExecutor { task ->
-        Thread(task, "porchlight-notification-bus").apply { isDaemon = true }
-    }
     private fun <T> bounded(block: () -> T): T {
         val reply = calls.submit(java.util.concurrent.Callable(block))
         try { return reply.get(CALL_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS) }
@@ -34,7 +31,12 @@ internal class NativeDesktopSessionBus(address: String? = null) : AsyncDesktopSe
             override fun disconnectOnError(error: java.io.IOException) { abandonReplies(); listener?.disconnected() }
             override fun exceptionOnTerminate(error: java.io.IOException) { abandonReplies(); listener?.disconnected() }
         }).build()
-    private val daemon = connection.getRemoteObject("org.freedesktop.DBus", "/org/freedesktop/DBus", DBus::class.java)
+    private val daemon = try {
+        connection.getRemoteObject("org.freedesktop.DBus", "/org/freedesktop/DBus", DBus::class.java)
+    } catch (e: Exception) { connection.close(); throw e }
+    private val calls = java.util.concurrent.Executors.newSingleThreadExecutor { task ->
+        Thread(task, "porchlight-notification-bus").apply { isDaemon = true }
+    }
     override fun owner(): String? = bounded { if (daemon.NameHasOwner("org.freedesktop.Notifications")) daemon.GetNameOwner("org.freedesktop.Notifications") else null }
     override fun export(path: String, value: DBusInterface) = connection.exportObject(path, value)
     override fun emit(signal: DBusSignal) { connection.sendMessage(signal) }

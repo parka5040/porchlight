@@ -75,11 +75,13 @@ pub enum UniversalProblems {
         content_type = "application/problem+json"
     )]
     Internal(ProblemBody),
+    #[response(status=503,description="database-busy: request pool acquire deadline exceeded; retry the identical request",content_type="application/problem+json",headers(("Retry-After"=u64,description="Seconds before retrying")))]
+    DatabaseBusy(ProblemBody),
 }
 #[derive(utoipa::IntoResponses)]
 #[allow(dead_code)]
 pub enum MutationProblems {
-    #[response(status=503,description="Server is updating; mutation not executed, retry the identical request shortly",content_type="application/problem+json",headers(("Retry-After"=u64,description="Seconds before retrying")))]
+    #[response(status=503,description="maintenance or database-busy; mutation not executed, retry the identical request shortly",content_type="application/problem+json",headers(("Retry-After"=u64,description="Seconds before retrying")))]
     Maintenance(ProblemBody),
     #[response(
         status = 408,
@@ -207,6 +209,7 @@ pub fn document() -> utoipa::openapi::OpenApi {
     doc.merge(crate::routes::connection::ConnectionApi::openapi());
     doc.merge(crate::routes::me::MeApi::openapi());
     doc.merge(crate::routes::reads::ReadsApi::openapi());
+    doc.merge(crate::routes::item_sync::ItemSyncApi::openapi());
     doc.merge(crate::routes::exports::ExportsApi::openapi());
     doc.merge(crate::routes::backups::BackupsApi::openapi());
     doc.merge(crate::routes::release::ReleaseApi::openapi());

@@ -35,8 +35,9 @@ internal fun ensurePrivateDesktopDirectory(dir: Path): Path {
         catch (_: UnsupportedOperationException) { unavailable("its filesystem cannot keep files private (no owner-only permissions)") }
     if (attributes.isSymbolicLink) unavailable("it is a symbolic link")
     if (!attributes.isDirectory) unavailable("it exists but is not a folder")
-    // chmod succeeds only for the owner, so a foreign-owned directory that is not already 0700 is refused here; one
-    // that is (or that we cannot write) is refused when the staging file is created.
+    val owner = dir.fileSystem.userPrincipalLookupService.lookupPrincipalByName(System.getProperty("user.name"))
+    if (attributes.owner() != owner) unavailable("it belongs to another user")
+    // Narrow inherited modes only after proving ownership; staging also checks that the folder is writable.
     try { if (attributes.permissions() != OWNER_ONLY_DIRECTORY) Files.setPosixFilePermissions(dir, OWNER_ONLY_DIRECTORY) }
     catch (_: java.nio.file.FileSystemException) { unavailable("it belongs to another user or its permissions cannot be changed") }
     if (Files.getPosixFilePermissions(dir, LinkOption.NOFOLLOW_LINKS) != OWNER_ONLY_DIRECTORY) unavailable("its permissions cannot be made owner-only")
@@ -56,14 +57,30 @@ internal fun writePrivateDesktopFile(dir: File, name: String, write: (OutputStre
 internal fun writePrivateDesktopFile(dir: Path, name: String, durable: Boolean, write: (OutputStream) -> Unit): Path {
     requirePrivateName(name)
     val root = ensurePrivateDesktopDirectory(dir)
-    val staging = try { Files.createTempFile(root, ".staging-", "-part", PosixFilePermissions.asFileAttribute(OWNER_ONLY_FILE)) }
-        catch (_: AccessDeniedException) { throw PrivateDirectoryUnavailable(root.toString(), "it belongs to another user or is not writable") }
+    val staging = createPrivateDesktopStaging(root)
     try {
         Files.newOutputStream(staging, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING, LinkOption.NOFOLLOW_LINKS).use(write)
         if (durable) FileChannel.open(staging, StandardOpenOption.WRITE).use { it.force(true) }
         val target = root.resolve(name)
         Files.move(staging, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
         if (durable) FileChannel.open(root, StandardOpenOption.READ).use { it.force(true) }
+        return target
+    } finally { Files.deleteIfExists(staging) }
+}
+
+internal fun createPrivateDesktopStaging(dir: Path): Path {
+    val root = ensurePrivateDesktopDirectory(dir)
+    return try { Files.createTempFile(root, ".staging-", "-part", PosixFilePermissions.asFileAttribute(OWNER_ONLY_FILE)) }
+    catch (_: AccessDeniedException) { throw PrivateDirectoryUnavailable(root.toString(), "it belongs to another user or is not writable") }
+}
+
+internal suspend fun writePrivateDesktopStream(dir: Path, name: String, write: suspend (OutputStream) -> Unit): Path {
+    requirePrivateName(name)
+    val staging = createPrivateDesktopStaging(dir)
+    try {
+        Files.newOutputStream(staging, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS).use { write(it) }
+        val target = ensurePrivateDesktopDirectory(dir).resolve(name)
+        Files.move(staging, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
         return target
     } finally { Files.deleteIfExists(staging) }
 }
@@ -77,7 +94,7 @@ private fun requirePrivateName(name: String) = require(name.isNotEmpty() && '/' 
  * (another user's folder) fails closed with [PrivateDirectoryUnavailable] instead of looking absent. A file whose
  * mode was widened is narrowed back to 0600, as the folder is to 0700.
  */
-internal fun readPrivateDesktopFile(dir: Path, name: String): ByteArray? {
+internal fun privateDesktopFilePath(dir: Path, name: String): Path? {
     requirePrivateName(name)
     if (!Files.exists(dir, LinkOption.NOFOLLOW_LINKS)) return null
     val root = ensurePrivateDesktopDirectory(dir)
@@ -91,8 +108,13 @@ internal fun readPrivateDesktopFile(dir: Path, name: String): ByteArray? {
     if (attributes.owner() != Files.getOwner(root, LinkOption.NOFOLLOW_LINKS)) unavailable("$name in it belongs to another user")
     try { if (attributes.permissions() != OWNER_ONLY_FILE) Files.setPosixFilePermissions(target, OWNER_ONLY_FILE) }
     catch (_: java.nio.file.FileSystemException) { unavailable("the permissions of $name in it cannot be made owner-only") }
+    return target
+}
+
+internal fun readPrivateDesktopFile(dir: Path, name: String): ByteArray? {
+    val target = privateDesktopFilePath(dir, name) ?: return null
     return try { Files.newInputStream(target, LinkOption.NOFOLLOW_LINKS).use { it.readBytes() } }
-        catch (_: AccessDeniedException) { unavailable("$name in it is not readable") }
+    catch (_: AccessDeniedException) { throw PrivateDirectoryUnavailable(dir.toString(), "$name in it is not readable") }
 }
 
 /** Deletes [name] from the private [dir] if both exist; an unsafe existing folder fails closed like the readers. */

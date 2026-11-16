@@ -35,13 +35,19 @@ class FileAttachmentStore(private val root: File) : AttachmentStore {
             Unit
         } finally { staging.delete() }
     } }
-    override suspend fun clear() = withContext(Dispatchers.IO) { mutex.withLock { root.listFiles()?.forEach { if (it.isFile) check(it.delete()) }; Unit } }
+    private fun inventory(): List<File> {
+        if (Files.notExists(root.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) return emptyList()
+        return checkNotNull(root.listFiles()) { "Attachment directory cannot be enumerated" }.toList()
+    }
+    override suspend fun clear() = withContext(Dispatchers.IO) { mutex.withLock {
+        inventory().forEach { check(!it.isDirectory); Files.delete(it.toPath()) }; Unit
+    } }
     override suspend fun remove(key: String) = withContext(Dispatchers.IO) { mutex.withLock { val f = file(key); check(!f.exists() || f.delete()); Unit } }
     override suspend fun removeView(id: String) = withContext(Dispatchers.IO) { mutex.withLock {
         require(id.matches(Regex("[a-zA-Z0-9_-]+")))
-        root.listFiles()?.filter { it.name.startsWith("$id-view.") && it.isFile }?.forEach { check(it.delete()) }; Unit
+        inventory().filter { it.name.startsWith("$id-view.") }.forEach { check(!it.isDirectory); Files.delete(it.toPath()) }; Unit
     } }
     override suspend fun cleanup(before: Instant) = withContext(Dispatchers.IO) { mutex.withLock {
-        root.listFiles()?.filter { it.isFile && (it.lastModified() < before.toEpochMilliseconds() || it.name.endsWith("-part")) }?.forEach { it.delete() }; Unit
+        inventory().filter { it.isFile && (it.lastModified() < before.toEpochMilliseconds() || it.name.endsWith("-part")) }.forEach { check(it.delete()) }; Unit
     } }
 }

@@ -53,6 +53,95 @@ impl Limits {
         })
     }
 }
+/// FIFO member admission; weak entries do not retain idle identities.
+pub struct MemberSlots {
+    slots: Mutex<HashMap<Uuid, std::sync::Weak<tokio::sync::Semaphore>>>,
+    cap: usize,
+}
+impl MemberSlots {
+    pub fn new(cap: usize) -> Self {
+        Self {
+            slots: Mutex::default(),
+            cap,
+        }
+    }
+    pub async fn acquire(
+        &self,
+        member: Uuid,
+    ) -> Result<tokio::sync::OwnedSemaphorePermit, ApiError> {
+        let semaphore = {
+            let mut slots = self
+                .slots
+                .lock()
+                .map_err(|_| ApiError::internal("quota_poisoned"))?;
+            slots.retain(|_, slot| slot.strong_count() > 0);
+            if let Some(semaphore) = slots.get(&member).and_then(std::sync::Weak::upgrade) {
+                semaphore
+            } else {
+                let semaphore = Arc::new(tokio::sync::Semaphore::new(self.cap));
+                slots.insert(member, Arc::downgrade(&semaphore));
+                semaphore
+            }
+        };
+        semaphore
+            .acquire_owned()
+            .await
+            .map_err(|_| ApiError::internal("quota_closed"))
+    }
+}
+pub struct SnapshotPermit {
+    pub device: Permit,
+    pub member: tokio::sync::OwnedSemaphorePermit,
+    pub global: tokio::sync::OwnedSemaphorePermit,
+}
+/// A body-transforming layer can upgrade this weak handle before consuming the
+/// original body, then transfer admission to its replacement. Response metadata
+/// alone never extends a permit's lifetime.
+#[derive(Clone)]
+pub(crate) struct BodyGuard(pub std::sync::Weak<dyn Send + Sync>);
+
+/// Keep quota ownership in the body, including while Hyper is not polling it.
+/// EOF, a stream error, cancellation and disconnect all release admission.
+pub fn with_body<P: Send + Sync + 'static>(
+    response: axum::response::Response,
+    permit: P,
+) -> axum::response::Response {
+    use futures_util::StreamExt;
+    let (mut parts, body) = response.into_parts();
+    let permit = Arc::new(permit);
+    let erased: Arc<dyn Send + Sync> = permit.clone();
+    parts.extensions.insert(BodyGuard(Arc::downgrade(&erased)));
+    let stream = futures_util::stream::unfold(
+        (body.into_data_stream(), Some(permit)),
+        |(mut stream, permit)| async move {
+            permit.as_ref()?;
+            let chunk = stream.next().await?;
+            let (chunk, permit) = match chunk {
+                Ok(bytes) => {
+                    // Hyper can retain a data frame after dropping the body at EOF.
+                    // The bytes also own admission until the network releases them.
+                    let owner = GuardedBytes {
+                        bytes,
+                        _permit: permit.as_ref().unwrap().clone(),
+                    };
+                    (Ok(axum::body::Bytes::from_owner(owner)), permit)
+                }
+                Err(error) => (Err(error), None),
+            };
+            Some((chunk, (stream, permit)))
+        },
+    );
+    axum::response::Response::from_parts(parts, axum::body::Body::from_stream(stream))
+}
+struct GuardedBytes<P> {
+    bytes: axum::body::Bytes,
+    _permit: Arc<P>,
+}
+impl<P> AsRef<[u8]> for GuardedBytes<P> {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
 impl Drop for Permit {
     fn drop(&mut self) {
         let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());

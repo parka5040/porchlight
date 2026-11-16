@@ -15,6 +15,7 @@ pub async fn get(
     let d = s.device;
     let display_name = porchlight_db::auth::display_name(&state.pool, d.member_id).await?;
     Ok(Json(MeResponse {
+        capabilities: vec!["item-sync-v1".into()],
         member_id: d.member_id,
         user_id: d.user_id,
         username: d.username,
@@ -46,6 +47,9 @@ pub struct MeDevice {
 }
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct MeResponse {
+    /// Optional in the contract for newer clients talking to a pre-capability server.
+    #[schema(required = false)]
+    pub capabilities: Vec<String>,
     pub member_id: Uuid,
     pub user_id: Uuid,
     pub username: String,

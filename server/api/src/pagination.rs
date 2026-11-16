@@ -19,6 +19,26 @@ impl PageParams {
         }
     }
 }
+/// Exact scoped refetches never silently truncate a request or accept an empty set.
+pub(crate) fn parse_ids(raw: Option<&str>) -> Result<Option<Vec<uuid::Uuid>>, ApiError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    if raw.is_empty() || raw.len() > 3699 {
+        return Err(ApiError::new(Problem::InvalidRequest));
+    }
+    let ids = raw
+        .split(',')
+        .map(|s| {
+            s.parse::<uuid::Uuid>()
+                .map_err(|_| ApiError::new(Problem::InvalidRequest))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if ids.len() > 100 {
+        return Err(ApiError::new(Problem::InvalidRequest));
+    }
+    Ok(Some(ids))
+}
 #[derive(Serialize)]
 pub struct Page<T> {
     pub items: Vec<T>,

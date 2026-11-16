@@ -23,7 +23,7 @@ class AuditFinalClientAMergeAdmissionTest {
         }
         try {
             f.controller.restore()
-            assertIs<TrustState.LocalTrustLost>(f.controller.state.value)
+            assertEquals(TrustState.StorageRecoveryRequired, f.controller.state.value)
             assertNull(f.controller.liveAdmission.value, "Failed owner admission must not prove live restoration")
             blocked = false
             f.controller.restore()
@@ -88,14 +88,15 @@ class AuditFinalClientAMergeAdmissionTest {
                 cache.install(emptySnapshot(1).copy(items = listOf(itemRead("old"))))
                 blocked.value = true
                 f.switchMember()
-                assertIs<TrustState.LocalTrustLost>(f.controller.state.value,
+                assertEquals(TrustState.StorageRecoveryRequired, f.controller.state.value,
                     "Native failure must gate replacement admission, not just delivery")
                 assertNull(f.controller.liveAdmission.value)
                 assertTrue(cache.view.value.items.isEmpty())
                 blocked.value = false
                 // Native-only failures must trigger owner readmission, not just cache/file retry.
                 withTimeout(5_000) { f.controller.state.first { it == TrustState.Ready } }
-                assertEquals(1L, f.controller.liveAdmission.value)
+                // Admission is published when identity cleanup completes, which may trail Ready by a dispatch.
+                assertEquals(1L, withTimeout(5_000) { f.controller.liveAdmission.first { it != null } })
                 cache.install(emptySnapshot(2).copy(items = listOf(itemRead("replacement"))))
                 val completed = nativeClears.value
                 delay(1_200)

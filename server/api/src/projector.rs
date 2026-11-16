@@ -27,7 +27,11 @@ pub async fn run(pool: PgPool, shutdown: impl Future<Output = ()>) -> anyhow::Re
         let mut listener = match connect_listener(&listeners).await {
             Ok(l) => l,
             Err(e) => {
-                tracing::warn!(error = %e, ?backoff, "outbox listener connect failed");
+                tracing::warn!(
+                    sqlstate = sqlstate(&e),
+                    ?backoff,
+                    "outbox listener connect failed"
+                );
                 tokio::select! {
                     () = shutdown.as_mut() => return Ok(()),
                     () = sleep(backoff) => {}
@@ -57,7 +61,7 @@ pub async fn run(pool: PgPool, shutdown: impl Future<Output = ()>) -> anyhow::Re
                         }
                     }
                     Err(e) => {
-                        tracing::warn!(error = %e, ?backoff, "outbox listener failed; reconnecting");
+                        tracing::warn!(sqlstate = sqlstate(&e), ?backoff, "outbox listener failed; reconnecting");
                         tokio::select! {
                             () = shutdown.as_mut() => return Ok(()),
                             () = sleep(backoff) => {}
@@ -103,7 +107,11 @@ async fn drain_retry(pool: &PgPool, mut shutdown: Pin<&mut impl Future<Output = 
         match drain(pool, shutdown.as_mut()).await {
             Ok(done) => return done,
             Err(e) => {
-                tracing::warn!(error = %e, ?backoff, "assigning stream seqs failed; retrying")
+                tracing::warn!(
+                    sqlstate = sqlstate(&e),
+                    ?backoff,
+                    "assigning stream seqs failed; retrying"
+                )
             }
         }
         tokio::select! {
@@ -112,4 +120,13 @@ async fn drain_retry(pool: &PgPool, mut shutdown: Pin<&mut impl Future<Output = 
         }
         backoff = (backoff * 2).min(BACKOFF_MAX);
     }
+}
+
+// No source Display/Debug: server error messages and I/O causes may contain secrets.
+fn sqlstate(error: &sqlx::Error) -> String {
+    error
+        .as_database_error()
+        .and_then(|db| db.code())
+        .map(|code| code.into_owned())
+        .unwrap_or_else(|| "none".into())
 }

@@ -194,6 +194,10 @@ async fn gc_accounted(
             continue;
         }
         let mut gate = porchlight_db::tx::begin(pool).await?;
+        // The shard gate must survive metadata commit and non-cancellable filesystem unlink.
+        sqlx::query("SET LOCAL idle_in_transaction_session_timeout = 0")
+            .execute(&mut *gate)
+            .await?;
         if let Err(error) = sqlx::query(LOCK_STORAGE_SHARD)
             .bind(&hash[..2])
             .fetch_one(&mut *gate)

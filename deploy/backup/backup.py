@@ -99,10 +99,24 @@ def recover_locked(backups):
     return root
 
 
+def credential(name):
+    path = os.environ.get(name + '_FILE')
+    if not path: return os.environ[name]  # Existing stacks during the old-image upgrade hop.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'r') as f:
+        info = os.fstat(f.fileno())
+        if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > 16384:
+            raise ValueError('credential file must be a bounded 0600 regular file')
+        value = f.read(16385).rstrip('\r\n')
+        if not value or len(value) > 16384 or any(c in value for c in '\r\n\x00'):
+            raise ValueError('invalid credential file')
+        return value
+
+
 def db_env():
     env = os.environ.copy()
     env.update(PGHOST=os.environ.get('PGHOST', 'postgres'), PGDATABASE='porchlight',
-               PGUSER='porchlight_backup', PGPASSWORD=os.environ['PORCHLIGHT_BACKUP_PASSWORD'])
+               PGUSER='porchlight_backup', PGPASSWORD=credential('PORCHLIGHT_BACKUP_PASSWORD'))
     return env
 
 
@@ -344,6 +358,11 @@ def run():
                 due = ops.next_due(metadata['household_zone'], ops.now())
                 sql("UPDATE porchlight.backup_runs SET status='success', finished_at=clock_timestamp(), bundle_file=" + literal(filename) + ', size=' + str(digest['size']) + ', sha256=' + literal(digest['sha256']) + ', next_due_at=' + literal(due) + ' WHERE id=' + literal(run_id) + ';')
                 succeeded = True
+                # Persist measured concurrent disk demand (dump + encrypted output), not a guessed DB size.
+                need = dump.stat().st_size + digest['size']
+                marker = backups / '.working-space-need'
+                previous = int(marker.read_text()) if marker.exists() else 0
+                ops.atomic_text(marker, str(max(previous, need)) + '\n')
             keep = ops.retained([p.name for p in backups.iterdir()])
             for p in backups.glob('porchlight-*.tar.age'):
                 if p.name in ops.retained([p.name]) and p.name not in keep:

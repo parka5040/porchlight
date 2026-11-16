@@ -3,6 +3,8 @@ package app.porchlight.shared.screens
 import app.porchlight.shared.data.*
 import app.porchlight.shared.transport.ApiProblem
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.json.*
@@ -16,7 +18,12 @@ class ScreenWrites(private val newKey: () -> String = { randomOperationKey() }) 
     val state = mutable.asStateFlow()
     private var cache: ReadCache? = null
     private var visibilityRevision: Long? = null
-    fun bindCache(value: ReadCache) { cache = value; visible(value.view.value) }
+    private var identityEpoch: Long? = null
+    private var origin: WriteOrigin? = null
+    fun bindCache(value: ReadCache) {
+        if (identityEpoch == null) identityEpoch = value.sessionEpoch()
+        cache = value; visible(value.view.value)
+    }
     fun visible(view: CacheView?): WriteFeedback {
         if (view != null && visibilityRevision != null && view.visibilityRevision != visibilityRevision) {
             // Keep outcome/retry metadata, never the revoked representation or values derived from it.
@@ -26,6 +33,7 @@ class ScreenWrites(private val newKey: () -> String = { randomOperationKey() }) 
     }
     private var pending: (suspend (String) -> WriteResult<JsonElement>)? = null
     private var key: String? = null
+    internal val retainsOperation: Boolean get() = pending != null || mutable.value.busy || mutable.value.conflict
     private var actualKey: () -> String? = { null }
     suspend fun submit(activeKey: () -> String? = { null }, operation: suspend (String) -> WriteResult<JsonElement>) {
         if (mutable.value.busy || pending != null) {
@@ -34,16 +42,20 @@ class ScreenWrites(private val newKey: () -> String = { randomOperationKey() }) 
         }
         actualKey = activeKey
         visibilityRevision = cache?.view?.value?.visibilityRevision
+        origin = (currentCoroutineContext()[WriteOrigin] ?: cache?.writeOrigin?.invoke())?.let {
+            WriteOrigin(identityEpoch ?: it.epoch, it.token, it.revision)
+        }
         pending = operation; key = newKey(); execute()
     }
     suspend fun retry() { if (pending != null && !mutable.value.busy) execute() }
-    fun discard() { if (!mutable.value.busy) { pending = null; key = null; mutable.value = WriteFeedback() } }
+    fun discard() { if (!mutable.value.busy) { pending = null; key = null; origin = null; mutable.value = WriteFeedback() } }
     private suspend fun execute() {
         val op = pending ?: return
         val k = key ?: return
         mutable.value = WriteFeedback(busy = true)
         try {
-            mutable.value = when (val result = op(k)) {
+            val result = origin?.let { withContext(it) { op(k) } } ?: op(k)
+            mutable.value = when (result) {
                 is WriteResult.VersionConflict -> WriteFeedback(current = result.current, conflict = true, error = "This item changed. Compare yours with current before reapplying.")
                 is WriteResult.Success -> {
                     val conflicts = (result.value as? JsonObject)?.get("conflicts") as? JsonArray
@@ -54,7 +66,7 @@ class ScreenWrites(private val newKey: () -> String = { randomOperationKey() }) 
                     WriteFeedback(warning = warning, refreshPending = result.refreshPending, saved = true, savedValue = result.value)
                 }
             }
-            pending = null; key = null
+            pending = null; key = null; origin = null
         } catch (e: CancellationException) {
             key = actualKey() ?: k
             mutable.value = WriteFeedback(error = "Request interrupted; outcome unconfirmed. Retry only the identical request.", retryKey = key)
@@ -77,11 +89,11 @@ class ScreenWrites(private val newKey: () -> String = { randomOperationKey() }) 
                 mutable.value = WriteFeedback(error = e.attachmentUploadMessage() ?: "Could not confirm the write. Retry sends the identical request; no offline queue.", retryKey = key)
             } else {
                 mutable.value = WriteFeedback(error = "Write rejected (${e.status}). Correct the fields below or refetch.", fieldErrors = fields)
-                pending = null; key = null // sealed business error; correction is a new write
+                pending = null; key = null; origin = null // sealed business error; correction is a new write
             }
         } catch (e: IllegalArgumentException) {
             mutable.value = WriteFeedback(error = "Invalid request. Correct the draft before saving.")
-            pending = null; key = null
+            pending = null; key = null; origin = null
         } catch (e: Exception) {
             key = (e as? HouseholdLockedAfterReply)?.idempotencyKey ?: actualKey() ?: k
             mutable.value = WriteFeedback(error = if (e is HouseholdLocked) "Unlock Porchlight, then retry the same request." else "Could not confirm the write. Retry sends the identical request; no offline queue.", retryKey = key)

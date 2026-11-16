@@ -138,6 +138,7 @@ fun OwnDevicesScreen(devices: List<OwnDevice>, busy: Boolean = false, onRevoke: 
 @Composable
 fun TrustRecoveryScreen(state: TrustState, onClear: (() -> Unit)? = null, onFileKeyStore: (() -> Unit)? = null, updates: app.porchlight.shared.update.UpdateController? = null, onRetry: () -> Unit) {
     val (title, detail, button) = when (state) {
+        TrustState.StorageRecoveryRequired -> Triple("Local storage needs attention", "Household cache or attachment cleanup failed. Check free space and file permissions, then try again. Clear local cache can rebuild downloaded data without changing this device's credentials.", "Try again")
         is TrustState.UpgradeRequired -> Triple("Upgrade required", "Install Porchlight ${state.minVersion} or newer to continue.", "Check again")
         is TrustState.LocalTrustLost -> Triple("Local trust unavailable", if (state.android)
             "Android could not recover this device's Keystore credentials. Clear local trust and ask an admin for a new enrollment URI."
@@ -161,6 +162,12 @@ fun TrustRecoveryScreen(state: TrustState, onClear: (() -> Unit)? = null, onFile
             TrustButton("Try again", onClick = onRetry)
             TrustButton(button, onClick = onClear)
         } else TrustButton(button, onClick = onRetry)
+        if (state == TrustState.StorageRecoveryRequired && onClear != null) {
+            var confirming by remember { mutableStateOf(false) }
+            TrustButton("Clear local cache", onClick = { confirming = true })
+            if (confirming) app.porchlight.shared.ui.CacheRecoveryDialog(
+                onConfirm = { confirming = false; onClear() }, onDismiss = { confirming = false })
+        }
         if (state == TrustState.WalletLocked && onFileKeyStore != null) {
             // R85: an explicit choice at enrollment only, never a silent fallback.
             TrustButton("Store the key in a protected file instead", onClick = onFileKeyStore)
@@ -201,6 +208,7 @@ fun TrustGate(controller: TrustController, android: Boolean = false,
                 TrustState.Ready -> onboarding(content)
                 TrustState.ReEnroll -> TrustRecoveryScreen(state) { run { controller.startReEnrollment() } }
                 is TrustState.LocalTrustLost -> TrustRecoveryScreen(state, onClear = { run { controller.startReEnrollment() } }) { run { controller.restore() } }
+                TrustState.StorageRecoveryRequired -> TrustRecoveryScreen(state, onClear = { run { controller.retryStorageRecovery(clearCache = true) } }) { run { controller.retryStorageRecovery() } }
                 TrustState.WalletLocked -> TrustRecoveryScreen(state, onFileKeyStore = if (fileKeyStoreOffered) ({ run { controller.storeKeyInFileForEnrollment() } }) else null) { run { controller.restore() } }
                 is TrustState.UpgradeRequired -> TrustRecoveryScreen(state, updates = updates) { updates?.check(); run { controller.restore() } }
                 is TrustState.KeyStorageUnavailable -> TrustRecoveryScreen(state) { run { controller.restore() } }

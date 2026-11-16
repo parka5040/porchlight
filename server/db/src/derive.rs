@@ -205,6 +205,47 @@ pub async fn occurrences(conn: &mut PgConnection, item: Uuid) -> Result<Vec<Occu
     .map(|j| j.0)
     .collect())
 }
+/// Read-only candidate window. SQL is deliberately a superset of exact Rust
+/// DST/override membership; detached rows use the hull of both boxes because
+/// refinement can retain a generated instant alongside an overridden local end.
+/// The caller continues keyset batches after refinement.
+pub struct OccurrenceReadPage {
+    pub after: Option<(u32, Uuid)>,
+    pub from: Option<DateTime<Utc>>,
+    pub to: Option<DateTime<Utc>>,
+    pub undated: bool,
+    pub limit: usize,
+}
+pub async fn occurrence_candidates(
+    conn: &mut PgConnection,
+    item: Uuid,
+    page: &OccurrenceReadPage,
+) -> Result<Vec<OccurrenceRow>> {
+    let rows = sqlx::query_scalar::<_, Json<OccurrenceRow>>(
+        "SELECT to_jsonb(o) FROM porchlight.item_occurrences o
+        CROSS JOIN LATERAL (SELECT
+            least(o.starts_at AT TIME ZONE 'UTC',o.due_at AT TIME ZONE 'UTC',o.local_start,o.local_due,o.due_date::timestamp) AS lo,
+            greatest(o.starts_at AT TIME ZONE 'UTC',o.ends_at AT TIME ZONE 'UTC',o.due_at AT TIME ZONE 'UTC',o.local_start,o.local_end,o.local_due,o.due_date::timestamp + interval '1 day') AS hi) generated
+        CROSS JOIN LATERAL (SELECT
+            coalesce(o.override_local_start,o.local_start,o.starts_at AT TIME ZONE 'UTC') AS s,
+            coalesce(o.override_local_end,o.local_end,o.ends_at AT TIME ZONE 'UTC') AS e,
+            coalesce(o.override_local_due,o.local_due,o.due_at AT TIME ZONE 'UTC') AS d,
+            coalesce(o.override_due_date,o.due_date)::timestamp AS day) effective
+        CROSS JOIN LATERAL (SELECT least(effective.s,effective.d,effective.day) AS lo,
+            greatest(effective.s,effective.e,effective.d,effective.day + interval '1 day') AS hi) overridden
+        WHERE o.item_id=$1 AND (o.seq,o.id)>($2,$3)
+        AND ((generated.lo IS NULL AND ($6 OR ($4::timestamptz IS NULL AND $5::timestamptz IS NULL) OR overridden.lo IS NOT NULL)) OR
+            (($5::timestamptz IS NULL OR generated.lo < ($5 AT TIME ZONE 'UTC') + interval '3 days')
+             AND ($4::timestamptz IS NULL OR generated.hi > ($4 AT TIME ZONE 'UTC') - interval '3 days')) OR
+            (o.is_detached AND ($5 IS NULL OR least(generated.lo,overridden.lo) < ($5 AT TIME ZONE 'UTC') + interval '3 days')
+             AND ($4 IS NULL OR greatest(generated.hi,overridden.hi) > ($4 AT TIME ZONE 'UTC') - interval '3 days')))
+        ORDER BY o.seq,o.id LIMIT $7",
+    ).bind(item).bind(page.after.map(|k| k.0 as i32).unwrap_or(-1))
+        .bind(page.after.map(|k| k.1).unwrap_or(Uuid::nil()))
+        .bind(page.from).bind(page.to).bind(page.undated).bind(page.limit as i64)
+        .fetch_all(conn).await?;
+    Ok(rows.into_iter().map(|row| row.0).collect())
+}
 pub fn effective_anchor(
     row: &OccurrenceRow,
     spec: &core::SeriesSpec,

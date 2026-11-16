@@ -3,7 +3,7 @@
   "info": {
     "title": "Porchlight",
     "description": "Household API. Application routes require TLS 1.3 mutual TLS with an enrolled household device certificate and a device-bound session bearer. Login/reset require the device certificate but no session. Enrollment uses LAN-only server-auth TLS plus a one-time token and password. Agent routes use PAT bearer over a local Unix socket; an admin-scoped PAT is agent step-up. Terminal logout/self-revoke/PAT-self-revoke retries authenticate first and may return 401 instead of replayed success.",
-    "version": "0.1.7"
+    "version": "0.1.8"
   },
   "servers": [
     {
@@ -115,6 +115,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -236,6 +256,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -411,7 +451,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -570,6 +610,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -755,7 +815,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -942,7 +1002,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -1099,6 +1159,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1231,6 +1311,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1390,7 +1490,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -1523,6 +1623,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1742,7 +1862,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -1970,7 +2090,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -2200,7 +2320,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -2410,7 +2530,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -2573,6 +2693,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2709,6 +2849,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2870,7 +3030,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -2999,6 +3159,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3159,6 +3339,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3270,6 +3470,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3454,7 +3674,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -3650,7 +3870,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -3797,6 +4017,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3961,7 +4201,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -4176,7 +4416,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -4389,7 +4629,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -4585,7 +4825,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -4704,6 +4944,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4873,6 +5133,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5029,8 +5309,48 @@
               }
             }
           },
+          "429": {
+            "description": "Rate limit or credential lockout",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5240,7 +5560,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -5394,8 +5714,48 @@
               }
             }
           },
+          "429": {
+            "description": "Rate limit or credential lockout",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5585,7 +5945,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -5760,7 +6120,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -5950,7 +6310,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -6147,7 +6507,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -6344,7 +6704,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -6468,6 +6828,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         }
       }
@@ -6570,6 +6950,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -6723,6 +7123,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         }
       }
@@ -6861,6 +7281,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -6966,6 +7406,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -7143,6 +7603,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -7345,7 +7825,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -7581,7 +8061,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -7820,7 +8300,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -7959,6 +8439,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -8080,6 +8580,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -8266,7 +8786,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -8490,7 +9010,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -8609,6 +9129,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -8795,7 +9335,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -8949,6 +9489,26 @@
               }
             }
           },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
           "507": {
             "description": "storage-full: insufficient spool space",
             "content": {
@@ -9090,6 +9650,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -9249,7 +9829,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -9479,7 +10059,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -9707,7 +10287,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -9937,7 +10517,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -10192,7 +10772,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -10377,6 +10957,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -10574,7 +11174,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -10725,6 +11325,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -10953,7 +11573,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -11210,7 +11830,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -11451,7 +12071,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -11690,7 +12310,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -11868,6 +12488,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -11912,6 +12552,15 @@
               "type": "integer",
               "format": "int32",
               "minimum": 0
+            }
+          },
+          {
+            "name": "ids",
+            "in": "query",
+            "description": "1..100 comma-separated UUIDs. Exclusive with cursor/limit; absent requested rows are removed or invisible.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -12029,6 +12678,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -12235,7 +12904,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -12441,6 +13110,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -12671,7 +13360,229 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "pat": []
+          }
+        ]
+      }
+    },
+    "/v1/items/{id}/sync": {
+      "get": {
+        "tags": [
+          "item_sync"
+        ],
+        "operationId": "item_sync_get",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "agenda",
+            "in": "query",
+            "description": "Repeat up to 8 member:from:to RFC3339 windows (deduplicated), each at most 730 days",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "name": "agenda_cursor",
+            "in": "query",
+            "description": "Repeat incomplete coverage.agenda next_cursor values; continuation-only request",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "name": "comments_cursor",
+            "in": "query",
+            "description": "comments_next_cursor; continuation-only request",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "include",
+            "in": "query",
+            "description": "collaboration adds comments (at most 200 per response), attachments and lists",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Porchlight-Client-Version",
+            "in": "header",
+            "description": "Client semver; required even on fallback responses.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Porchlight-TZ",
+            "in": "header",
+            "description": "Optional IANA time zone.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Item-scoped page, at most 200 agenda rows total, 200 comments and 8 MiB identity bytes; exhaust every continuation before omission removal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemSyncRead"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed request, client version or time zone",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication or credential no longer valid",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Transient database conflict (including authentication/touch on GET); retry the same request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "item-sync-too-large: canonical nonpaged sections exceed the 8 MiB document budget; no replacement coverage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "Client version below the configured minimum",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit or credential lockout",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -12912,7 +13823,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -13153,7 +14064,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -13381,7 +14292,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -13617,7 +14528,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -13855,7 +14766,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -14093,7 +15004,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -14289,8 +15200,48 @@
               }
             }
           },
+          "429": {
+            "description": "Rate limit or credential lockout",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -14488,7 +15439,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -14659,8 +15610,48 @@
               }
             }
           },
+          "429": {
+            "description": "Rate limit or credential lockout",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -14879,7 +15870,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -15118,7 +16109,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -15356,7 +16347,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -15575,7 +16566,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -15816,7 +16807,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -15945,6 +16936,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -16046,6 +17057,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -16222,7 +17253,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -16344,6 +17375,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -16520,7 +17571,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -16666,6 +17717,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -16860,7 +17931,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -17011,6 +18082,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -17236,7 +18327,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -17273,6 +18364,15 @@
         ],
         "operationId": "notifications_list",
         "parameters": [
+          {
+            "name": "ids",
+            "in": "query",
+            "description": "1..100 comma-separated UUIDs, including read rows. Exclusive with unread/cursor/limit.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
           {
             "name": "unread",
             "in": "query",
@@ -17384,6 +18484,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -17543,7 +18663,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -17722,7 +18842,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -17963,7 +19083,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -18204,7 +19324,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -18445,7 +19565,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -18645,7 +19765,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -18806,6 +19926,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -18927,6 +20067,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -19026,8 +20186,48 @@
               }
             }
           },
+          "429": {
+            "description": "Rate limit or credential lockout",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -19052,7 +20252,7 @@
         "tags": [
           "stream"
         ],
-        "summary": "One mTLS+session stream. Tickle data is StreamTickle (IDs/categories only).\nItem/occurrence/derived/comment/attachment use current item ACL; lists use item\nscope or pl_list_can_read; notifications/settings/feed/suggestions use member\nequality; member.changed is household-wide. Access changes for former readers\ncarry evicted=true and must remove the entity and its dependent caches.\nHeartbeats are comments every 120 seconds. Ready has no ID and returns the scan\ncursor. Last-Event-ID takes precedence over after. Cursors older than seven\ndays of outbox creation time, pruned prefixes, or above the global maximum get\na terminal resnapshot event. Shutdown emits drain and clean EOF; reconnect\nusing the last tickle ID. No control frame advances the replay cursor.",
+        "summary": "One mTLS+session stream. Tickle data is StreamTickle (IDs/categories only).\nItem/occurrence/derived/comment/attachment use current item ACL; lists use item\nscope or pl_list_can_read; notifications/settings/feed/suggestions use member\nequality; member.changed is household-wide. Access changes for former readers\ncarry evicted=true and must remove the entity and its dependent caches.\nHeartbeats are comments every 120 seconds. Ready has no ID and returns the scan\ncursor, before replay. With Porchlight-Capabilities: item-sync-v1, caught_up\n(no ID, data {cursor}) is sent once after all entries through the global published\nmaximum observed at open have been flushed or ACL-filtered. Empty backlog:\nready then caught_up immediately. Newer events may precede or follow caught_up;\nprocess all preceding frames before closing, retaining the last processed tickle ID.\nHeartbeats may interleave only if replay exceeds the heartbeat interval.\nLast-Event-ID takes precedence over after. Cursors older than seven\ndays of outbox creation time, pruned prefixes, or above the global maximum get\na terminal resnapshot event. Shutdown emits drain and clean EOF; reconnect\nusing the last tickle ID. No control frame advances the replay cursor.",
         "operationId": "stream_get",
         "parameters": [
           {
@@ -19066,6 +20266,18 @@
                 "null"
               ],
               "format": "int64"
+            }
+          },
+          {
+            "name": "Porchlight-Capabilities",
+            "in": "header",
+            "description": "Comma-separated capabilities; item-sync-v1 enables authoritative parent hints, item.invalidated, notification.invalidated, terminal resnapshot projection_changed, and a once-per-connection caught_up control after replay through the connect watermark",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           {
@@ -19183,6 +20395,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -19357,6 +20589,26 @@
           },
           "500": {
             "description": "Unexpected error; no internal details disclosed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "database-busy: request pool acquire deadline exceeded; retry the identical request",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -19584,7 +20836,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -19822,7 +21074,7 @@
             }
           },
           "503": {
-            "description": "Server is updating; mutation not executed, retry the identical request shortly",
+            "description": "maintenance or database-busy; mutation not executed, retry the identical request shortly",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -19927,6 +21179,40 @@
           }
         }
       },
+      "AgendaCoverage": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/AgendaWindow"
+          },
+          {
+            "$ref": "#/components/schemas/LocalWindow"
+          },
+          {
+            "type": "object",
+            "required": [
+              "complete"
+            ],
+            "properties": {
+              "cursor": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Exclusive start of this page; null on the first page."
+              },
+              "next_cursor": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "complete": {
+                "type": "boolean"
+              }
+            }
+          }
+        ]
+      },
       "AgendaRead": {
         "type": "object",
         "required": [
@@ -19989,6 +21275,28 @@
             "format": "date"
           },
           "derived_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "AgendaWindow": {
+        "type": "object",
+        "required": [
+          "member_id",
+          "from",
+          "to"
+        ],
+        "properties": {
+          "member_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "to": {
             "type": "string",
             "format": "date-time"
           }
@@ -22095,6 +23403,114 @@
           }
         ]
       },
+      "ItemSyncRead": {
+        "type": "object",
+        "required": [
+          "window_from",
+          "window_to",
+          "coverage"
+        ],
+        "properties": {
+          "window_from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "window_to": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/SyncCoverage"
+          },
+          "items": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ItemRead"
+            }
+          },
+          "occurrences": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/OccurrenceRead"
+            }
+          },
+          "scheduled_reminders": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ScheduledReminderRead"
+            }
+          },
+          "board": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ItemRead"
+            }
+          },
+          "agenda": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/SyncAgenda"
+            }
+          },
+          "suggestions": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/SuggestionResponse"
+            }
+          },
+          "comments": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/Comment"
+            }
+          },
+          "comments_next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "attachments": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/Attachment"
+            }
+          },
+          "lists": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ListResponse"
+            }
+          }
+        }
+      },
       "ItemTimeMode": {
         "type": "string",
         "enum": [
@@ -22406,6 +23822,25 @@
           }
         }
       },
+      "LocalWindow": {
+        "type": "object",
+        "properties": {
+          "zone": {
+            "type": "string",
+            "description": "Membership zone; UTC from/to remain authoritative at DST folds."
+          },
+          "local_from": {
+            "type": "string",
+            "format": "local-date-time",
+            "description": "Exact projection of from into zone, without an offset."
+          },
+          "local_to": {
+            "type": "string",
+            "format": "local-date-time",
+            "description": "Exact projection of to into zone, without an offset."
+          }
+        }
+      },
       "Login": {
         "type": "object",
         "required": [
@@ -22456,6 +23891,13 @@
           "connection"
         ],
         "properties": {
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional in the contract for newer clients talking to a pre-capability server."
+          },
           "member_id": {
             "type": "string",
             "format": "uuid"
@@ -24987,6 +26429,22 @@
               "null"
             ],
             "description": "Omitted unless true. Remove cached entity; an item eviction also removes children."
+          },
+          "item_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Current ACL-validated parent, only with Porchlight-Capabilities: item-sync-v1."
+          },
+          "list_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Current ACL-validated list for a list entry; same capability requirement."
           }
         }
       },
@@ -25132,6 +26590,140 @@
             ]
           }
         }
+      },
+      "SyncAgenda": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/LocalWindow"
+          },
+          {
+            "type": "object",
+            "required": [
+              "member_id",
+              "from",
+              "to",
+              "items"
+            ],
+            "properties": {
+              "member_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "from": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "to": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ItemRead"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "SyncCoverage": {
+        "type": "object",
+        "required": [
+          "item_id",
+          "continued",
+          "item_sections",
+          "occurrences",
+          "undated_occurrences",
+          "scheduled_reminders",
+          "board_scope",
+          "agenda",
+          "suggestions",
+          "collaboration",
+          "comments",
+          "comments_complete"
+        ],
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "continued": {
+            "type": "boolean",
+            "description": "Continuations cover only their explicitly requested agenda/comments sections."
+          },
+          "item_sections": {
+            "type": "boolean"
+          },
+          "occurrences": {
+            "$ref": "#/components/schemas/SyncWindow"
+          },
+          "undated_occurrences": {
+            "type": "boolean"
+          },
+          "reminder_member_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "scheduled_reminders": {
+            "$ref": "#/components/schemas/SyncWindow"
+          },
+          "board_scope": {
+            "type": "string"
+          },
+          "agenda": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgendaCoverage"
+            }
+          },
+          "suggestions": {
+            "type": "boolean"
+          },
+          "collaboration": {
+            "type": "boolean",
+            "description": "Attachments/lists replacement coverage (initial collaboration request only)."
+          },
+          "comments": {
+            "type": "boolean"
+          },
+          "comments_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "comments_complete": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SyncWindow": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/LocalWindow"
+          },
+          {
+            "type": "object",
+            "required": [
+              "from",
+              "to"
+            ],
+            "properties": {
+              "from": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "to": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          }
+        ]
       },
       "TargetResponse": {
         "type": "object",

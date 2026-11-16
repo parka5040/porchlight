@@ -1,0 +1,19 @@
+id: 42
+event: list_entry.changed
+data: {"seq":42,"kind":"list_entry.changed","entity_type":"list_entry","entity_id":"00000000-0000-7000-8000-000000000001","item_id":"00000000-0000-7000-8000-000000000002","list_id":"00000000-0000-7000-8000-000000000003","future":{"ignored":true}}
+
+id: 44
+event: item.invalidated
+data: {"seq":44,"kind":"item.invalidated","entity_type":"item","entity_id":"00000000-0000-7000-8000-000000000002","future":[]}
+
+id: 48
+event: notification.invalidated
+data: {"seq":48,"kind":"notification.invalidated","entity_type":"notification","entity_id":"00000000-0000-7000-8000-000000000004"}
+
+id: 49
+event: settings.changed
+data: {"seq":49,"kind":"settings.changed","entity_type":"availability","entity_id":"00000000-0000-7000-8000-000000000005"}
+
+event: resnapshot
+data: {"reason":"projection_changed","future":true}
+

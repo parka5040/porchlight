@@ -22,6 +22,7 @@ SERVE = b'{"TCP":{"443":{"TCPForward":"api:9443","ProxyProtocol":2}},"AllowFunne
 IMAGE = 'tailscale/tailscale@sha256:' + 'a' * 64
 FQDN = 'quiet-node.tail123.ts.net'
 OLD = {'dns': ['porchlight.lan', 'localhost', 'extra.lan'], 'ips': ['127.0.0.1', '192.168.77.50']}
+CREDENTIALS = ''.join(key + '=fixture-password\n' for key in ('POSTGRES_PASSWORD', 'PORCHLIGHT_MIGRATOR_PASSWORD', 'PORCHLIGHT_APP_PASSWORD', 'PORCHLIGHT_AGENT_PASSWORD', 'PORCHLIGHT_BACKUP_PASSWORD'))
 DOCKER = '''#!/usr/bin/env python3
 import json,os,pathlib,signal,sys
 p=pathlib.Path(os.environ['FIXTURE']);a=sys.argv[1:];root=pathlib.Path(os.environ['PORCHLIGHT_ROOT'])
@@ -100,7 +101,7 @@ class InstallerTests(unittest.TestCase):
             shutil.copyfile(ROOT/'deploy'/name, self.release/name)
         (self.stack/'release-current').symlink_to('releases/0.1.0')
         (self.stack/'data/pki').mkdir(parents=True)
-        (self.stack/'.env').write_text('PORCHLIGHT_VERSION=0.1.0\nPORCHLIGHT_ENDPOINTS=https://porchlight.lan:8443\n')
+        (self.stack/'.env').write_text('PORCHLIGHT_VERSION=0.1.0\nPORCHLIGHT_ENDPOINTS=https://porchlight.lan:8443\n' + CREDENTIALS)
         (self.stack/'.env').chmod(0o600)
         self.installer = self.p/'install.sh'
         subprocess.run(['python3', '-I', str(ROOT/'scripts/build-installer.py'), str(ROOT), str(self.installer), 'TEST-PUBLIC-KEY'], check=True)
@@ -634,10 +635,10 @@ os.execv('''+repr(real_python)+''', ['python3','-I','-c',code,*sys.argv[3:]])
         for path in ('db.dump','pki/ca.crt','pki/ca.key','secrets/idempotency.key','backup-recipient.txt'):
             target=tree/path; target.parent.mkdir(parents=True,exist_ok=True); target.write_text('fixture')
         (tree/'blobs').mkdir()
-        (tree/'.env').write_text('PORCHLIGHT_VERSION=0.1.1\nFUNNEL_ENABLED='+str(enabled)+'\n'
+        (tree/'.env').write_text('LAN_BIND=127.0.0.1\nPORCHLIGHT_VERSION=0.1.1\nFUNNEL_ENABLED='+str(enabled)+'\n'
                                 +'TS_HOSTNAME=quiet-node\nTAILSCALE_IMAGE_SHA256='+'a'*64+'\n'
                                 +'TS_AUTHKEY_SPEC=file:/config/authkey\n'
-                                +'PORCHLIGHT_ENDPOINTS=https://porchlight.lan:8443,https://'+FQDN+'\n')
+                                +'PORCHLIGHT_ENDPOINTS=https://porchlight.lan:8443,https://'+FQDN+'\n' + CREDENTIALS)
         subprocess.run(['python3','-I',str(ROOT/'deploy/lib/operations.py'),'manifest',str(tree),'0.1.1'], check=True)
         bundle = self.p/'restore.tar.age'
         with tarfile.open(bundle,'w') as archive:
@@ -913,12 +914,12 @@ elif command -v docker >/dev/null && docker compose version >/dev/null 2>&1; the
   trap 'rm -f "$dummy"' EXIT
   printf '%s\n' 'POSTGRES_PASSWORD=fixture' 'PORCHLIGHT_MIGRATOR_PASSWORD=fixture' \
     'PORCHLIGHT_APP_PASSWORD=fixture' 'PORCHLIGHT_AGENT_PASSWORD=fixture' 'PORCHLIGHT_BACKUP_PASSWORD=fixture' \
-    'PORCHLIGHT_VERSION=0.1.0' 'ENROLL_CIDRS=192.168.77.0/24' 'TS_HOSTNAME=quiet-node' \
+    'PORCHLIGHT_VERSION=0.1.0' 'ENROLL_CIDRS=192.168.77.0/24' 'LAN_BIND=192.168.77.10' 'TS_HOSTNAME=quiet-node' \
     'TAILSCALE_IMAGE_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
     'TS_AUTHKEY_SPEC=' > "$dummy"
   env -u POSTGRES_PASSWORD -u PORCHLIGHT_MIGRATOR_PASSWORD -u PORCHLIGHT_APP_PASSWORD \
     -u PORCHLIGHT_AGENT_PASSWORD -u PORCHLIGHT_BACKUP_PASSWORD -u PORCHLIGHT_VERSION \
-    -u ENROLL_CIDRS -u TS_HOSTNAME -u TAILSCALE_IMAGE_SHA256 -u TS_AUTHKEY_SPEC \
+    -u ENROLL_CIDRS -u LAN_BIND -u TS_HOSTNAME -u TAILSCALE_IMAGE_SHA256 -u TS_AUTHKEY_SPEC \
     PORCHLIGHT_ROOT="$root/var/compose-funnel-test" PORCHLIGHT_RUN_DIR="$root/var/run-funnel-test" \
     docker compose --env-file "$dummy" -f "$root/deploy/compose.yml" -f "$root/deploy/compose.funnel.yml" --profile funnel config -q
   printf 'PASS real Compose Funnel config\n'

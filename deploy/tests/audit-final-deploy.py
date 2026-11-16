@@ -105,12 +105,12 @@ if 'server-cert' in a:""")
         self.assertTrue(all(not login and not connected for _, login, connected in self.agent_events()))
         self.assertEqual(json.loads((self.p / 'agent-state.json').read_text()), [True, False])
 
-    def test_fr_db_01_failed_rollback_still_attempts_login_cleanup(self):
+    def test_fr_db_01_failed_rollback_keeps_agent_fenced(self):
         self.agent_model()
         result = self.run_install('--source', str(self.release), expected=1,
                                   env={'FAIL_AT': 'migrate', 'FAIL_ROLLBACK': '1'})
         self.assertIn('ROLLBACK FAILED', result.stderr)
-        self.assertEqual(json.loads((self.p / 'agent-state.json').read_text()), [True, False])
+        self.assertEqual(json.loads((self.p / 'agent-state.json').read_text()), [False, False])
         self.assertTrue((self.run_dir / 'maintenance').exists())
 
     def test_fr_db_01_failed_drain_never_takes_snapshot(self):

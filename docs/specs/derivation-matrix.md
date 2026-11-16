@@ -425,6 +425,58 @@ backup-role grants are available here, but the existing O1 job has not been chan
 - All new tables/columns are automatically included by full database dumps/backups; no selective export projection
   is introduced here. Item revisions use `to_jsonb`, so new authoritative fields are captured automatically.
 
+## Targeted stream dependency closure (0078)
+
+These are **read invalidations**, not derivation inputs or independent version bumps. Extra
+outbox kinds are delivered only with `Porchlight-Capabilities: item-sync-v1`; legacy frames and
+snapshot/bundle output are unchanged. 0079 adds private owner-only `sync_emissions` bookkeeping
+(backend/full transaction ID/household, emitted keys, transaction clock); no runtime grants,
+household export resource or backup selection. Full dumps include it; transaction identity and
+clock fencing make restored bookkeeping inert.
+
+| Writer / transition | Additional outbox |
+| --- | --- |
+| `items` UPDATE/DELETE (including title/visibility-only and relationship parent bumps) | `item.invalidated` for overlapping current agenda peers; split descendants only on ACL/capability/relationship/lineage/delete/restore changes (0080 skips title/notes/time-only edits); `notification.invalidated` for released direct/coalesced source notifications, recipient-scoped |
+| `household_members` actual `display_name` change (0080 OLD/NEW transition tables) | Recipient-scoped `notification.invalidated` for each released source-actor notification; indexed actor lookup covers single-source and coalesced summaries; colour/zone/authority edits do not scan history |
+| `item_derivation` UPDATE nonpending → pending (0079) | `item.invalidated` at enqueue commit, independent of delayed worker's later `derived`; refresh related caller-profile pending flags too. Initial item/job creation already has `item.changed`. |
+| `member_agenda` INSERT/UPDATE/DELETE transition tables | `item.invalidated` for changed item IDs and peers overlapping old/new busy spans; includes purge/removal/split and derivation replacement |
+| `member_daily_load` INSERT/UPDATE/DELETE transition tables | `item.invalidated` for agenda items on affected member-local old/new dates; includes member-only worker completion and load-warning removal |
+| `schedule_suggestions` INSERT/UPDATE/DELETE | `item.invalidated` for its bundle's suggestions section, in addition to existing recipient `suggestion.changed` |
+| `lists`, `list_entries` INSERT/UPDATE/DELETE (checks bump entry) | `item.invalidated` for attached parent and split descendants inheriting templates, in addition to existing list/entry tickles |
+| `notification_sources` DELETE | Recipient-scoped `notification.invalidated`, including source severing on purge/event retention; existing released parent IDs only |
+| `notifications` DELETE | Recipient-scoped `notification.invalidated` for released IDs; physical absence is authoritative requested-id eviction |
+| `availability_profiles` INSERT/UPDATE | `settings.changed` / `availability`, recipient-scoped; historical member.changed/availability translates on capable replay only |
+| `households` any changed UPDATE; `household_members` role/deleted_at transition | Internal `sync.reset` converted to terminal `resnapshot` / `projection_changed` on capable streams; broad capability/zone/settings fallback |
+
+`pl_sync_emit` deduplicates extra kinds/IDs/recipients per transaction with rollback-aware
+owner-protected transaction-keyed state (0079; caller settings are never trusted), caps extra
+entity rows at **200** per household, then appends one coarse household
+reset and suppresses remaining extras. 0080 makes every producer short-circuit before candidate
+queries once a protected household reset exists. Descendant discovery has no full-closure sort,
+yields at most 201 rows, and resets at that boundary or depth 200; list and item producers share
+that bounded walk. Other producers bound each distinct candidate set to 201.
+No arbitrary event payload becomes a parent hint; delivery resolves authoritative current child
+rows under the recipient ACL. All invalidations commit/rollback with the writer and are projected
+through normal ordered outbox publication. No generated trigger re-enqueues derivation, no new
+item/member locks are acquired. Full routing, legacy and property-test contracts: [stream.md](stream.md).
+
+Mutation-test inventory (`coverage/proof/mutations.rs`; each isolated database suppresses only
+the named producer and requires the normal differential assertion to reject its scenario):
+
+| Producer | Guarded scenario |
+| --- | --- |
+| `pl_sync_emit`, `pl_sync_pending` | Enqueue source commit before delayed worker |
+| `pl_sync_items` | Real raw-agent conflict-title edit; non-overlapping descendant inherited ACL loss |
+| `pl_sync_agenda` | Generated agenda span move, OLD/NEW peers |
+| `pl_sync_load` | Availability edit followed by member-only load-worker completion |
+| `pl_sync_suggestion` | Dismiss proposal, item suggestions replacement |
+| `pl_sync_list`, `sync_entry` | Ancestor template rename / entry insertion changes tail bundle |
+| `pl_sync_notification_delete` | Real notification/event retention, every affected inbox ID |
+| `sync_notifications_delete`, `sync_sources_delete` | Physical recipient row deletion / source severing, each ID |
+| `pl_sync_actor_rename` | Actor rename in single-source and coalesced inbox rows |
+| `pl_availability_profile_changed` | Exact availability settings resource, no barrier coverage |
+| `pl_sync_reset` | Household-zone change / member deletion terminal reset |
+
 ## Ordering and gaps
 
 - Migration 0067 enforces the core canonical key predicate `^([0-9a-f]{2})*80$` and 2–64 ASCII bytes
@@ -456,7 +508,7 @@ not proof of a currently running process; only `status='success'` drives persist
 
 | Table · columns | Class / writer | Derivation and bookkeeping |
 | --- | --- | --- |
-| `availability_windows` · `household_id`, `member_id`, `weekday`, `starts_local`, `ends_local` | authoritative; API/raw agent | version guard; member NKU NOWAIT (0046; whole-transaction retry on 55P03); statement-level per-member profile bump (0048); planning_audit actor; member_load_jobs enqueue; member.changed with member_id scope |
+| `availability_windows` · `household_id`, `member_id`, `weekday`, `starts_local`, `ends_local` | authoritative; API/raw agent | version guard; member NKU NOWAIT (0046; whole-transaction retry on 55P03); statement-level per-member profile bump (0048); planning_audit actor; member_load_jobs enqueue; settings.changed/availability with member_id scope (0078; capable streams only) |
 | `availability_profiles` · `member_id`, `household_id`, `version`, `created_at`, `updated_at` | collection-version bookkeeping; API/definer | profile bumps for replacement including empty; actor audit and member-scoped outbox |
 | `schedule_suggestions` · IDs, `proposed_start`, `proposed_end`, `run_id`, `created_at` | generated by nightly/on-demand EDF | version guard; planning_audit actor; suggestion.changed with member_id scope; no item enqueue |
 | `schedule_suggestions` · `status` | authoritative accept/dismiss; raw agent | version guard/audit/outbox; terminal status transition guard (0047); acceptance separately writes occurrence local overrides through WriteScope |
@@ -639,6 +691,7 @@ alone never authorizes an uncounted cascade. See [O2 data-out contracts](data-ou
 | `purge_log` · counts | maintenance per-table counts, nightly empty item_ids; append-only | none; no item enqueue on retention |
 | `blob_leases` · expires_at | `pl_renew_blob_lease` locks pinned blobs then renews only a live lease | none; no expired revival; GC exclusion persists until expiry/release |
 | `notification_kinds` · `backup_stale` | R53 registry INSERT only, hourly system producer/live super admins after 26h, last-success/recipient dedupe | ordinary notifier and recipient-private outbox, no domain derivation |
+| `notification_kinds` · `server_certificate_expiring`, `server_certificate_expiring_90`, `server_certificate_expiring_60`, `server_certificate_expiring_30`, `server_certificate_expiring_7`, `server_certificate_expired`, `server_certificate_renewal_failed`, `disk_headroom_low`, `disk_space_low`, `disk_inodes_low`, `disk_backup_headroom_low` (0077) | additive registry INSERT only; daily certificate expiry bands/expired/renewal failures, hourly disk/inode/measured-backup-headroom, live super admins; expiry/band/recipient, expiry/day/failure/recipient or UTC-day/storage/recipient dedupe | existing actor-attributed notification events and recipient-private outbox; static actionable inbox wording, separate operational rows even in activity/digest windows; no domain derivation, revisions or parent version bumps |
 
 `backup_runs` keeps O1's authoritative publication record. Data-only exports use an explicit table allowlist
 and member ACL; full encrypted backups include all database control state via pg_dump. Retention clock,

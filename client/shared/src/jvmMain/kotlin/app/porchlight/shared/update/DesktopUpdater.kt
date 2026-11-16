@@ -28,7 +28,7 @@ fun desktopInstallBase(launcher: String?): Path? = runCatching {
     base
 }.getOrNull()
 fun desktopInstallerArgv(base: Path, source: Path) = listOf("bash", base.resolve("current/install.sh").toString(), "desktop", "--source", source.toString())
-fun desktopRestartArgv(base: Path) = listOf(base.resolve("current/app/bin/porchlight").toString(), "--after-update")
+fun desktopRestartArgv(base: Path) = listOf(base.resolve("current/app/bin/porchlight").toString(), "--after-update", "--after-update-pid=${ProcessHandle.current().pid()}")
 internal fun toolOnPath(tool: String): Boolean = System.getenv("PATH").orEmpty().split(java.io.File.pathSeparator)
     .filter { it.isNotBlank() }.any { Files.isRegularFile(Path.of(it, tool)) && Files.isExecutable(Path.of(it, tool)) }
 

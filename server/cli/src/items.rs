@@ -21,6 +21,15 @@ pub enum Command {
     Show {
         item: Uuid,
     },
+    /// Fetch an authoritative item sync bundle.
+    Sync {
+        item: Uuid,
+        /// Repeat member:from:to RFC3339 windows (up to eight).
+        #[arg(long)]
+        agenda: Vec<String>,
+        #[arg(long, value_parser = ["collaboration"])]
+        include: Option<String>,
+    },
     Edit {
         item: Uuid,
         #[command(flatten)]
@@ -384,6 +393,15 @@ pub async fn run(c: &Client, cmd: &Command) -> Result<Value> {
             c.request("GET", &format!("/v1/items/{item}"), Value::Null)
                 .await
         }
+        Command::Sync {
+            item,
+            agenda,
+            include,
+        } => {
+            let mut args: Vec<_> = agenda.iter().map(|w| ("agenda", Some(w.clone()))).collect();
+            args.push(("include", include.clone()));
+            sync_bundle(c, *item, args).await
+        }
         Command::Edit {
             item,
             fields,
@@ -493,6 +511,75 @@ pub async fn run(c: &Client, cmd: &Command) -> Result<Value> {
         }
     }
 }
+async fn sync_bundle(c: &Client, item: Uuid, args: Vec<(&str, Option<String>)>) -> Result<Value> {
+    let path = format!("/v1/items/{item}/sync");
+    let mut merged = c.item_sync(&domain::query(&path, &args)).await?;
+    let mut page = merged.clone();
+    let mut seen = std::collections::HashSet::new();
+    loop {
+        let mut args = Vec::new();
+        if let Some(cursor) = page["comments_next_cursor"].as_str() {
+            args.push(("comments_cursor", Some(cursor.to_owned())));
+        }
+        if let Some(windows) = page["coverage"]["agenda"].as_array() {
+            for window in windows {
+                if let Some(cursor) = window["next_cursor"].as_str() {
+                    args.push(("agenda_cursor", Some(cursor.to_owned())));
+                }
+            }
+        }
+        if args.is_empty() {
+            break;
+        }
+        let query = domain::query(&path, &args);
+        if !seen.insert(query.clone()) {
+            return Err(Error::Local("Item sync continuation made no progress"));
+        }
+        page = c.item_sync(&query).await?;
+        if let Some(rows) = page["comments"].as_array() {
+            merged["comments"]
+                .as_array_mut()
+                .ok_or(Error::Local("Invalid item sync comments"))?
+                .extend(rows.iter().cloned());
+        }
+        if page["coverage"]["comments"] == true {
+            merged["coverage"]["comments_complete"] = page["coverage"]["comments_complete"].clone();
+            merged["comments_next_cursor"] = page["comments_next_cursor"].clone();
+        }
+        let same_window =
+            |a: &Value, b: &Value| ["member_id", "from", "to"].iter().all(|k| a[*k] == b[*k]);
+        if let Some(windows) = page["agenda"].as_array() {
+            for window in windows {
+                let target = merged["agenda"]
+                    .as_array_mut()
+                    .and_then(|rows| rows.iter_mut().find(|r| same_window(r, window)))
+                    .ok_or(Error::Local("Invalid item sync agenda"))?;
+                target["items"]
+                    .as_array_mut()
+                    .ok_or(Error::Local("Invalid item sync agenda"))?
+                    .extend(
+                        window["items"]
+                            .as_array()
+                            .ok_or(Error::Local("Invalid item sync agenda"))?
+                            .iter()
+                            .cloned(),
+                    );
+            }
+        }
+        if let Some(windows) = page["coverage"]["agenda"].as_array() {
+            for window in windows {
+                let target = merged["coverage"]["agenda"]
+                    .as_array_mut()
+                    .and_then(|rows| rows.iter_mut().find(|r| same_window(r, window)))
+                    .ok_or(Error::Local("Invalid item sync coverage"))?;
+                target["complete"] = window["complete"].clone();
+                target["next_cursor"] = window["next_cursor"].clone();
+            }
+        }
+    }
+    Ok(merged)
+}
+
 async fn write(
     c: &Client,
     id: Uuid,

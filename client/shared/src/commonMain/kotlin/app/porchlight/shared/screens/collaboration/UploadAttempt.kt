@@ -10,6 +10,7 @@ import kotlinx.coroutines.job
 /** Session-owned observation of the current attempt, including identical-request retries. No bytes are retained here. */
 class UploadAttempt {
     private var job: Job? = null
+    internal val active: Boolean get() = job != null
     private val mutable = MutableStateFlow<UploadProgress?>(null)
     val progress = mutable.asStateFlow()
     suspend fun <T> track(operation: suspend ((Long, Long) -> Unit) -> T): T {

@@ -51,7 +51,7 @@ class Installer(unittest.TestCase):
         shutil.copytree(old, self.stack / 'releases' / OLD)
         (self.stack / 'release-current').symlink_to('releases/' + OLD)
         (self.stack / 'data/pki').mkdir(parents=True)
-        (self.stack / '.env').write_text('PORCHLIGHT_VERSION=' + OLD + '\nENROLL_HOST=old.lan:8444\n')
+        (self.stack / '.env').write_text('PORCHLIGHT_VERSION=' + OLD + '\nENROLL_HOST=old.lan:8444\n' + BASE.CREDENTIALS)
         self.installer = old / 'install.sh'
         self.bin = self.p / 'bin'
         self.bin.mkdir()
@@ -179,7 +179,7 @@ a=sys.argv[1:];shutil.copyfile(a[-1],a[a.index('-o')+1])
         source = self.p / 'bundle-tree'
         for name in ('db.dump', '.env', 'pki/ca.crt', 'pki/ca.key', 'secrets/idempotency.key', 'backup-recipient.txt'):
             path = source / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_text('fixture')
-        (source / '.env').write_text(f'PORCHLIGHT_VERSION={NEW}\nPORCHLIGHT_UID={os.getuid()+100}\nPORCHLIGHT_GID={os.getgid()+100}\n')
+        (source / '.env').write_text(f'LAN_BIND=127.0.0.1\nPORCHLIGHT_VERSION={NEW}\nPORCHLIGHT_UID={os.getuid()+100}\nPORCHLIGHT_GID={os.getgid()+100}\n' + BASE.CREDENTIALS)
         (source / 'blobs').mkdir()
         OPS.manifest(source, NEW)
         bundle = self.p / 'bundle.tar'
@@ -208,7 +208,7 @@ a=sys.argv[1:];shutil.copyfile(a[-1],a[a.index('-o')+1])
         self.assertFalse(any('down' in x['argv'] or 'dropdb' in x['argv'] for x in self.records()))
 
     def server_args(self, password):
-        return ('--source', str(self.release), '--backup-recipient', 'age1' + 'q'*58, '--admin-name', 'Sam Rivera',
+        return ('--source', str(self.release), '--lan-bind', '192.168.77.10', '--backup-recipient', 'age1' + 'q'*58, '--admin-name', 'Sam Rivera',
                 '--admin-password-file', str(password))
 
     def test_s1b_01_failed_install_resumes_same_credentials(self):

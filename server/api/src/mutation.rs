@@ -187,9 +187,14 @@ macro_rules! register_mutation {
                 -> futures_util::future::BoxFuture<'a, Result<Response, ApiError>>
                 + Clone + Send + Sync + 'static,
         {
-            axum::routing::$method(move |axum::extract::State(state): axum::extract::State<AppState>, caller: Caller, m: Mutation<T>| {
+            axum::routing::$method(move |axum::extract::State(state): axum::extract::State<AppState>, caller: Caller, mut req: Request| {
                 let handler = handler.clone();
-                async move { run(&state, caller, m, handler).await }
+                async move {
+                    check_write_admission(&state, &caller)?;
+                    req.extensions_mut().insert(caller.clone());
+                    let m = <Mutation<T> as axum::extract::FromRequest<AppState>>::from_request(req, &state).await?;
+                    run_inner(&state, caller, m, handler, true).await
+                }
             }).layer(middleware::from_fn(require_key))
         }
     )*}

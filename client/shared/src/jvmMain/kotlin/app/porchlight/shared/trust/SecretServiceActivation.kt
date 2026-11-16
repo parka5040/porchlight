@@ -21,12 +21,6 @@ internal fun interface SecretServiceActivationBus {
 internal class SessionBusUnavailable(cause: Throwable?) : WalletUnavailable(cause)
 
 /**
- * The user dismissed the provider's unlock prompt, let it time out, or it failed once shown; or this attempt already
- * used its one prompt. Final for the attempt: never re-prompted or retried.
- */
-internal class WalletUnlockDismissed(cause: Throwable? = null) : WalletUnavailable(cause)
-
-/**
  * One activation attempt: the standard name, then KDE's compatibility name only when the standard one is not
  * activatable. Returns whether any start succeeded, i.e. a provider is installed (fix round 1, I1), even if it has not
  * claimed the standard name yet. Errors other than "not activatable" mean a registered provider failed to start:

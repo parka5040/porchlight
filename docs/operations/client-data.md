@@ -31,8 +31,15 @@ C5 comment threads render the live newest-50 cache tail (also offline), expandin
   lifecycle"). Fence your own long jobs with `cache.inSession`; a same-identity relogin keeps the epoch and the cache.
 - `search.search(...)` returns `SearchResults(hits, nextCursor)`. Each hit is `SearchHit.Item(ItemRead)` or
   `SearchHit.Other(entityType, json)`; list hits stay raw JSON for C5.
+- Generated APIs encode request models and decode response models through `GeneratedCall` on an injectable Default
+  dispatcher; transport JSON stringification/parsing uses its own injectable Default dispatcher. Dispatcher switches
+  retain request/identity context, return to the caller, and recheck epoch/session after encoding and decoding; an
+  old encoded intent cannot acquire replacement credentials. Decoding also rechecks the appropriate PIN gate. The generator template is authoritative; generated sources are never edited.
 - Generated APIs declare required parameters as non-null with no default, including required query parameters such
-  as `/v1/agenda`'s `from`/`to` and `/v1/search`'s `q`. Optional parameters default to `null`.
+  as `/v1/agenda`'s `from`/`to` and `/v1/search`'s `q`. Optional parameters default to `null`. Form query arrays follow
+  OpenAPI explode semantics: exploded arrays repeat keys, nonexploded arrays use a comma-separated value. Each value
+  is URL-encoded independently, including `+` in RFC3339 offsets. `GeneratedCall.requestRepeated` accepts multiple
+  values per key; existing scalar-map `request` callers keep their API and encoding. Empty arrays omit the key.
 - `HouseholdLocked` (an `IllegalStateException`): the **UI** trust gate is not Ready (R64).
   - C4 application-owned work uses `withBackgroundSession(controller)`: only bounded sync reads and notification
     Complete/Read routes may use a valid stored session while `PinRequired`. The scope captures epoch/token so queued
@@ -48,6 +55,94 @@ C5 comment threads render the live newest-50 cache tail (also offline), expandin
   non-null. The next sync or C4 event repairs it.
 - `cache.putOccurrences(itemId, rows, from, to)` requires the window the rows were fetched with. Undated rows and rows
   outside the window are never deleted.
+
+## Targeted sync rollout (0.1.8)
+
+The single shipping kill switch is `HouseholdData.targetedSyncVerified` in
+`client/shared/src/commonMain/kotlin/app/porchlight/shared/data/SyncController.kt`. It is **true**, gated by
+`PrerolloutClientSyncDifferentialTest`: 200 deterministic household seeds by default, SQL content-table and published
+view equality against fresh full reads after each quiescent mutation, both retained member agendas, mine/household
+board coverage, paging/fault/eviction/restart/identity companions. `PORCH_SYNC_CLIENT_SEEDS` increases the campaign;
+`PORCH_SYNC_CLIENT_SEED` replays one seed. Failures print the seed and a deletion-shrunk mutation sequence.
+Acknowledgement state and privacy tombstone history intentionally differ from a fresh cache; separate prefix and
+late-reply assertions verify those operational fences. This is a model/client proof, not a real-device/server cost gate.
+Legacy servers keep the snapshot path; an unsupported bundle endpoint grants no replacement coverage, never deletion.
+Capability withdrawal is rechecked after replies.
+
+On an `item-sync-v1` server, stream events and scoped local-write follow-ups enter the same
+resource scheduler: 250 ms batching, two shared targeted-read slots, at most 512 active resource keys, and one pending
+read-start cohort behind each active read. Demands arriving after read start dirty that resource again. Reads pin
+identity/storage/session leases; overlapping content and inbox lanes serialize scheduler replacements, and
+full refresh is exclusive against targeted installs. All repository reads, including screen-entry board/agenda,
+comment/list pages, settings/member reads and worker inbox refreshes, share collection read-start generations.
+A reply predating another committed authoritative install cannot write or publish over it; queued scoped
+repairs retry with new read-start fences. A crossed privacy/eviction fence instead rejects the old caller
+(with the existing safe redacted-list descriptor exception); repair never silently renews that caller's access.
+Application-owned targeted scheduler cohorts may re-read up to three times when a newer visibility fence rejects
+an attempt, preserving identity/storage/session admission and capturing a fresh fence before each new request.
+Item eviction already hides the inbox atomically; dispatch does not advance that inbox fence again.
+Provisional mutation receipts retain their separate merge
+rules and are not authoritative omission coverage. Full-read ordering repairs preserve their original receipt
+horizon. Narrow repairs publish only touched IDs/parent scopes (including any list scopes trimmed during the
+transaction), retaining unrelated decoded objects rather than reloading the household. Retained agenda windows (including empty ones) and board scope
+commit in `CacheProjectionScope` with the projection rows and survive process restart. Cache schema 14 remains
+disposable: older platform caches rebuild without touching trust or delivery metadata. Attachment cleanup obligations
+and a snapshot watermark waiting on those obligations are durable cache rows, committed with metadata removal.
+Replay and cache initialization retry unfinished purges; neither stream acknowledgements nor a deferred snapshot
+watermark advance until original, thumbnail and private viewer aliases are removed. Failure count and next retry time
+are durable, with exponential retry delays from one minute to one hour. Unrelated reads retain the storage notice;
+heartbeats and successful HTTP requests cannot mark blocked stream progress healthy. The shared notice offers
+**Clear local cache**: after confirmation, wipe disposable household rows and the attachment directory, then refresh from the server.
+This is same-identity storage recovery: locally authored item and comment drafts and pending requests (including their frozen
+step plans and idempotency keys) survive. Existing-resource editors are retained but hidden until a fresh authorised
+read restores access; confirmed invisible resources discard their editors with an explanation. Other unsent screen
+fields, including list/planning forms, may reset, as the confirmation explains. Every pending write retains its originating
+identity epoch and session revision/token; GeneratedCall checks that immutable origin before every send, including uploads,
+identical retries and relationship-plan continuations. Delayed screen identity notification cannot transfer an old intent
+to replacement credentials. Storage recovery alone does not invalidate that origin. Revoked representations
+are never restored. A failed wipe retains its durable obligation and cannot acknowledge. Trust, device settings and delivery metadata
+are never discarded. File keys use a random persisted cache namespace, stable across same-owner process restarts and
+rotated on identity changes; the first schema-14 open purges legacy process-epoch files before owner admission. Overlapping durable agenda
+coverage can exceed 730 days; reconciliation splits it into wire-valid windows before either bundle or full reads.
+Evictions bypass fetch queues
+and invalidate older replies, including ancestor-keyed checks for an evicted split occurrence.
+A failed continuation installs nothing and grants no acknowledgement. A successful bundle never advances the global
+stream cursor: only the fully committed delivered prefix may do that. Numeric sequence gaps are legal.
+
+Item bundles replace only their declared item, occurrence/reminder windows, board cards, requested agenda key
+intervals, suggestions, and explicitly covered collaboration. Fetch every comment/agenda continuation before
+reconciliation. Comment/inbox `ids` reads remove absent requested IDs only; attachments are metadata-only and removed
+private files are purged. A covered occurrence omission removes only its occurrence-cache row: retained agenda
+windows, off-window reminders, inbox entries, suggestions and occurrence list checks have independent coverage.
+A separate occurrence-row generation still rejects older row replies without declaring the occurrence globally
+evicted. Only explicit occurrence deletion or item visibility loss cascades across those collections. Projection invalidations
+refetch decorated agendas and inbox representations even when entity versions did not change.
+
+Item visibility loss masks foreign conflict decorations (including load warnings carrying private counterpart IDs)
+in every cached item, projection, write receipt and suggestion in the eviction transaction. Identifiers become null
+and the title becomes Busy; member, owning occurrence, time interval and warning kind remain, matching server masking.
+A failed peer read is not evidence that an authorized warning disappeared. It removes inherited
+list content and invalidates the entire inbox because coalesced summaries need not expose their source item IDs.
+Incoming bundle, snapshot and projection decorations check the referenced item's/occurrence's current visibility
+and request-start generation, not just the owning row's fence. Late replies cannot reinstall revoked references,
+even if a newer authorized read has since restored that item. Canonical split lineage IDs remain structural metadata,
+not permission to restore an ancestor's list content; aggregate Busy load warnings without private references remain. See [the wire dependency closure](../specs/stream.md#negotiation-and-dependency-closure-0078).
+
+Occurrence omission uses the bundle's household `zone` plus validated `local_from`/`local_to` projections, while
+comparing the original UTC bounds (essential at a fold). Effective detached anchors, core's earlier-fold/first-valid-
+minute gap rule, R10 spans, date-only days and half-open membership follow
+[the exact contract](../specs/items-reads.md#exact-occurrence-coverage-membership-additive-metadata). Agenda omission
+instead uses each scope's effective member zone, PostgreSQL midnight resolution (later fold/pre-gap offset), SQL's
+three-day date floor, and its covered page key interval. Cached member/device zones are not substitutes. Older
+servers omitting metadata use the atomic `ItemBundleNeedsSnapshot` fallback when membership is uncertain; malformed
+metadata/unresolvable anchors fail closed through a separate invalid-coverage fallback. Neither infers deletion.
+
+First sync, identity/cache loss, terminal resnapshot, unknown future kinds, broad role changes, identityless committed
+writes, unsupported/oversized bundles and unclassifiable coverage retain the authoritative full-refresh fallback.
+With targeting enabled, full snapshot starts coalesce to at most one per 30 seconds per identity/session/storage generation, honoring Retry-After;
+work stays unacknowledged while waiting. Background catch-up is **not implemented**: `ready` currently precedes replay
+and is not a caught-up barrier. The worker retains its legacy safety-net read; see
+[client-live.md](client-live.md#targeted-background-catch-up-rollout-blocker).
 
 Use generated models (`app.porchlight.shared.api.models`) rather than defining screen DTOs with a divergent wire shape.
 `ItemEdit` preserves omission vs explicit JSON null. `EditScope.All` sends `all`; `ThisAndFuture` sends
@@ -78,7 +173,24 @@ Write follow-ups never wipe a projection (R59). An item write stores the respons
 snapshot carries reminder identities, scheduled reminders and creation metadata). Until it arrives, response conversion
 preserves available creation metadata and matching reminder rows provisionally, replaces explicit nulls and stores real
 offsets. The snapshot is staged with board and agenda like any other, and queues behind any in-flight refresh, so it is
-always taken after the write. Failed refresh leaves provisional identities/timestamps; use the acknowledged offsets and
+always taken after the write. Overlapping demands share application-owned work in demand cohorts: each demand joins
+the next read that starts after it, with at most one pending cohort behind the active read. Each cohort completes or
+fails with its own satisfying read, not when all newer work drains. Cancelling a waiter does not cancel shared work;
+`HouseholdData.close()` cancels its refresh scope. Flights are compatible only within the same identity epoch, storage
+generation and session revision. Scheduled reads pin their original session without granting UI callers background
+PIN access; replacement-session waiters never inherit an obsolete flight's cancellation. Every newly started read
+renews its visibility fence while preserving its original identity/storage admission. Fence capture and publication of
+the cohort's started/visibility state share the admission lock, released before network work. A post-eviction
+restored-access demand cannot join a read in the gap between fence capture and activation, even if that older read's
+cursor covers its event. Older snapshot omissions cannot fence a queued creation repair, while evictions after the
+new read starts still win. Board, agenda and retained
+scopes fetch independently with a shared three-request ceiling; pagination within each collection stays sequential
+and all results still promote in one transaction. A stream echo observes an in-flight cohort and requests another
+only if its sequence was not covered by that snapshot or its later request-start visibility fence requires a fresh
+authorized read. A staged refresh read that fails with HTTP 429/503 and Retry-After retries once after that delay,
+capped at five seconds and cancellable; no triggering mutation is replayed. Without Retry-After, or on a second
+failure, the normal failure/refreshPending behavior applies.
+Failed refresh leaves provisional identities/timestamps; use the acknowledged offsets and
 `refreshPending`, not those provisional fields. An
 occurrence write stores the response, then refetches the affected entities (parent item, its occurrences in the
 snapshot window) and both projections, replacing their rows in place in one transaction; a failed fetch leaves the
@@ -134,7 +246,8 @@ filters/windows are not persisted; request them on entry, not inferred from surv
 Cleanup removes occurrence/agenda/reminder rows older than 180 days; spanning rows use their end; undated rows stay.
 Date-only occurrence and agenda rows expire at the end of the member-local day.
 
-Disk load and SQL transactions execute on `Dispatchers.Default`, not the composition thread; the desktop cache file is
+Disk load and SQL transactions execute on a serialized `Dispatchers.IO.limitedParallelism(1)` dispatcher under the
+cache mutex, not the composition thread; the desktop cache file is
 opened (directory, `PRAGMA user_version` check, possible recreate) on first use inside `initialize()`, never while
 composing. `initialize()` explicitly loads a persisted cache; production binding does it before collecting trust.
 Desktop compares `PRAGMA user_version` with `PorchlightDb.Schema.version`; Android's open-helper callback compares the
@@ -235,8 +348,8 @@ candidate cards against the current cache view on every render. Item editor gene
 same gate; a redacted comment also closes its editor even if its placeholder remains cached. Planning unplaced
 results keep their request-start visibility generation, and board drags retain only an occurrence ID resolved from
 the current projection at drop. Write feedback retains outcome/identical-retry metadata after eviction, but clears
-current/comparison values, saved representations and derived warning text. Clear/recovery also invalidate retained
-copies. A successful item save retires only its submitted edit generation; newer typing remains visibly unsaved,
+current/comparison values, saved representations and derived warning text. Identity clear invalidates retained
+copies; same-identity storage recovery quarantines resource-dependent drafts until fresh authorisation. A successful item save retires only its submitted edit generation; newer typing remains visibly unsaved,
 rebased on the committed version (also when the reply arrives off-screen or finishes a creation).
 Every item,
 list/entry/scope, comment/attachment, notification/suggestion and board/agenda commit checks its own and parent eviction generations atomically;
@@ -245,6 +358,8 @@ A successful read begun after eviction may re-establish access; its generation r
 stay fenced, even after that restoration. Deleted representations, snapshot child omissions and covered-window removals also advance fences; capacity/expiry trimming does not. History is capped at 256 rows, with a monotonic in-process rejection floor protecting requests older than pruned history (a conservative stale reply can require a fresh request). Only current evicted IDs are published; the counter is seeded once on open, not scanned on each request. List redaction uses this same fence regardless of cleanup capabilities. Search never restores access: list hits are fenced at receipt and the screen discards retained results when the visibility revision changes, including when a redacted descriptor later leaves the cache. Snapshot installation filters post-request evictions too. A denial received during a snapshot fetch
 is reapplied atomically so that older snapshot cannot restore revoked content. Connection/server errors and
 step-up-required and 401 are not visibility revocations and retain offline cache. Search hits do not authorize access.
+Visibility loss masks a peer conflict's identifying title and IDs as **Busy**, retaining its authorized warning kind,
+member and time interval in SQL and Calendar; definitive counterpart deletion can remove the warning entirely.
 Committed eviction file cleanup completes even if its caller is cancelled; removal failures are suppressed on the
 original API problem, never substituted for it. ID refetch batches continue and report the first non-denial failure
 only after trying remaining IDs. Windowed occurrence fetches capture a receipt mark before sending; omissions cannot
@@ -253,7 +368,13 @@ conservatively preserve own-write receipts. Fixed tzid-less todos keep override 
 instants), including editor seeds. D03's date overlap lower bound is starts_at → due_at → local day start.
 
 Occurrence eviction deletes Board by its occurrence primary key and Agenda/Reminder through indexed occurrence
-columns; only normal immutable-view publication decodes unrelated projections. Schema version 8 (including durable comment coverage/window metadata) recreates the
+columns; only normal immutable-view publication decodes unrelated projections. Cursor-only acknowledgements use the
+same owner, epoch, storage-generation and commit gates (including external-reset detection), but read no payload
+rows and update only `cache.sync`, not the presentation `CacheView`. `CacheView.sync` describes its last payload
+publication; consumers needing the live replay cursor use `cache.sync`. Snapshot marks likewise use that live cursor.
+Snapshot omission checks build ID sets once. Schema version 11 adds notification/planning parent, visibility-generation
+and occurrence/agenda/reminder expiry indexes and recreates the
 disposable cache on both platforms. Identity-binding file cleanup errors report `attachment-cleanup-failed` and
-retry at one-second intervals before admitting new-session reads. Explicit trust cleanup still propagates failure
-so the durable logout marker remains available for restart recovery.
+block new-session reads. Admission checks may retry at one-second intervals, but actual private-file purges honour
+the durable one-minute-to-one-hour cleanup backoff; **Clear local cache** explicitly retries a verified wipe.
+Explicit trust cleanup still propagates failure so the durable logout marker remains available for restart recovery.

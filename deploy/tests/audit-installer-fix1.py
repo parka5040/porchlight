@@ -165,6 +165,7 @@ if a[0]=='load':""")
             with self.subTest(field=next(iter(change))):
                 count = len(self.records())
                 result = subprocess.run(['bash', str(self.installer), 'server', *self.server_args(password),
+                                         *(['--lan-bind', change['LAN_BIND']] if 'LAN_BIND' in change else []),
                                          '--root', str(fresh), '--run-dir', str(self.run_dir), '--project', 'porchlight-fixture'],
                                         env=dict(self.env, **({'ENROLL_CIDRS': '192.168.77.0/24'} | change)),
                                         capture_output=True, timeout=30)

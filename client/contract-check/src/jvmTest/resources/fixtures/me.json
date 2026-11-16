@@ -1,4 +1,7 @@
 {
+  "capabilities": [
+    "item-sync-v1"
+  ],
   "connection": {
     "client_addr": "192.0.2.10:12345",
     "transport": "lan"

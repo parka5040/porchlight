@@ -75,7 +75,7 @@ class AndroidAppServices private constructor(context: Context) : AppServices {
             app.porchlight.shared.data.GeneratedCall.trusted(trust.controller), { clock.now() },
         ).also { data ->
             dataScope.launch { data.cache.storageNotice.collect { notice ->
-                if (notice != null || runtimeNotice.value == app.porchlight.shared.data.CACHE_STORAGE_NOTICE) runtimeNotice.value = privateStorage.notice ?: notice
+                if (notice != null || runtimeNotice.value in setOf(app.porchlight.shared.data.CACHE_STORAGE_NOTICE, app.porchlight.shared.data.ATTACHMENT_CLEANUP_NOTICE)) runtimeNotice.value = privateStorage.notice ?: notice
             } }
             data.bindTrust(trust.controller, dataScope, screenSession::bind, onIdentityEnded = { epoch -> privateStorage.retry(PrivateStorageEntry.Live) { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             liveRuntime.clearIdentity(epoch)

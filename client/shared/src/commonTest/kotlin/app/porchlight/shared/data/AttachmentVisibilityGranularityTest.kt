@@ -38,7 +38,7 @@ class AttachmentVisibilityGranularityTest {
                 assertEquals(404, problem.status)
                 assertEquals(1, parentGets)
                 assertTrue(cache.view.value.attachments.isEmpty())
-                assertEquals(setOf("0-${row.id}-${row.version}-file", "0-${row.id}-${row.version}-thumb", row.id), removed)
+                assertEquals(setOf(attachmentKey(cache.attachmentNamespace, row, false), attachmentKey(cache.attachmentNamespace, row, true), row.id), removed)
                 assertEquals(parentStatus == 200 || parentStatus == 503, cache.view.value.items.isNotEmpty(), "parent $parentStatus")
                 assertEquals(parentStatus == 200 || parentStatus == 503, cache.view.value.comments.isNotEmpty(), "parent $parentStatus comments")
             } finally { api.close(); cache.close() }

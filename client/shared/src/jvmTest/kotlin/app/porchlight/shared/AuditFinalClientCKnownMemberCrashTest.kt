@@ -82,6 +82,12 @@ class AuditFinalClientCKnownMemberCrashTest {
             beforeNative = {}; connected = true; reopen(); server.member = "second"
             controller.restore(); runCurrent()
             assertEquals(TrustState.Ready, controller.state.value)
+            // Native registration is optional after Ready; await its withdrawal without admitting a snapshot.
+            withContext(Dispatchers.IO) {
+                withTimeout(5_000) {
+                    while (!withContext(StandardTestDispatcher(testScheduler)) { 7L in bus.closed }) delay(10)
+                }
+            }
             assertTrue(7L in bus.closed, "Cold restore must withdraw the old private handle before a replacement snapshot")
             assertTrue(DesktopAlarmStore(dir).load().all().isEmpty())
             cache.install(snapshot.copy(cursor = 2)); runCurrent()

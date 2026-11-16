@@ -19,7 +19,7 @@ import app.porchlight.shared.ui.*
 import kotlinx.coroutines.*
 import kotlin.time.Instant
 
-private class CommentEditorState {
+class CommentEditorState {
     var text by mutableStateOf("")
     var edit by mutableStateOf<Comment?>(null)
 }
@@ -32,15 +32,20 @@ private class CommentEditorState {
     val writer = screenWrites("collaboration:${row.id}")
     val scope = applicationWriteScope()
     val readScope = rememberCoroutineScope()
-    var retainedEditor by remember(row.id) { mutableStateOf<RetainedCacheValue<CommentEditorState>?>(null) }
-    val editor = retainedEditor?.current(view)?.takeIf { draft ->
-        draft.edit?.let { source -> view.comments.any { it.id == source.id && it.deletedAt == null } } != false
-    } ?: CommentEditorState().also { fresh -> retainedEditor = view.retainDraft(setOf(CacheResource("Item", row.id)), fresh) }
+    val fallbackSession = remember { ScreenSession().also { it.bindCache(data.cache) } }
+    val session = services.screenSession ?: fallbackSession
+    val retainedEditor = session.commentEditor(row.id, view)
+    val editor = retainedEditor.current(view)
+    if (editor == null) {
+        Text("Your comment drafts are kept but hidden until a fresh authorised read confirms access.")
+        return
+    }
     var text by editor::text
     var edit by editor::edit
     fun finishEdit() {
         text = ""; edit = null
-        retainedEditor?.bindResources(data.cache.view.value, setOf(CacheResource("Item", row.id)))
+        retainedEditor.bindResources(data.cache.view.value, setOf(CacheResource("Item", row.id)))
+        session.finishCommentEdit(row.id)
     }
     var error by remember(row.id) { mutableStateOf<String?>(null) }
     val upload = services.screenSession?.upload(row.id) ?: remember(row.id) { UploadAttempt() }
@@ -107,7 +112,15 @@ private class CommentEditorState {
             } }
         }
     }
-    val refresh: () -> Unit = { readScope.launch { try { data.comments.refetchByItemIds(setOf(row.id)); attachedIds = data.lists.refresh(row.id).mapTo(mutableSetOf()) { it.id }; data.sync.refresh(); pageError = null } catch (e: CancellationException) { throw e } catch (_: Exception) { pageError = "Collaboration could not refresh; cached content may be stale." } } }
+    val refresh: () -> Unit = { readScope.launch { try {
+        if (data.targetedSync) {
+            data.sync.reconcile(data.itemDemand(row.id, true))
+            attachedIds = data.cache.view.value.lists.filter { it.itemId == row.id }.mapTo(mutableSetOf()) { it.id }
+        } else {
+            data.comments.refetchByItemIds(setOf(row.id)); attachedIds = data.lists.refresh(row.id).mapTo(mutableSetOf()) { it.id }; data.sync.refresh()
+        }
+        pageError = null
+    } catch (e: CancellationException) { throw e } catch (_: Exception) { pageError = "Collaboration could not refresh; cached content may be stale." } } }
     LaunchedEffect(row.id) { try { attachedIds = data.lists.refresh(row.id).mapTo(mutableSetOf()) { it.id } } catch (e: CancellationException) { throw e } catch (_: Exception) { pageError = "Could not refresh collaboration." } }
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceInset.dp)) {
         ShellButton("Refresh collaboration", onClick = refresh)
@@ -126,6 +139,7 @@ private class CommentEditorState {
             if (row.rrule != null) ShellButton("Create per-occurrence list", enabled = newList.isNotBlank(), onClick = { val body = CreateList(newList.trim(), itemId = row.id, mode = ListMode.per_occurrence); scope.launch { writer.submit { data.lists.create(body, it).also { result -> if (result is WriteResult.Success && newList.trim() == body.name) newList = "" }.feedback() } } })
         }
         Text("Comments", style = MaterialTheme.typography.titleLarge)
+        if (session.commentEditorDiscarded(row.id)) Text("A previous comment draft was discarded because its item or comment is no longer visible.")
         if (pageLoading) Text("Loading comment page…")
         if (!history.complete) Text("Cached comment history may have gaps. Show older loads the next history page.")
         ShellButton("Show latest", enabled = !pageLoading && olderPages > 0, onClick = { readScope.launch {
@@ -135,7 +149,7 @@ private class CommentEditorState {
         ShellButton("Show older", enabled = !pageLoading && (cachedCount > comments.size || !history.complete), onClick = { readScope.launch { try { showOlder() } catch (e: CancellationException) { throw e } catch (_: Exception) { pageError = "Could not load older comments; cached content is still available." } } })
 
         comments.forEach { comment -> key(comment.id) {
-            CommentRow(comment, view.members, memberId, admin, now, { edit = comment; text = comment.body; retainedEditor = view.retainDraft(setOf(CacheResource("Item", row.id), CacheResource("Comment", comment.id)), editor) }, { scope.launch { writer.submit { data.comments.delete(comment, it).feedback() } } })
+            CommentRow(comment, view.members, memberId, admin, now, { session.beginCommentEdit(row.id, comment, view) }, { scope.launch { writer.submit { data.comments.delete(comment, it).feedback() } } })
             if (canEditComment(comment, memberId, now) && "comment" in row.capabilities) ShellButton("Attach to comment by ${view.members.find { it.id == comment.authorId }?.displayName ?: "Former member or agent"}", onClick = { actions.file(comment.id) })
         } }
         if ("comment" in row.capabilities) {
@@ -144,12 +158,12 @@ private class CommentEditorState {
             ShellButton(if (edit == null) "Post comment" else "Save comment", enabled = text.isNotBlank() && (edit == null || canEditComment(edit!!, memberId, now)), onClick = {
                 val body = text; val current = edit
                 scope.launch { writer.submit { key -> (if (current == null) data.comments.create(row.id, body, key) else data.comments.edit(current, body, key)).also { result ->
-                    if (result is WriteResult.Success && retainedEditor?.current(data.cache.view.value) === editor && edit == current) {
+                    if (result is WriteResult.Success && retainedEditor.current(data.cache.view.value) === editor && edit == current) {
                         if (text == body) finishEdit()
                         else {
                             // New typing belongs to the committed comment, not a second create containing it again.
                             edit = result.value
-                            retainedEditor?.bindResources(data.cache.view.value, setOf(CacheResource("Item", row.id), CacheResource("Comment", result.value.id)))
+                            retainedEditor.bindResources(data.cache.view.value, setOf(CacheResource("Item", row.id), CacheResource("Comment", result.value.id)))
                         }
                     }
                 }.feedback() } }
@@ -162,7 +176,7 @@ private class CommentEditorState {
             val comment = attachment.commentId?.let { id -> view.comments.find { it.id == id } }
             val deletable = if (attachment.commentId != null) admin || (comment != null && canEditComment(comment, memberId, now)) else attachment.uploaderId == memberId || "edit" in row.capabilities
             AttachmentRow(attachment, deletable, { if (!openingAttachment) { openingAttachment = true; readScope.launch {
-                try { data.attachments.openPrepared(attachment) { bytes -> actions.prepareViewer(attachment.id, attachment.contentType, bytes) } }
+                try { data.attachments.openPreparedContent(attachment) { content -> actions.prepareContentViewer(attachment.id, attachment.contentType, content) } }
                 catch (e: CancellationException) { throw e } catch (e: Exception) { error = attachmentOpenError(e) }
                 finally { openingAttachment = false }
             } } }, { scope.launch { writer.submit { data.attachments.delete(attachment, it).feedback() } } })

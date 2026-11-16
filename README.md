@@ -217,7 +217,11 @@ Runbooks: [release](docs/operations/release.md), [install](docs/operations/insta
 [upgrade/rollback](docs/operations/upgrade.md), [backup/restore](docs/operations/backup-restore.md),
 [key custody](docs/operations/keys.md), [CA rollover](docs/operations/ca-rollover.md).
 Sandbox CI checks shell/Python syntax and deterministic operations fixtures; real signing/image/restore checks are
-operator gates. Recovery/signing keys, stack .env, PKI, and plaintext diagnostics stay under private `var/` only.
+operator gates. `deploy/tests/prerollout-deploy-hard.py` adds durable-fence/reboot, least-privilege mounts,
+credential files, LAN/network policy, probe budgets and conservative pruning contracts; Rust trust tests exercise
+live TLS renewal and reboot fencing. Exact Docker/dev-stack/M1/M2/M3/M7 acceptance commands and unverified runtime
+limits are in [deployment hardening](docs/operations/deploy-hardening.md). Recovery/signing keys, stack .env, PKI,
+and plaintext diagnostics stay under private `var/` only.
 
 ## Laptop dev stack (M2 Trust)
 
@@ -455,6 +459,24 @@ Deleting a comment attachment requires its comment author within that window or 
 both operations bump the comment version. Item attachments remain deletable by uploader or item editors. DELETE requires `If-Match`.
 Upload bodies have a 30-second idle timeout and 10-minute overall cap. Rate limits run before streaming, with at most
 two temp uploads per device/PAT (429 `rate-limited`, `Retry-After: 1`); decode admission follows the complete upload and precedes the mutation DB transaction. Completed idempotent replays bypass decoder admission (still authenticated/revalidated). Unicode filename categories Cc/Cf/Zl/Zp are stripped using generated Unicode 16.0.0 data.
+Resource admission (defaults, per API process): snapshots and nested list reads share 1/device, 3/member,
+4/global permits; attachment/thumbnail and export downloads share 3/device, 6/member. PATs count as devices and
+also share their owner's member budget. Device snapshot and download quota exhaustion returns immediate 429
+`rate-limited`, `Retry-After: 1`. Snapshot member/global admission waits FIFO for up to 15 seconds
+(`PORCHLIGHT_SNAPSHOT_WAIT_SECS` / `--snapshot-wait-secs`), then returns 429 with `Retry-After: 2`.
+Waiting holds no DB connection or transaction. Permits follow the body and outstanding network data frames,
+not just the database work. Exports retain their separate
+1/household production limit. Calendar imports admit write scope/rate before reading the body, then 1/member and
+2/global bodies through commit. Image decode is single-flight; accepted image dimensions are unchanged.
+`state.rs` documents/test-checks the default 764.125 MiB workload estimate against a 768 MiB ceiling (1 GiB
+container). Its 16 MiB/snapshot household estimate is not a hard data-size limit; monitor large retained histories.
+The remaining headroom covers connection buffers, workers, runtime and allocator overhead, not unlimited history.
+Request pools default to a 2-second acquire deadline (`PORCHLIGHT_DB_ACQUIRE_TIMEOUT_SECS`); saturation returns
+503 `database-busy`, `Retry-After: 1`, without sealing a mutation's replay claim. Ordinary app transactions have
+a 60-second idle deadline; household export snapshot spooling gets a transaction-local 15-minute exception.
+Accepted TCP sockets use TCP_NODELAY and keepalive (60-second idle, 15-second interval, 4 probes). A pending
+connection write/flush fails after 60 seconds (`PORCHLIGHT_WRITE_STALL_SECS`); idle-but-healthy SSE is unaffected.
+
 `PORCHLIGHT_DATA_DIR` / `--data-dir` configures the
 server data volume (CLI default `/data`); local direct runs must point it under `var/`. Daily 30-day GC respects
 backup leases.

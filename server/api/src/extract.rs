@@ -304,7 +304,10 @@ pub struct Mutation<T> {
     pub body: T,
     pub request_id: Uuid,
     /// Calendar uploads only: dropped with the mutation, after the handler and commit.
-    pub(crate) _body_permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    pub(crate) _body_permit: Option<(
+        tokio::sync::OwnedSemaphorePermit,
+        crate::concurrency::Permit,
+    )>,
 }
 /// Validate visible ASCII against the database's CHECK (not arbitrary Unicode).
 pub fn idempotency_key(headers: &axum::http::HeaderMap) -> Result<String, ApiError> {
@@ -391,7 +394,14 @@ impl<T: DeserializeOwned + Send> FromRequest<AppState> for Mutation<T> {
         }
         // Admit before buffering: concurrent multi-MiB bodies must not exhaust server memory.
         let body_permit = if calendar_upload {
-            Some(
+            let caller = req
+                .extensions()
+                .get::<Caller>()
+                .ok_or_else(|| ApiError::internal("calendar_admission_missing"))?;
+            let member = state
+                .calendar_member_imports
+                .acquire(caller.member_id(), caller.member_id())?;
+            Some((
                 tokio::time::timeout(
                     state.upload_limits.permit_wait,
                     state.calendar_body_slots.clone().acquire_owned(),
@@ -399,7 +409,8 @@ impl<T: DeserializeOwned + Send> FromRequest<AppState> for Mutation<T> {
                 .await
                 .map_err(|_| ApiError::transient_conflict().retry(1))?
                 .map_err(|_| ApiError::internal("calendar_body_slot"))?,
-            )
+                member,
+            ))
         } else {
             None
         };
@@ -478,6 +489,13 @@ pub enum Caller {
     },
 }
 impl Caller {
+    /// Devices are counted separately; PATs share their owner's member budget too.
+    pub fn admission_id(&self) -> Uuid {
+        match self {
+            Self::Member { device_id, .. } => *device_id,
+            Self::Agent { token_id, .. } => *token_id,
+        }
+    }
     pub fn actor(&self) -> Actor {
         match self {
             Self::Member {

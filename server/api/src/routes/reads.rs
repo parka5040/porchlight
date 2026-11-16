@@ -75,6 +75,7 @@ pub fn decorate(mut item: Value, caller: &Caller) -> Result<Value, ApiError> {
         serde_json::to_value(capabilities).map_err(|_| ApiError::internal("capabilities"))?;
     Ok(item)
 }
+#[cfg(test)]
 async fn rows(conn: &mut PgConnection, caller: &Caller, sql: &str) -> Result<Vec<Value>, ApiError> {
     let rows: Vec<SqlJson<Value>> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
         .bind(caller.household_id())
@@ -145,9 +146,31 @@ pub async fn board_rows(
     after: Option<(String, String, Uuid)>,
     limit: usize,
 ) -> Result<Vec<Value>, ApiError> {
+    board_rows_scoped(conn, caller, scope, now, after, limit, None).await
+}
+pub(super) async fn board_rows_scoped(
+    conn: &mut PgConnection,
+    caller: &Caller,
+    scope: &str,
+    now: DateTime<Utc>,
+    after: Option<(String, String, Uuid)>,
+    limit: usize,
+    item_id: Option<Uuid>,
+) -> Result<Vec<Value>, ApiError> {
+    let item_filter = if item_id.is_some() {
+        "and o.item_id=$10"
+    } else {
+        ""
+    };
     let sql = format!(
-        "with cards as (select *
-        from porchlight.pl_board_cards($1,$4)) select {ITEM} || jsonb_build_object('occurrence',to_jsonb(o)-'during')
+        "with cards as (select o.* from porchlight.item_occurrences o
+        join porchlight.items bi on bi.id=o.item_id
+        where o.household_id=$1 and bi.deleted_at is null {item_filter}
+        and o.disposition<>'expired' and (
+          (o.status not in ('done','skipped') and not exists(select 1 from porchlight.item_occurrences earlier
+           where earlier.item_id=o.item_id and earlier.status not in ('done','skipped') and earlier.disposition<>'expired'
+           and (earlier.seq,earlier.id)<(o.seq,o.id)))
+          or (o.status='done' and o.completed_at >= $4::timestamptz-interval '7 days'))) select {ITEM} || jsonb_build_object('occurrence',to_jsonb(o)-'during')
         {JOIN}
         join cards o on o.item_id=i.id
         where {VISIBLE}
@@ -159,7 +182,7 @@ pub async fn board_rows(
     let (status, position, id) = after
         .map(|(a, b, c)| (Some(a), Some(b), Some(c)))
         .unwrap_or_default();
-    let rows: Vec<SqlJson<Value>> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql.as_str()))
+    let query = sqlx::query_scalar::<_, SqlJson<Value>>(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(caller.household_id())
         .bind(caller.member_id())
         .bind(caller.sees_all())
@@ -168,9 +191,13 @@ pub async fn board_rows(
         .bind(status)
         .bind(position)
         .bind(id)
-        .bind((limit + 1) as i64)
-        .fetch_all(conn)
-        .await?;
+        .bind((limit + 1) as i64);
+    let query = if let Some(id) = item_id {
+        query.bind(id)
+    } else {
+        query
+    };
+    let rows = query.fetch_all(conn).await?;
     rows.into_iter().map(|v| decorate(v.0, caller)).collect()
 }
 #[derive(serde::Deserialize, utoipa::IntoParams)]
@@ -210,10 +237,48 @@ pub async fn agenda(
         .as_deref()
         .map(|c| state.idem.cursor.decode(&context, c))
         .transpose()?;
+    let mut conn = state.pool.acquire().await?;
+    let values = agenda_rows(&mut conn, &caller, member, p.from, p.to, after, limit, None).await?;
+    let page = state.idem.cursor.page(&context, values, limit, |v| v.0)?;
+    Ok(Json(Page {
+        items: page.items.into_iter().map(|v| v.1).collect(),
+        next_cursor: page.next_cursor,
+    }))
+}
+/// The bundle and collection share candidate SQL and conflict/load decoration.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn agenda_rows(
+    conn: &mut PgConnection,
+    caller: &Caller,
+    member: Uuid,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+    after: Option<(DateTime<Utc>, Uuid)>,
+    limit: usize,
+    item_id: Option<Uuid>,
+) -> Result<Vec<((DateTime<Utc>, Uuid), Value)>, ApiError> {
     let anchor = "coalesce(a.starts_at,a.due_at,a.due_date::timestamp at time zone
         (porchlight.pl_effective_member_zone(am.role,am.tzid,ah.tzid)))";
+    // Bound authorized agenda rows before joining/decorating occurrences. Otherwise
+    // the planner can hash-join against all closed occurrence history for one page.
+    let item_filter = if item_id.is_some() {
+        "and a.item_id=$10"
+    } else {
+        ""
+    };
     let sql = format!(
-        "select {ITEM} || jsonb_build_object(
+        "with candidates as materialized (
+        select a.* from porchlight.member_agenda a
+        join porchlight.items i on i.id=a.item_id
+        join porchlight.household_members am on am.id=a.member_id
+        join porchlight.households ah on ah.id=am.household_id
+        where {VISIBLE} and a.household_id=$1 and a.member_id=$4 {item_filter}
+        and ($7::timestamptz is null or ({anchor},a.occurrence_id)>($7,$8)) and (
+        (a.starts_at<$6 and a.ends_at>$5) or (a.due_at>=$5 and a.due_at<$6)
+        or (a.due_date >= ($5::timestamptz at time zone 'UTC')::date - 3 and {anchor}<$6 and
+          (a.due_date+1)::timestamp at time zone (porchlight.pl_effective_member_zone(am.role,am.tzid,ah.tzid))>$5))
+        order by {anchor},a.occurrence_id limit $9)
+        select {ITEM} || jsonb_build_object(
         '_agenda_key',{anchor},'agenda',to_jsonb(a)-'busy','occurrence',to_jsonb(o)-'during',
         'conflicts',coalesce((select jsonb_agg(jsonb_build_object(
             'member_id',b.member_id,'occurrence_id',a.occurrence_id,
@@ -227,46 +292,40 @@ pub async fn agenda(
         where b.household_id=$1 and b.member_id=a.member_id
           and b.occurrence_id<>a.occurrence_id and b.busy && a.busy),'[]'::jsonb))
         {JOIN}
-        join porchlight.member_agenda a on a.item_id=i.id
+        join candidates a on a.item_id=i.id
         join porchlight.item_occurrences o on o.id=a.occurrence_id
         join porchlight.household_members am on am.id=a.member_id
         join porchlight.households ah on ah.id=am.household_id
-        where {VISIBLE} and a.household_id=$1 and a.member_id=$4
-        and ($7::timestamptz is null or ({anchor},a.occurrence_id)>($7,$8)) and (
-        (a.starts_at<$6 and a.ends_at>$5) or (a.due_at>=$5 and a.due_at<$6)
-        or (a.due_date is not null and {anchor}<$6 and
-          (a.due_date+1)::timestamp at time zone (porchlight.pl_effective_member_zone(am.role,am.tzid,ah.tzid))>$5))
         order by {anchor},a.occurrence_id limit $9"
     );
     let (after_time, after_id) = after
         .map(|(time, id)| (Some(time), Some(id)))
         .unwrap_or_default();
-    let mut conn = state.pool.acquire().await?;
-    let mut data: Vec<SqlJson<Value>> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql.as_str()))
+    let query = sqlx::query_scalar::<_, SqlJson<Value>>(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(caller.household_id())
         .bind(caller.member_id())
         .bind(caller.sees_all())
         .bind(member)
-        .bind(p.from)
-        .bind(p.to)
+        .bind(from)
+        .bind(to)
         .bind(after_time)
         .bind(after_id)
-        .bind((limit + 1) as i64)
-        .fetch_all(&mut *conn)
-        .await?;
+        .bind((limit + 1) as i64);
+    let query = if let Some(id) = item_id {
+        query.bind(id)
+    } else {
+        query
+    };
+    let mut data = query.fetch_all(&mut *conn).await?;
     let ids: Vec<_> = data.iter().filter_map(|r| uid(&r.0["id"])).collect();
     let occurrences: Vec<_> = data
         .iter()
         .filter_map(|r| uid(&r.0["occurrence"]["id"]))
         .collect();
-    let loads = porchlight_db::planning::load_conflicts_for_occurrences(
-        &mut conn,
-        &ids,
-        member,
-        &occurrences,
-    )
-    .await
-    .map_err(crate::items::domain_error)?;
+    let loads =
+        porchlight_db::planning::load_conflicts_for_occurrences(conn, &ids, member, &occurrences)
+            .await
+            .map_err(crate::items::domain_error)?;
     let mut by_occurrence: std::collections::HashMap<Uuid, Vec<Value>> =
         std::collections::HashMap::new();
     for (_, conflict) in loads {
@@ -285,23 +344,16 @@ pub async fn agenda(
             row.0["conflicts"].as_array_mut().unwrap().extend(warnings);
         }
     }
-    drop(conn);
-    let values = data
-        .into_iter()
+    data.into_iter()
         .map(|v| {
             let key: DateTime<Utc> = serde_json::from_value(v.0["_agenda_key"].clone())
                 .map_err(|_| ApiError::internal("agenda_key"))?;
             let id = uid(&v.0["agenda"]["occurrence_id"]).unwrap();
             let mut value = v.0;
             value.as_object_mut().unwrap().remove("_agenda_key");
-            Ok(((key, id), decorate(value, &caller)?))
+            Ok(((key, id), decorate(value, caller)?))
         })
-        .collect::<Result<Vec<_>, ApiError>>()?;
-    let page = state.idem.cursor.page(&context, values, limit, |v| v.0)?;
-    Ok(Json(Page {
-        items: page.items.into_iter().map(|v| v.1).collect(),
-        next_cursor: page.next_cursor,
-    }))
+        .collect::<Result<Vec<_>, ApiError>>()
 }
 #[derive(serde::Deserialize, utoipa::IntoParams)]
 #[serde(deny_unknown_fields)]
@@ -369,6 +421,18 @@ pub async fn search(
         .idem
         .cursor
         .page(&context, found, limit, |v| (v.0.clone(), v.1))?;
+    let list_ids: Vec<_> = page
+        .items
+        .iter()
+        .filter(|r| r.0 == "list")
+        .map(|r| r.1)
+        .collect();
+    let mut lists: std::collections::HashMap<_, _> =
+        crate::lists::responses(&mut tx, &caller, &list_ids, false)
+            .await?
+            .into_iter()
+            .map(|list| (list.fields.id, list))
+            .collect();
     let mut values = Vec::with_capacity(page.items.len());
     for (source, id, value) in page.items {
         let mut value = match source.as_str() {
@@ -376,12 +440,11 @@ pub async fn search(
                 value.ok_or_else(|| ApiError::internal("search_item"))?.0,
                 &caller,
             )?,
-            "list" => match crate::lists::response(&mut tx, &caller, id, None, false).await {
-                Ok(list) => {
+            "list" => match lists.remove(&id) {
+                Some(list) => {
                     serde_json::to_value(list).map_err(|_| ApiError::internal("search_list"))?
                 }
-                Err(e) if e.problem() == Problem::NotFound => continue,
-                Err(e) => return Err(e),
+                None => continue,
             },
             "comment" => value.ok_or_else(|| ApiError::internal("search_comment"))?.0,
             _ => return Err(ApiError::internal("search_source")),
@@ -396,21 +459,9 @@ pub async fn search(
     }))
 }
 
-async fn snapshot_candidates(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    household: Uuid,
-    member: Uuid,
-    sees_all: bool,
-    from: DateTime<Utc>,
-    to: DateTime<Utc>,
-) -> Result<Vec<SqlJson<Value>>, ApiError> {
-    // SQL SUPERSET, not membership: separate generated and effective wall boxes
-    // avoid bridging the window between an old identity and a far-future override.
-    // Override shifts are unbounded, so include them directly. Local endpoints
-    // differ from resolved UTC by <3 days: resolve_local walks <48h and offsets
-    // are <24h. R10's corrected end has the same shift as its resolved start.
-    // Date-only rows include the following midnight; undated rows always survive.
-    let sql = format!("select to_jsonb(o)-'during' from porchlight.item_occurrences o
+fn snapshot_candidates_sql(item_id: Option<Uuid>) -> String {
+    let item_filter = if item_id.is_some() { "and i.id=$6" } else { "" };
+    format!("select (to_jsonb(o)-'during')::text from porchlight.item_occurrences o
         join porchlight.items i on i.id=o.item_id
         cross join lateral (select
             least(o.starts_at at time zone 'UTC',o.due_at at time zone 'UTC',
@@ -425,20 +476,39 @@ async fn snapshot_candidates(
             coalesce(o.override_due_date,o.due_date)::timestamp as day) effective
         cross join lateral (select least(effective.s,effective.d,effective.day) as lo,
             greatest(effective.s,effective.e,effective.d,effective.day + interval '1 day') as hi) overridden
-        where {VISIBLE} and (generated.lo is null or
+        where {VISIBLE} {item_filter} and o.household_id=$1 and (generated.lo is null or
             (generated.lo < ($5::timestamptz at time zone 'UTC') + interval '3 days'
              and generated.hi > ($4::timestamptz at time zone 'UTC') - interval '3 days') or
-            (o.is_detached and overridden.lo < ($5::timestamptz at time zone 'UTC') + interval '3 days'
-             and overridden.hi > ($4::timestamptz at time zone 'UTC') - interval '3 days'))
-        order by o.item_id,o.seq");
-    Ok(sqlx::query_scalar(sqlx::AssertSqlSafe(sql.as_str()))
+            (o.is_detached and least(generated.lo,overridden.lo) < ($5::timestamptz at time zone 'UTC') + interval '3 days'
+             and greatest(generated.hi,overridden.hi) > ($4::timestamptz at time zone 'UTC') - interval '3 days'))
+        order by o.item_id,o.seq")
+}
+
+#[cfg(test)]
+async fn snapshot_candidates(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    household: Uuid,
+    member: Uuid,
+    sees_all: bool,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<Vec<SqlJson<Value>>, ApiError> {
+    let sql = snapshot_candidates_sql(None);
+    let rows: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(household)
         .bind(member)
         .bind(sees_all)
         .bind(from)
         .bind(to)
         .fetch_all(&mut **tx)
-        .await?)
+        .await?;
+    rows.into_iter()
+        .map(|raw| {
+            serde_json::from_str(&raw)
+                .map(SqlJson)
+                .map_err(|_| ApiError::internal("snapshot_candidate"))
+        })
+        .collect()
 }
 
 fn snapshot_in_window(
@@ -471,141 +541,225 @@ fn snapshot_in_window(
     start.is_none_or(|s| s < to && end.map_or(s >= from, |e| e > from))
 }
 
-#[utoipa::path(get,path="/v1/snapshot",responses((status=200,description="One REPEATABLE READ view; occurrences now-180d to 18 month horizon, plus undated occurrences; global published scan cursor",body=SnapshotRead),crate::openapi::UniversalProblems))]
+pub(super) fn snapshot_window(
+    now: DateTime<Utc>,
+) -> Result<(DateTime<Utc>, DateTime<Utc>), ApiError> {
+    Ok((
+        now - Duration::days(180),
+        now.checked_add_months(Months::new(18))
+            .ok_or_else(|| ApiError::internal("horizon"))?,
+    ))
+}
+
+/// Shared snapshot-shaped rows; an item scope is applied in SQL, never after decoding.
+pub(super) async fn write_item_sections(
+    conn: &mut PgConnection,
+    caller: &Caller,
+    document: &mut crate::json_document::Document,
+    item_id: Option<Uuid>,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<Vec<Uuid>, ApiError> {
+    use futures_util::TryStreamExt;
+    let mut timing = std::collections::HashMap::new();
+    let mut ids = Vec::new();
+    {
+        let item_filter = if item_id.is_some() { "and i.id=$4" } else { "" };
+        let sql =
+            format!("select ({ITEM})::text {JOIN} where {VISIBLE} {item_filter} order by i.id");
+        let query = sqlx::query_scalar::<_, String>(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(caller.household_id())
+            .bind(caller.member_id())
+            .bind(caller.sees_all());
+        let query = if let Some(id) = item_id {
+            query.bind(id)
+        } else {
+            query
+        };
+        let mut rows = query.fetch(&mut *conn);
+        let mut array = document.array("items")?;
+        while let Some(raw) = rows.try_next().await? {
+            // Item capabilities already require Rust decoration. Decode only this
+            // row, then release its tree immediately after writing it to output.
+            let value: Value =
+                serde_json::from_str(&raw).map_err(|_| ApiError::internal("snapshot_item"))?;
+            if let Some(id) = uid(&value["id"]) {
+                ids.push(id);
+            }
+            match porchlight_db::derive::ItemRow::deserialize(&value) {
+                Ok(row) => {
+                    timing.insert(row.id, row.timing);
+                }
+                Err(_) => {
+                    tracing::warn!(item_id=?value.get("id"), "snapshot item timing unavailable")
+                }
+            }
+            array.row(&decorate(value, caller)?)?;
+        }
+        array.finish();
+    }
+    let household_zone: String =
+        sqlx::query_scalar("select tzid from porchlight.households where id=$1")
+            .bind(caller.household_id())
+            .fetch_one(&mut *conn)
+            .await?;
+    let household_zone = porchlight_db::derive::parse_zone(&household_zone)
+        .map_err(|_| ApiError::internal("snapshot_zone"))?;
+
+    let mut occurrence_ids = Vec::new();
+    {
+        let sql = snapshot_candidates_sql(item_id);
+        let query = sqlx::query_scalar::<_, String>(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(caller.household_id())
+            .bind(caller.member_id())
+            .bind(caller.sees_all())
+            .bind(from)
+            .bind(to);
+        let query = if let Some(id) = item_id {
+            query.bind(id)
+        } else {
+            query
+        };
+        let mut rows = query.fetch(&mut *conn);
+        let mut array = document.array("occurrences")?;
+        while let Some(raw) = rows.try_next().await? {
+            // Deserialize the existing timing refinement, not a JSON Value tree.
+            let row = serde_json::from_str::<porchlight_db::derive::OccurrenceRow>(&raw);
+            let exact = (|| -> Result<bool, &'static str> {
+                let row = row.as_ref().map_err(|_| "occurrence")?;
+                let item = timing.get(&row.item_id).ok_or("item")?;
+                let fixed_zone = item
+                    .tzid
+                    .as_deref()
+                    .map(porchlight_db::derive::parse_zone)
+                    .transpose()
+                    .map_err(|_| "zone")?;
+                let anchor = porchlight_db::derive::effective_anchor_with_zone(
+                    row,
+                    item.time_mode,
+                    fixed_zone,
+                )
+                .map_err(|_| "override")?;
+                Ok(snapshot_in_window(&anchor, household_zone, from, to))
+            })();
+            let include = match exact {
+                Ok(include) => include,
+                Err(category) => {
+                    tracing::warn!(category, "snapshot timing refinement unavailable");
+                    true // SQL-bounded, row-local fail-open, as before.
+                }
+            };
+            if include {
+                #[derive(Deserialize)]
+                struct Identity {
+                    id: Uuid,
+                }
+                if let Ok(identity) = serde_json::from_str::<Identity>(&raw) {
+                    occurrence_ids.push(identity.id);
+                }
+                array.sql_row(&raw);
+            }
+        }
+        array.finish();
+    }
+    drop(timing);
+    {
+        let item_filter = if item_id.is_some() { "and i.id=$7" } else { "" };
+        let sql = format!(
+            "select to_jsonb(r)::text from porchlight.scheduled_reminders r
+            join porchlight.items i on i.id=r.item_id where {VISIBLE} {item_filter}
+            and ($3 or r.member_id=$2) and r.fire_at >= $4 and r.fire_at < $5
+            and r.occurrence_id=any($6) order by r.fire_at,r.id"
+        );
+        let query = sqlx::query_scalar::<_, String>(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(caller.household_id())
+            .bind(caller.member_id())
+            .bind(caller.sees_all())
+            .bind(from)
+            .bind(to)
+            .bind(&occurrence_ids);
+        let query = if let Some(id) = item_id {
+            query.bind(id)
+        } else {
+            query
+        };
+        let mut rows = query.fetch(&mut *conn);
+        let mut array = document.array("scheduled_reminders")?;
+        while let Some(raw) = rows.try_next().await? {
+            array.sql_row(&raw);
+        }
+        array.finish();
+    }
+    Ok(ids)
+}
+
+#[utoipa::path(get,path="/v1/snapshot",responses((status=200,description="One REPEATABLE READ view; occurrences now-180d to 18 month horizon, plus undated occurrences; global published scan cursor",body=SnapshotRead),crate::openapi::RateLimitProblem,crate::openapi::UniversalProblems))]
 pub async fn snapshot(
     State(state): State<AppState>,
     caller: Caller,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
+    let permit = state.admit_snapshot(&caller).await?;
     let now = (state.item_clock)();
     let mut tx = porchlight_db::tx::begin(&state.pool).await?;
     sqlx::query("set transaction isolation level repeatable read read only")
         .execute(&mut *tx)
         .await?;
-    let cursor: i64 = sqlx::query_scalar(
-        "select coalesce(max(stream_seq),0)
-        from porchlight.outbox",
-    )
-    .fetch_one(&mut *tx)
-    .await?;
-    let items = rows(
-        &mut tx,
-        &caller,
-        &format!(
-            "select {ITEM}
-        {JOIN}
-        where {VISIBLE}
-        order by i.id"
-        ),
-    )
-    .await?;
-    // Membership uses the effective anchors, not the recurrence identity's generated
-    // date. Resolve in Rust with derivation's earlier-fold/next-valid-gap semantics;
-    // PostgreSQL AT TIME ZONE chooses different fold/gap instants.
-    let household_zone: String =
-        sqlx::query_scalar("select tzid from porchlight.households where id=$1")
-            .bind(caller.household_id())
+    let cursor: i64 =
+        sqlx::query_scalar("select coalesce(max(stream_seq),0) from porchlight.outbox")
             .fetch_one(&mut *tx)
             .await?;
-    let household_zone = porchlight_db::derive::parse_zone(&household_zone)
-        .map_err(|_| ApiError::internal("snapshot_zone"))?;
-    let timing: std::collections::HashMap<Uuid, porchlight_db::derive::ItemRow> = items
-        .iter()
-        .filter_map(|v| match porchlight_db::derive::ItemRow::deserialize(v) {
-            Ok(row) => Some((row.id, row)),
-            Err(_) => {
-                // Raw-SQL poison must not take down the whole household cache.
-                // Keep JSON unchanged; log only identity/category, never input values.
-                tracing::warn!(item_id=?v.get("id"), "snapshot item timing unavailable");
-                None
-            }
-        })
-        .collect();
-    let from = now - Duration::days(180);
-    let to = now
-        .checked_add_months(Months::new(18))
-        .ok_or_else(|| ApiError::internal("horizon"))?;
-    let candidates = snapshot_candidates(
-        &mut tx,
-        caller.household_id(),
-        caller.member_id(),
-        caller.sees_all(),
-        from,
-        to,
-    )
-    .await?;
-    let mut occurrences = Vec::new();
-    for value in candidates {
-        let exact = (|| -> std::result::Result<bool, &'static str> {
-            let row = porchlight_db::derive::OccurrenceRow::deserialize(&value.0)
-                .map_err(|_| "occurrence")?;
-            let item = timing.get(&row.item_id).ok_or("item")?;
-            let fixed_zone = item
-                .timing
-                .tzid
-                .as_deref()
-                .map(porchlight_db::derive::parse_zone)
-                .transpose()
-                .map_err(|_| "zone")?;
-            let anchor = porchlight_db::derive::effective_anchor_with_zone(
-                &row,
-                item.timing.time_mode,
-                fixed_zone,
-            )
-            .map_err(|_| "override")?;
-            Ok(snapshot_in_window(&anchor, household_zone, from, to))
-        })();
-        let include = match exact {
-            Ok(include) => include,
-            Err(category) => {
-                tracing::warn!(occurrence_id=?value.0.get("id"), category, "snapshot timing refinement unavailable");
-                true // SQL-bounded fail-open for this row; retain authoritative JSON.
-            }
-        };
-        if include {
-            occurrences.push(value);
-        }
-    }
-    let occurrence_ids: Vec<Uuid> = occurrences.iter().filter_map(|v| uid(&v.0["id"])).collect();
-    let reminders_sql = format!(
-        "select to_jsonb(r)
-        from porchlight.scheduled_reminders r
-        join porchlight.items i on i.id=r.item_id
-        where {VISIBLE}
-        and ($3 or r.member_id=$2) and r.fire_at >= $4 and r.fire_at < $5
-        and r.occurrence_id=any($6)
-        order by r.fire_at,r.id"
-    );
-    let scheduled_reminders: Vec<SqlJson<Value>> =
-        sqlx::query_scalar(sqlx::AssertSqlSafe(reminders_sql.as_str()))
-            .bind(caller.household_id())
-            .bind(caller.member_id())
-            .bind(caller.sees_all())
-            .bind(now - Duration::days(180))
-            .bind(
-                now.checked_add_months(Months::new(18))
-                    .ok_or_else(|| ApiError::internal("horizon"))?,
-            )
-            .bind(&occurrence_ids)
-            .fetch_all(&mut *tx)
-            .await?;
-    let members = super::members::all(&mut tx, caller.household_id(), caller.member_id()).await?;
-    let settings = super::members::settings_row(&mut tx, &caller).await?;
-    let (notifications, notification_prefs) =
-        super::notifications::snapshot_fields(&mut tx, &caller).await?;
-    let ids: Vec<Uuid> = items.iter().filter_map(|v| uid(&v["id"])).collect();
-    let comments = crate::collaboration::snapshot_comments_s4b(&mut tx, &caller, &ids).await?;
-    let attachments = crate::blobs::snapshot_attachments_s4b(&mut tx, &caller, &ids).await?;
-    let ics_sources = crate::calendar::snapshot_sources(&mut tx, &caller).await?;
-    let planning = crate::planning::snapshot_contribution(&mut tx, &caller).await?;
-    let lists = crate::lists::snapshot_contribution(&mut tx, &caller).await?;
+    let mut document = crate::json_document::Document::default();
+    let (from, to) = snapshot_window(now)?;
+    let ids = write_item_sections(&mut tx, &caller, &mut document, None, from, to).await?;
+    super::members::write_snapshot(&mut tx, &caller, &mut document).await?;
+    document.field(
+        "member_settings",
+        &super::members::settings_row(&mut tx, &caller).await?,
+    )?;
+    let (notifications, prefs) = super::notifications::snapshot_fields(&mut tx, &caller).await?;
+    document.field("notifications", &notifications)?;
+    document.field("notification_prefs", &prefs)?;
+    drop(notifications);
+    document.field(
+        "comments",
+        &crate::collaboration::snapshot_comments_s4b(&mut tx, &caller, &ids).await?,
+    )?;
+    document.field(
+        "attachments",
+        &crate::blobs::snapshot_attachments_s4b(&mut tx, &caller, &ids).await?,
+    )?;
+    document.field(
+        "ics_sources",
+        &crate::calendar::snapshot_sources(&mut tx, &caller).await?,
+    )?;
+    crate::planning::write_snapshot(&mut tx, &caller, &mut document).await?;
+    document.field(
+        "lists",
+        &crate::lists::snapshot_contribution(&mut tx, &caller).await?,
+    )?;
+    document.field("cursor", &cursor)?;
+    let response = document.response()?;
+    // No cursor/connection survives in the body. Only its admission permit does.
     tx.commit().await?;
-    Ok(Json(
-        json!({"comments":comments,"attachments":attachments,"ics_sources":ics_sources,"lists":lists,"notifications":notifications,"notification_prefs":notification_prefs,"availability":planning.availability,"suggestions":planning.suggestions,"members":members,"items":items,"occurrences":occurrences.into_iter().map(|v|v.0).collect::<Vec<_>>(),"member_settings":settings,"scheduled_reminders":scheduled_reminders.into_iter().map(|v|v.0).collect::<Vec<_>>(),"cursor":cursor}),
-    ))
+    Ok(crate::concurrency::with_body(response, permit))
 }
 #[derive(utoipa::OpenApi)]
 #[openapi(paths(board, agenda, search, snapshot))]
 pub struct ReadsApi;
+
+#[cfg(test)]
+#[path = "reads/prerollout_srv_snapshot.rs"]
+mod prerollout_srv_snapshot;
+
+#[cfg(test)]
+#[path = "reads/prerollout_srv_db.rs"]
+mod prerollout_srv_db;
+#[cfg(test)]
+#[path = "reads/prerollout_srv_fix1.rs"]
+mod prerollout_srv_fix1;
+#[cfg(test)]
+#[path = "reads/prerollout_srv_read_fix1.rs"]
+mod prerollout_srv_read_fix1;
 
 #[cfg(test)]
 mod snapshot_window_tests {
@@ -658,9 +812,10 @@ mod snapshot_window_tests {
         let loaded = super::snapshot_candidates(&mut tx, h.id, h.user, true, from, to)
             .await
             .unwrap();
-        assert!(
-            loaded.is_empty(),
-            "generated history and far-future override must not bridge the window"
+        assert_eq!(
+            loaded.len(),
+            1,
+            "detached hull is conservative; exact Rust refinement decides membership"
         );
         tx.rollback().await.unwrap();
     }

@@ -3,6 +3,11 @@ package app.porchlight.shared.screens.board
 import androidx.compose.runtime.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.ui.Modifier
@@ -53,7 +58,8 @@ import kotlinx.coroutines.launch
         )
         DesignPending(if (LocalScreenServices.current?.platform?.kind == app.porchlight.shared.PlatformKind.Android) "Mobile Board adaptation" else "Desktop Board content layout")
         WriteStatus(writer)
-        BoardContent(boardColumns(view.board, filter, member), view.members, { navigate(AppRoute.Item(it.id, it.occurrence?.id)) }, { row, drop ->
+        val columns = remember(view.board, filter, member) { boardColumns(view.board, filter, member) }
+        BoardContent(columns, view.members, { navigate(AppRoute.Item(it.id, it.occurrence?.id)) }, { row, drop ->
             row.occurrence?.let { occurrence ->
                 val replay = BoardMoveReplay()
                 scope.launch { writer.submit(activeKey = { replay.activeKey }) { key -> data.occurrences.move(occurrence.id, occurrence.version, drop, key,
@@ -79,69 +85,79 @@ import kotlinx.coroutines.launch
     val latestMove by rememberUpdatedState(::moveChanged)
     var dragMoved by remember { mutableStateOf(false) }
     val latestColumns by rememberUpdatedState(columns)
-    val columnContent: @Composable (BoardColumn, Modifier) -> Unit = { column, columnModifier ->
-            Column(columnModifier,
-                verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceInset.dp)) {
-                Text("${statusLabel(column.status)} (${column.cards.size})", modifier = Modifier.fillMaxWidth().testTag("board-heading-${column.status}"), style = MaterialTheme.typography.titleLarge)
-                if (column.cards.isEmpty()) Text("No cards")
-                column.cards.forEach { row ->
-                    val canMove = "change_status" in row.capabilities
-                    val occurrence = row.occurrence!!
-                    val actions = buildList {
-                        if (canMove) {
-                            add(CustomAccessibilityAction("Move up") { moveChanged(row, relativeDrop(column.cards, row, -1)); true })
-                            add(CustomAccessibilityAction("Move down") { moveChanged(row, relativeDrop(column.cards, row, 1)); true })
-                            boardStatuses.filter { it != column.status }.forEach { status -> add(CustomAccessibilityAction("Move to ${statusLabel(status)}") { moveChanged(row, BoardDrop(status, 0)); true }) }
+    val cardContent: @Composable (BoardColumn, ItemRead, Modifier) -> Unit = { column, row, cardModifier ->
+        val canMove = "change_status" in row.capabilities
+        val occurrence = row.occurrence!!
+        DisposableEffect(occurrence.id) { onDispose { bounds.remove(occurrence.id) } }
+        val actions = buildList {
+            if (canMove) {
+                add(CustomAccessibilityAction("Move up") { moveChanged(row, relativeDrop(column.cards, row, -1)); true })
+                add(CustomAccessibilityAction("Move down") { moveChanged(row, relativeDrop(column.cards, row, 1)); true })
+                boardStatuses.filter { it != column.status }.forEach { status -> add(CustomAccessibilityAction("Move to ${statusLabel(status)}") { moveChanged(row, BoardDrop(status, 0)); true }) }
+            }
+        }
+        var origin by remember(occurrence.id) { mutableStateOf(Offset.Zero) }
+        var focused by remember(occurrence.id) { mutableStateOf(false) }
+        val bringIntoView = remember(occurrence.id) { BringIntoViewRequester() }
+        // A keyed move can retain focus without another focus event. Follow the new geometry too.
+        LaunchedEffect(focused, if (focused) origin else Offset.Zero) { if (focused) bringIntoView.bringIntoView() }
+        PorchlightCard(cardModifier.fillMaxWidth().alpha(if (dragged == occurrence.id) 0.65f else 1f).testTag("board-card-${occurrence.id}").onGloballyPositioned {
+            origin = it.positionInRoot()
+            // Insertion uses the entire card, including the scrolled-off part. Only the
+            // column's hit region is clipped; clipping a card shifts its midpoint.
+            bounds[occurrence.id] = Rect(origin, Size(it.size.width.toFloat(), it.size.height.toFloat()))
+        }
+            .semantics { customActions = actions; contentDescription = "Board card ${row.title}" }
+            .onKeyEvent { event ->
+                if (!canMove || event.type != KeyEventType.KeyDown || !event.isAltPressed) false else when (event.key) {
+                    Key.DirectionUp -> { moveChanged(row, relativeDrop(column.cards, row, -1)); true }
+                    Key.DirectionDown -> { moveChanged(row, relativeDrop(column.cards, row, 1)); true }
+                    Key.DirectionLeft, Key.DirectionRight -> { val step = if (event.key == Key.DirectionLeft) -1 else 1
+                        val target = boardStatuses.getOrNull(boardStatuses.indexOf(column.status) + step)
+                        if (target != null) moveChanged(row, BoardDrop(target, 0)); target != null }
+                    else -> false
+                }
+            }.bringIntoViewRequester(bringIntoView).onFocusChanged { focused = it.isFocused }.focusable()
+            .pointerInput(occurrence.id, canMove, columns) {
+                if (canMove) detectDragGesturesAfterLongPress(
+                    onDragStart = { dragged = occurrence.id; dragMoved = false; point = origin + it },
+                    onDragCancel = { dragged = null },
+                    onDragEnd = {
+                        val moving = latestColumns.flatMap { it.cards }.find { it.occurrence?.id == dragged && "change_status" in it.capabilities }
+                        val target = latestColumns.find { columnBounds[it.status]?.contains(point) == true }
+                        if (dragMoved && moving != null && target != null) {
+                            val without = target.cards.filter { it.occurrence?.id != moving.occurrence?.id }
+                            val before = without.indexOfFirst { row -> bounds[row.occurrence?.id]?.let { point.y < it.center.y } == true }
+                            val index = if (before >= 0) before else without.size
+                            latestMove(moving, BoardDrop(target.status, index))
                         }
-                    }
-                    var origin by remember(occurrence.id) { mutableStateOf(Offset.Zero) }
-                    PorchlightCard(Modifier.fillMaxWidth().alpha(if (dragged == occurrence.id) 0.65f else 1f).testTag("board-card-${occurrence.id}").onGloballyPositioned {
-                        origin = it.positionInRoot()
-                        // Insertion uses the entire card, including the scrolled-off part. Only the
-                        // column's hit region is clipped; clipping a card shifts its midpoint.
-                        bounds[occurrence.id] = Rect(origin, Size(it.size.width.toFloat(), it.size.height.toFloat()))
-                    }
-                        .semantics { customActions = actions; contentDescription = "Board card ${row.title}" }
-                        .onKeyEvent { event ->
-                            if (!canMove || event.type != KeyEventType.KeyDown || !event.isAltPressed) false else when (event.key) {
-                                Key.DirectionUp -> { moveChanged(row, relativeDrop(column.cards, row, -1)); true }
-                                Key.DirectionDown -> { moveChanged(row, relativeDrop(column.cards, row, 1)); true }
-                                Key.DirectionLeft, Key.DirectionRight -> { val step = if (event.key == Key.DirectionLeft) -1 else 1
-                                    val target = boardStatuses.getOrNull(boardStatuses.indexOf(column.status) + step)
-                                    if (target != null) moveChanged(row, BoardDrop(target, 0)); target != null }
-                                else -> false
-                            }
-                        }.focusable()
-                        .pointerInput(occurrence.id, canMove, columns) {
-                            if (canMove) detectDragGesturesAfterLongPress(
-                                onDragStart = { dragged = occurrence.id; dragMoved = false; point = origin + it },
-                                onDragCancel = { dragged = null },
-                                onDragEnd = {
-                                    val moving = latestColumns.flatMap { it.cards }.find { it.occurrence?.id == dragged && "change_status" in it.capabilities }
-                                    val target = latestColumns.find { columnBounds[it.status]?.contains(point) == true }
-                                    if (dragMoved && moving != null && target != null) {
-                                        val without = target.cards.filter { it.occurrence?.id != moving.occurrence?.id }
-                                        val index = without.indexOfFirst { bounds[it.occurrence!!.id]?.let { r -> point.y < r.center.y } == true }.let { if (it < 0) without.size else it }
-                                        latestMove(moving, BoardDrop(target.status, index))
-                                    }
-                                    dragged = null
-                                }, onDrag = { change, delta -> change.consume(); if (delta != Offset.Zero) dragMoved = true; point += delta })
-                        }) {
-                        ItemSummary(row, members)
-                        ShellButton("Open ${row.title}", onClick = { open(row) })
-                        if ("take" in row.capabilities) ShellButton("Take ${row.title}", onClick = { take(row) })
-                        if (canMove) {
-                            ShellButton("Move ${row.title} up", onClick = { moveChanged(row, relativeDrop(column.cards, row, -1)) })
-                            ShellButton("Move ${row.title} down", onClick = { moveChanged(row, relativeDrop(column.cards, row, 1)) })
-                            boardStatuses.filter { it != column.status }.forEach { status ->
-                                ShellButton("Move ${row.title} to ${statusLabel(status)}", onClick = { moveChanged(row, BoardDrop(status, 0)) })
-                            }
-                        }
-                    }
+                        dragged = null
+                    }, onDrag = { change, delta -> change.consume(); if (delta != Offset.Zero) dragMoved = true; point += delta })
+            }) {
+            ItemSummary(row, members)
+            ShellButton("Open ${row.title}", onClick = { open(row) })
+            if ("take" in row.capabilities) ShellButton("Take ${row.title}", onClick = { take(row) })
+            if (canMove) {
+                ShellButton("Move ${row.title} up", onClick = { moveChanged(row, relativeDrop(column.cards, row, -1)) })
+                ShellButton("Move ${row.title} down", onClick = { moveChanged(row, relativeDrop(column.cards, row, 1)) })
+                boardStatuses.filter { it != column.status }.forEach { status ->
+                    ShellButton("Move ${row.title} to ${statusLabel(status)}", onClick = { moveChanged(row, BoardDrop(status, 0)) })
                 }
             }
+        }
     }
-    BoardCells(columns, modifier, { status, rect -> columnBounds[status] = rect }, columnContent)
+    val focusManager = LocalFocusManager.current
+    val keyboard = modifier.onPreviewKeyEvent { event ->
+        if (event.type != KeyEventType.KeyDown || event.isAltPressed || event.isCtrlPressed) false
+        else when (event.key) {
+            Key.DirectionUp -> focusManager.moveFocus(FocusDirection.Up)
+            Key.DirectionDown -> focusManager.moveFocus(FocusDirection.Down)
+            Key.DirectionLeft -> focusManager.moveFocus(FocusDirection.Left)
+            Key.DirectionRight -> focusManager.moveFocus(FocusDirection.Right)
+            else -> false
+        }
+    }
+    BoardCardCells(columns, keyboard, { status, rect -> columnBounds[status] = rect }, cardContent)
 }
 
 private data class BoardCellId(val status: String, val allocation: Boolean)

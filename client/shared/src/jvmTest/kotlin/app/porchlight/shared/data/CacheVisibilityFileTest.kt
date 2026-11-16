@@ -26,8 +26,8 @@ class CacheVisibilityFileTest {
                 val data = HouseholdData(cache, GeneratedCall({ api }, { null }), { now })
                 cache.install(emptySnapshot(1).copy(items = listOf(itemRead(row.itemId)), comments = listOf(commentFixture()), attachments = listOf(row)))
                 // Download requests the absent thumbnail; the already viewed original and viewer must still purge.
-                store.write("0-${row.id}-${row.version}-file", byteArrayOf(1))
-                if (endpoint != "download") store.write("0-${row.id}-${row.version}-thumb", byteArrayOf(2))
+                store.write(attachmentKey(cache.attachmentNamespace, row, false), byteArrayOf(1))
+                if (endpoint != "download") store.write(attachmentKey(cache.attachmentNamespace, row, true), byteArrayOf(2))
                 root.resolve("${row.id}-view.txt").writeText("private viewer copy")
                 assertFailsWith<ApiProblem> { when (endpoint) {
                     "item" -> data.items.get(row.itemId)

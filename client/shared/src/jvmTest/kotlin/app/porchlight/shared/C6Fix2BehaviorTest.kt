@@ -104,6 +104,7 @@ class C6Fix2BehaviorTest {
             val services = services(HouseholdData(cache, GeneratedCall({ transport }, { "session" }), { now }))
             runDesktopComposeUiTest(width = 900, height = 1600) {
                 setContent { CompositionLocalProvider(LocalScreenServices provides services) { PorchlightTheme(ThemeMode.Daylight, false) { PlanningScreen(services, SettingsSection.Planning) } } }
+                waitUntil(timeoutMillis = 10_000) { onAllNodes(hasContentDescription("Request suggestions") and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
                 onNodeWithContentDescription("Request suggestions").performClick()
                 waitUntil(timeoutMillis = 10_000) { onAllNodesWithText("Add an estimate before requesting suggestions.").fetchSemanticsNodes().isNotEmpty() }
                 onNodeWithText("Proposal expired or no longer applies; suggestions refetched. Use Refetch suggestions if offline.").assertDoesNotExist()
@@ -137,6 +138,7 @@ class C6Fix2BehaviorTest {
                         else PlanningScreen(services, SettingsSection.Planning)
                     } } }
                     waitUntil(timeoutMillis = 10_000) { onAllNodesWithContentDescription("Accept suggestion ${row.id}").fetchSemanticsNodes().isNotEmpty() }
+                    waitUntil(timeoutMillis = 10_000) { onAllNodes(hasContentDescription("Dismiss suggestion ${row.id}") and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
                     runOnIdle { services.screenSession.rejectSuggestion(row) }
                     onNodeWithContentDescription("Accept suggestion ${row.id}").assertIsNotEnabled()
                     onNodeWithContentDescription("Dismiss suggestion ${row.id}").assertIsEnabled().performClick()

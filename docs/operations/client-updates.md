@@ -37,8 +37,17 @@ that verifies minisign, the subset and the version before switching `current`. T
 the verified source subset. On failure the UI names this log without exposing its contents. Successful staging is
 removed; if cleanup fails after installation, it can be removed manually.
 
-Restart to finish starts the stable launcher with `--after-update` and closes the old app. The replacement waits up to
-ten seconds for the old singleton lock, then falls back to the normal focus-existing-instance behavior.
+Before downloading, the updater requires free space for the advertised payload plus a 64 MiB margin. Before desktop
+extraction writes any image files, the installer checks the validated archive's expanded size plus the same margin.
+The download preflight credits verified completed files and existing resumable bytes; it requires only the remaining
+payload plus the margin. Download progress is published at most ten times per second. Desktop install, rollback and
+retention hold one installer lock from installed-state reads through deletion. After successful activation, retention
+keeps current, previous and every image observed running through the user's `/proc` executable links; older managed
+images are pruned. Uninspectable own-process executables defer pruning rather than risking a running image.
+
+Restart to finish starts the stable launcher with `--after-update` and the old process ID, then closes the old app.
+The replacement waits up to ten seconds for that PID to exit; on timeout it does not start or open storage. Only after
+process death does it wait up to ten seconds for the singleton lock, with the normal focus-existing-instance fallback.
 
 The banner, About, server card and 426 updater remain DESIGN-PENDING. JVM UI evidence is generated under
 `client/shared/build/test-evidence/updates/`, including 320dp at font scale 2.0. Real Android confirmation and the desktop

@@ -1,0 +1,11 @@
+-- Disposable cache: platform version checks recreate rather than migrate household rows.
+CREATE TABLE CachePendingSync (
+ singleton INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
+ cursor INTEGER NOT NULL,
+ last_full_sync INTEGER NOT NULL
+);
+CREATE TABLE CacheAttachmentCleanup (
+ kind TEXT NOT NULL,
+ id TEXT NOT NULL,
+ PRIMARY KEY(kind,id)
+);

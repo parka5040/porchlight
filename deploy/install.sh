@@ -7,7 +7,7 @@ scriptdir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # Template: release.sh generates a standalone installer with both helpers inlined.
 # @INLINE_OPERATIONS@
 declare -F verify_release >/dev/null || { printf "use a generated dist/<version>/install.sh\n" >&2; exit 2; }
-mode=${1:-}; [[ -n $mode ]] || { printf 'usage: install.sh server|desktop|upgrade|backup|restore|server-cert|enroll-host|funnel [bundle] [options]\n' >&2; exit 2; }; shift
+mode=${1:-}; [[ -n $mode ]] || { printf 'usage: install.sh server|desktop|upgrade|backup|restore|server-cert|enroll-host|lan-bind|funnel|prune [bundle] [options]\n' >&2; exit 2; }; shift
 bundle=''; if [[ $mode == restore ]]; then bundle=${1:?restore requires bundle}; shift; fi
 source=$scriptdir
 stackroot=${PORCHLIGHT_ROOT:-/var/lib/porchlight}
@@ -22,6 +22,7 @@ ts_hostname='' tailscale_image='' ts_authkey_file='' no_authkey=0
 san_args=()
 enroll_host=''
 api_health_timeout=30
+lan_bind='' lan_bind_given=0 prune_apply=0
 while (($#)); do
   case $1 in
     --source) source=${2:?}; source_given=1; shift 2 ;;
@@ -31,6 +32,8 @@ while (($#)); do
     --run-dir) run_dir=${2:?}; shift 2 ;;
     --project) project=${2:?}; shift 2 ;;
     --host) enroll_host=${2:?}; shift 2 ;;
+    --lan-bind) lan_bind=${2:?}; lan_bind_given=1; shift 2 ;;
+    --apply) prune_apply=1; shift ;;
     --api-health-timeout) api_health_timeout=${2:?}; shift 2 ;;
     --force) force=1; shift ;;
     --niri) niri=1; shift ;;
@@ -59,24 +62,29 @@ if ! [[ $api_health_timeout =~ ^[1-9][0-9]{0,2}$ ]] || ((api_health_timeout > 60
   printf 'API health timeout must be 1-600 seconds\n' >&2; exit 2
 fi
 if ((funnel)); then printf 'Install LAN first, then use install.sh funnel (not server --funnel)\n' >&2; exit 2; fi
+[[ $project =~ ^[a-z0-9][a-z0-9_-]*$ ]] || { printf 'invalid Compose project/network name\n' >&2; exit 2; }
 [[ $stackroot == /* && $stackroot != / && $run_dir == /* && $run_dir != / ]] || { printf 'absolute non-root paths required\n' >&2; exit 2; }
 if [[ -n $release_request || $repo_given == 1 ]]; then
   [[ $mode == upgrade && -n $release_request && $source_given == 0 ]] || { printf 'use upgrade --release <V|latest> [--repo owner/repo], without --source\n' >&2; exit 2; }
   [[ $release_request == latest ]] || version_code "$release_request" >/dev/null || { printf 'invalid release version\n' >&2; exit 2; }
 fi
 # One lock covers installed-state reads, mutations, rollback and verified exec handoff.
-if [[ $mode != desktop ]]; then
+if [[ $mode == desktop ]]; then
+  installer_lock "${XDG_DATA_HOME:-$HOME/.local/share}/porchlight"
+else
   if [[ $mode != server && $mode != restore && ! -d $stackroot ]]; then
     printf 'Existing installed stack required\n' >&2; exit 2
   fi
-  # shellcheck disable=SC2174 # umask 077 at startup also makes any newly created parents private.
-  mkdir -m 700 -p "$stackroot"
-  [[ ! -L $stackroot/.installer.lock ]] || { printf 'installer lock must not be a symlink\n' >&2; exit 2; }
-  if [[ ${PORCHLIGHT_INSTALL_LOCK_ROOT:-} != "$stackroot" || ! /proc/$$/fd/9 -ef $stackroot/.installer.lock ]]; then
-    exec 9>>"$stackroot/.installer.lock"
+  installer_lock "$stackroot"
+  if [[ -e $stackroot/data/maintenance || -L $stackroot/data/maintenance ]]; then
+    phase=$(ops_python fence-phase "$stackroot") || phase=unknown
+    if [[ $phase == committed ]]; then
+      printf 'Stale maintenance fence: committed, forward-only recovery; NEVER restore the pre-upgrade dump. See operations/upgrade.md.\n' >&2
+    else
+      printf 'Stale maintenance fence: %s; keep HTTP and agent SQL writes disabled and inspect recovery state (operations/upgrade.md).\n' "$phase" >&2
+    fi
+    exit 2
   fi
-  flock -n 9 || { printf 'installer already running for this stack\n' >&2; exit 2; }
-  export PORCHLIGHT_INSTALL_LOCK_ROOT=$stackroot
   if [[ -e $run_dir/maintenance || -L $run_dir/maintenance ]]; then
     printf 'Stale maintenance fence: %s/maintenance. Writes remain disabled; inspect upgrade logs/recovery dump before removing it (see operations runbook).\n' "$run_dir" >&2; exit 2
   fi
@@ -155,6 +163,12 @@ if [[ $mode == restore ]]; then
   for key in PG_PORT LAN_PORT ENROLL_PORT LAN_BIND ENROLL_CIDRS ENROLL_HOST PORCHLIGHT_ENDPOINTS BACKEND_SUBNET INGRESS_SUBNET; do
     if [[ -v $key ]]; then restore_overrides+=("$key" "${!key}"); fi
   done
+  if ((lan_bind_given)); then
+    lan_bind=$(ops_python lan-bind "$lan_bind" '' explicit) || { printf 'invalid restore LAN binding\n' >&2; exit 2; }
+    restore_overrides+=(LAN_BIND "$lan_bind")
+  elif [[ ${LAN_BIND:-} == 0.0.0.0 ]]; then
+    printf 'wildcard restore requires --lan-bind 0.0.0.0 deliberately\n' >&2; exit 2
+  fi
 fi
 # Caller dev credentials must never override the installed/restored stack .env in Compose interpolation.
 unset POSTGRES_PASSWORD PORCHLIGHT_MIGRATOR_PASSWORD PORCHLIGHT_APP_PASSWORD PORCHLIGHT_AGENT_PASSWORD PORCHLIGHT_BACKUP_PASSWORD PORCHLIGHT_VERSION
@@ -184,6 +198,10 @@ cleanup_install() {
   # Inherit ignored signals in cleanup children too; best effort (Go clients may re-arm them).
   # Cleanup waits are bounded; emit diagnostics only after restoration.
   set +e
+  if ((upgrade_pending)) && [[ $(ops_python fence-phase "$stackroot" 2>/dev/null) == committed ]]; then
+    # A signal/fsync error can arrive between the durable commit and shell assignment.
+    upgrade_pending=0 upgrade_exposed=1
+  fi
   if ((upgrade_pending)); then
     code=1
     if rollback_upgrade > "$stage/rollback.log" 2>&1; then
@@ -193,8 +211,8 @@ cleanup_install() {
       report_rollback
     fi
   fi
-  # Every handled exit releases the SQL login gate, after any destructive rollback has finished.
-  if ! resume_agent > "$stage/agent-resume.log" 2>&1; then
+  # Failed/pending rollback must retain NOLOGIN; only a durable decision permits new writes.
+  if (( ! upgrade_pending )) && ! resume_agent > "$stage/agent-resume.log" 2>&1; then
     code=1
     say 'Could not restore porchlight_agent LOGIN; inspect PostgreSQL privately and restore LOGIN after recovery.'
   fi
@@ -230,7 +248,7 @@ cleanup_install() {
   if ((upgrade_exposed && code)); then
     # Never restore a pre-exposure snapshot over acknowledged writes.
     rm -f -- "$rollback_dump"
-    if ((maintenance_owned)); then rm -f -- "$run_dir/maintenance" || say 'Could not remove maintenance fence; writes remain disabled'; fi
+    if ((maintenance_owned)); then remove_maintenance || say 'Could not remove maintenance fence; writes remain disabled'; fi
     say "FORWARD RECOVERY: new API is exposed; keeping release $version and its database. Inspect private logs: $stage"
     report_aux_recovery_command
   elif (( ! upgrade_pending )); then
@@ -250,7 +268,7 @@ cleanup_install() {
         say "Private sanitized failure diagnostics: $diagnostic"
       fi
     fi
-    rm -rf -- "$stage" >/dev/null 2>&1
+    if (( ! upgrade_rolling_back || ! code )); then rm -rf -- "$stage" >/dev/null 2>&1; fi
   fi
   if [[ -n $incoming_dir ]]; then say "Incoming release retained: $incoming_dir"; fi
   [[ -z $install_error ]] || say "$install_error"
@@ -315,7 +333,7 @@ check_docker() {
 }
 active_release() { readlink -f -- "$stackroot/release-current"; }
 funnel_enabled() {
-  [[ $(python3 -I -B - "$stackroot/.env" <<'PY_ENABLED'
+  [[ $(python3 -I -B - "${dc_env_file:-$stackroot/.env}" <<'PY_ENABLED'
 import pathlib,sys
 p=pathlib.Path(sys.argv[1]);values=dict(line.split('=',1) for line in p.read_text().splitlines() if '=' in line) if p.exists() else {}
 print(values.get('FUNNEL_ENABLED','0'))
@@ -324,7 +342,7 @@ PY_ENABLED
 }
 dc() {
   local release
-  release=$(active_release)
+  release=${dc_release:-$(active_release)}
   local -a files=(-f "$release/compose.yml") runner=()
   if funnel_enabled || [[ ${dc_force_funnel:-0} == 1 ]]; then files+=(-f "$release/compose.funnel.yml" --profile funnel); fi
   # A wedged Docker client must not extend the login budget by ignoring SIGTERM.
@@ -332,7 +350,7 @@ dc() {
   # Persisted interpolation is authoritative on first install, retry and later upgrades alike.
   "${runner[@]}" env -u PORCHLIGHT_UID -u PORCHLIGHT_GID -u PG_PORT -u LAN_PORT -u ENROLL_PORT \
     -u LAN_BIND -u ENROLL_CIDRS -u ENROLL_HOST -u PORCHLIGHT_ENDPOINTS -u BACKEND_SUBNET \
-    -u INGRESS_SUBNET -u PORCHLIGHT_MIN_CLIENT_VERSION docker compose -p "$project" --env-file "$stackroot/.env" "${files[@]}" "$@"
+    -u INGRESS_SUBNET -u PORCHLIGHT_MIN_CLIENT_VERSION docker compose -p "$project" --env-file "${dc_env_file:-$stackroot/.env}" "${files[@]}" "$@"
 }
 report_api_recovery_command() {
   # Paths/project are public, but may contain spaces; print a runnable, shell-quoted command.
@@ -474,7 +492,20 @@ upgrade_from_release() {
   exec bash "$incoming_dir/release/install.sh" "${args[@]}"
 }
 upgrade_settings() {
-  local repo status
+  local repo status binding
+  # Existing wildcard exposure is preserved, but never silently. Fresh installs resolve a LAN address.
+  binding=$(ops_python env-value "$stackroot/.env" LAN_BIND) || binding=''
+  if [[ -z $binding ]]; then
+    say 'NOTICE: existing stack has no LAN_BIND; preserving its IPv4 wildcard binding for this upgrade.'
+    say 'Restrict it explicitly: install.sh lan-bind --lan-bind <server-LAN-IP> (repeat --root, --run-dir, --project). IPv6 publication is not enabled.'
+    set_stack_env LAN_BIND 0.0.0.0 || return
+  fi
+  if ((lan_bind_given)); then
+    lan_bind=$(ops_python lan-bind "$lan_bind" '' explicit) || return
+    set_stack_env LAN_BIND "$lan_bind" || return
+  fi
+  ops_python validate-restore-target "$stackroot/.env" || return
+  ops_python prepare-credentials "$stackroot" || return
   repo=$(ops_python env-value "$stackroot/.env" PORCHLIGHT_RELEASE_REPO) || {
     status=$?
     [[ $status == 3 ]] || return "$status"
@@ -510,7 +541,27 @@ load_images() {
   docker load -i "$stage/release/porchlight-backup-$version.tar" >/dev/null
 }
 set_version() { set_stack_env PORCHLIGHT_VERSION "${1:-$version}"; }
-migrate() { dc up -d --wait postgres || return; dc up --no-deps --force-recreate --exit-code-from migrate migrate; }
+migrate() {
+  dc up -d --wait postgres || return
+  # Existing clusters do not run initdb hooks again. Extension creation needs the superuser, not migrate.
+  dc exec -T postgres sh /docker-entrypoint-initdb.d/10-porchlight.sh || return
+  dc up --no-deps --force-recreate --exit-code-from migrate migrate
+}
+create_maintenance() {
+  # Durable FIRST: a reboot before either API starts must not remove the write fence.
+  ops_python durable-fence "$stackroot" create || return
+  maintenance_owned=1
+  (set -o noclobber; : > "$run_dir/maintenance")
+}
+remove_maintenance() {
+  # A visible rename alone is not proof its directory fsync succeeded. Retry before exposure.
+  local phase
+  phase=$(ops_python fence-phase "$stackroot") || return
+  if [[ $phase != absent ]]; then ops_python durable-fence "$stackroot" commit || return; fi
+  # Legacy APIs only see /run; remove it only after recovery is irreversibly disarmed.
+  rm -f -- "$run_dir/maintenance" || return
+  ops_python durable-fence "$stackroot" remove
+}
 quiesce_agent() {
   # Arm before ALTER so a signal or lost response still restores LOGIN in EXIT.
   agent_gate_owned=1
@@ -529,6 +580,8 @@ END \$\$;"
 }
 resume_agent() {
   if ((agent_gate_owned)); then
+    # Retry durability after a commit rename/fsync failure before permitting raw SQL writes.
+    if ((${maintenance_owned:-0})); then ops_python durable-fence "$stackroot" commit || return; fi
     dc_timeout=60 dc exec -T postgres psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 \
       -c 'ALTER ROLE porchlight_agent LOGIN;' || return
     agent_gate_owned=0
@@ -551,8 +604,10 @@ report_rollback() {
   fi
 }
 rollback_upgrade() {
+  [[ $(ops_python fence-phase "$stackroot") == pending ]] || return 1
   upgrade_rolling_back=1
-  dc stop api backup || return
+  # Stop by project through known-good OLD interpolation, even halfway through a new settings switch.
+  dc_release=$stackroot/releases/$old_version dc_env_file=$stage/env-before-upgrade dc stop api backup || return
   ln -s "releases/$old_version" "$stackroot/.release-current.rollback.$$" || return
   mv -Tf "$stackroot/.release-current.rollback.$$" "$stackroot/release-current" || return
   cp -p -- "$stage/env-before-upgrade" "$stage/env-rollback" || return
@@ -567,7 +622,10 @@ rollback_upgrade() {
   if ((upgrade_migrating)); then restore_db "$rollback_dump" || return; fi
   # Do not re-run a failed new migrator through Compose's dependency graph.
   start --no-deps || return
-  if ((maintenance_owned)); then rm -f -- "$run_dir/maintenance" || return; maintenance_owned=0; fi
+  ops_python durable-fence "$stackroot" commit || return
+  upgrade_pending=0
+  resume_agent || return
+  if ((maintenance_owned)); then remove_maintenance || return; maintenance_owned=0; fi
   # The database is back on the dump; the pinned encrypted bundle stays the long-term recovery point.
   if ((dump_created)); then rm -f -- "$rollback_dump"; fi
 }
@@ -582,9 +640,13 @@ start() {
   if ((upgrade_pending && ! upgrade_rolling_back)); then
     # One simple command disarms restoration before ANY trap can remove the fence.
     # The new API has been read-only through both health checks; only now may it accept writes.
+    # Persist the last known-good release for scoped housekeeping before allowing writes.
+    ln -s "releases/$old_version" "$stackroot/.release-previous.$$" || return
+    mv -Tf "$stackroot/.release-previous.$$" "$stackroot/release-previous" || return
+    ops_python durable-fence "$stackroot" commit || return
     upgrade_pending=0 upgrade_exposed=1
     resume_agent || return
-    rm -f -- "$run_dir/maintenance" || return
+    remove_maintenance || return
     maintenance_owned=0
     rm -f -- "$rollback_dump" || return
   fi
@@ -784,6 +846,7 @@ install_desktop() {
     previous=$(readlink "$base/previous"); current=$(readlink "$base/current")
     ln -s "$previous" "$base/.current.$$"; mv -Tf "$base/.current.$$" "$base/current"
     ln -s "$current" "$base/.previous.$$"; mv -Tf "$base/.previous.$$" "$base/previous"
+    desktop_prune_images "$base" || printf 'Warning: older desktop images could not be pruned\n' >&2
     printf 'PASS desktop rollback\n'; return
   fi
   if [[ ! -L $base/current ]]; then
@@ -816,7 +879,10 @@ install_desktop() {
     cmp -s "$target/release-manifest.json" "$stage/release/manifest.json" || { printf 'desktop version already installed with different content\n' >&2; return 1; }
     if ops_python same-tree "$desktop_stage" "$target" >/dev/null 2>&1; then
       rm -rf -- "$desktop_stage"; desktop_stage=''
-      if ((same_version)); then printf 'PASS already installed %s\n' "$version"; return; fi
+      if ((same_version)); then
+        desktop_prune_images "$base" || printf 'Warning: older desktop images could not be pruned\n' >&2
+        printf 'PASS already installed %s\n' "$version"; return
+      fi
     else
       mv -- "$target" "$base/releases/.incomplete.$version.$$"
     fi
@@ -890,11 +956,29 @@ PY_NIRI
   ln -s "releases/$version" "$base/.current.$$"; mv -Tf "$base/.current.$$" "$base/current"
   (( ! niri )) || rm -f -- "$confighome/autostart/porchlight.desktop"
   niri_pending='' desktop_autostart_pending=''
+  desktop_prune_images "$base" || printf 'Warning: older desktop images could not be pruned\n' >&2
   printf 'PASS desktop installed %s\n' "$version"
 }
 
 case $mode in
   desktop) install_desktop ;;
+  prune)
+    if ((prune_apply)); then ops_python prune "$stackroot" --apply; else ops_python prune "$stackroot"; fi
+    ;;
+  lan-bind)
+    ((lan_bind_given)) || { printf 'lan-bind requires --lan-bind <server-LAN-IP>\n' >&2; exit 2; }
+    lan_bind=$(ops_python lan-bind "$lan_bind" '' explicit)
+    cp -p -- "$stackroot/.env" "$stage/env-before"
+    enroll_pending=1
+    set_stack_env LAN_BIND "$lan_bind"
+    dc_timeout=$api_health_timeout dc up -d --no-deps --force-recreate --wait --wait-timeout "$api_health_timeout" api > "$stage/lan-bind.log" 2>&1
+    # Atomic .env replacement must refresh the backup container's file bind too.
+    if (( ! no_backup )); then
+      dc_timeout=120 dc up -d --no-deps --force-recreate --wait --wait-timeout 120 backup > "$stage/lan-bind-backup.log" 2>&1
+    fi
+    enroll_pending=0
+    report printf 'PASS LAN binding updated (IPv4 only)\n'
+    ;;
   funnel) enable_funnel ;;
   enroll-host) change_enroll_host ;;
   server-cert)
@@ -913,6 +997,14 @@ case $mode in
     [[ $recipient == age1* ]] || { printf '--backup-recipient requires an age public recipient\n' >&2; exit 2; }
     verify_source
     [[ -n ${ENROLL_CIDRS:-} ]] || { printf 'set ENROLL_CIDRS to the actual LAN CIDR\n' >&2; exit 2; }
+    if ((lan_bind_given)); then
+      LAN_BIND=$(ops_python lan-bind "$lan_bind" "$ENROLL_CIDRS" explicit)
+    else
+      LAN_BIND=$(ops_python lan-bind "${LAN_BIND:-}" "$ENROLL_CIDRS") || {
+        printf 'Cannot select a unique LAN IPv4 address; pass --lan-bind <server-LAN-IP>. Wildcard requires --lan-bind 0.0.0.0 explicitly.\n' >&2; exit 2;
+      }
+    fi
+    export LAN_BIND
     if [[ -z $admin_name ]]; then read -r -p 'Super-admin display name: ' admin_name; fi
     if [[ -z $password_file ]]; then
       IFS= read -r -s -p 'Super-admin password: ' password; printf '\n'
@@ -1027,8 +1119,7 @@ PY_SAN
     # The new process must see the fence on its first request, before health polling.
     # shellcheck disable=SC2174 # umask 077 at startup also makes any newly created parents private.
     mkdir -m 700 -p "$run_dir"
-    (set -o noclobber; : > "$run_dir/maintenance")
-    maintenance_owned=1
+    create_maintenance
     # Arm recovery before quiescing writers, including failures while making the backups.
     upgrade_pending=1
     dc stop backup api > "$stage/stop.log" 2>&1
@@ -1042,6 +1133,7 @@ bundle=pathlib.Path(sys.argv[1])/names[0];assert bundle.is_file();print(bundle)
 PY
 )
     rollback_bundle=$(pin_rollback_bundle "$rollback_bundle")
+    ops_python atomic-text "$rollback_bundle.version" "$old_version"
     report printf 'PASS pre-upgrade backup pinned outside nightly retention\n'
     report_rollback
     [[ ! -L $stackroot/rollback ]] || { printf 'rollback directory must not be a symlink\n' >&2; exit 1; }
@@ -1054,10 +1146,12 @@ PY
     chmod 600 "$rollback_dump"
     dc exec -T postgres pg_dump -U postgres -Fc porchlight > "$rollback_dump" 2> "$stage/dump.log"
     {
-      load_images
-      switch_release
+      # Validate and persist every new interpolation/credential before switching the release pointer.
       set_version
       upgrade_settings
+      dc_release=$stage/release dc config --quiet
+      load_images
+      switch_release
       upgrade_migrating=1
       migrate
       start
@@ -1092,7 +1186,7 @@ for path in (root,root/'data',root/'backups',root/'backup-work',run):
 PY_TARGET_ID
     then printf 'target runtime identity cannot access private directories; run restore as the target owner, use its UID and a member GID, and repair directory ownership before retrying\n' >&2; exit 2; fi
     ops_python validate-restore-target "$stage/bundle/.env" "${restore_overrides[@]}" > "$stage/target-validation.log" 2>&1 || {
-      printf 'invalid restore target network settings; correct overrides before retrying\n' >&2; exit 2;
+      printf 'invalid restore target network settings or missing LAN binding; use --lan-bind before retrying\n' >&2; exit 2;
     }
     running=$(docker ps -a -q --filter "label=com.docker.compose.project=$project")
     [[ ( -z $running && ! -e $stackroot/.env ) || $force == 1 ]] || { printf 'existing stack: use --force\n' >&2; exit 2; }
@@ -1131,6 +1225,7 @@ print(shlex.join(args))
 PY_REENABLE
     fi
     for member in pki secrets backup-recipient.txt blobs; do cp -a "$stage/bundle/$member" "$stackroot/data/"; done
+    ops_python prepare-credentials "$stackroot"
     load_images; switch_release
     restore_db "$stage/bundle/db.dump"
     migrate

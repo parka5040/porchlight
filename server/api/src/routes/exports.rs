@@ -39,6 +39,9 @@ pub async fn member(
     caller: Caller,
     ApiQuery(p): ApiQuery<MemberParams>,
 ) -> Result<Response, ApiError> {
+    let download = s
+        .downloads
+        .acquire(caller.admission_id(), caller.member_id())?;
     let target = p.member_id.unwrap_or(caller.member_id());
     if target != caller.member_id() && !caller.sees_all() {
         return Err(ApiError::new(Problem::Forbidden));
@@ -78,14 +81,17 @@ pub async fn member(
         std::time::Duration::from_secs(30),
         (spool.reservation, spool.permit),
     );
-    Ok((
-        [
-            ("content-type", "application/json".to_owned()),
-            ("content-length", len.to_string()),
-        ],
-        body,
-    )
-        .into_response())
+    Ok(crate::concurrency::with_body(
+        (
+            [
+                ("content-type", "application/json".to_owned()),
+                ("content-length", len.to_string()),
+            ],
+            body,
+        )
+            .into_response(),
+        download,
+    ))
 }
 // Fail-closed allowlist: additions require an export decision, never introspect and
 // accidentally expose a future credential table. Standard encrypted backups dump all.
@@ -179,6 +185,7 @@ pub async fn household(
         return Err(ApiError::new(Problem::Maintenance).retry(1));
     }
     c.require_admin()?;
+    let download = s.downloads.acquire(c.admission_id(), c.member_id())?;
     let permit = s
         .export_limits
         .acquire(c.household_id(), c.household_id())?;
@@ -200,20 +207,23 @@ pub async fn household(
     });
     // No table read or descriptor inventory before headers. Dropping the body
     // closes the channel, cancels preparation, and drops the worker's lease guard.
-    Ok((
-        [
-            ("content-type", "application/gzip"),
-            (
-                "content-disposition",
-                "attachment; filename=household.tar.gz",
-            ),
-        ],
-        Body::from_stream(futures_util::stream::unfold(
-            receive,
-            |mut receive| async move { receive.recv().await.map(|chunk| (chunk, receive)) },
-        )),
-    )
-        .into_response())
+    Ok(crate::concurrency::with_body(
+        (
+            [
+                ("content-type", "application/gzip"),
+                (
+                    "content-disposition",
+                    "attachment; filename=household.tar.gz",
+                ),
+            ],
+            Body::from_stream(futures_util::stream::unfold(
+                receive,
+                |mut receive| async move { receive.recv().await.map(|chunk| (chunk, receive)) },
+            )),
+        )
+            .into_response(),
+        download,
+    ))
 }
 #[derive(utoipa::OpenApi)]
 #[openapi(paths(member, household), components(schemas(MemberExport)))]

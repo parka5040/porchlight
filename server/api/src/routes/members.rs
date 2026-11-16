@@ -116,6 +116,28 @@ pub(super) const MEMBER: &str = "jsonb_build_object('id',m.id,
       and i.household_id=m.household_id and (i.owner_id=m.id or i.subject_member_id=m.id
       or exists (select 1
       from porchlight.item_assignees a where a.item_id=i.id and a.member_id=m.id))))";
+pub(crate) async fn write_snapshot(
+    conn: &mut PgConnection,
+    caller: &Caller,
+    document: &mut crate::json_document::Document,
+) -> Result<(), ApiError> {
+    use futures_util::TryStreamExt;
+    let sql = format!(
+        "select ({MEMBER})::text from porchlight.household_members m
+        join porchlight.households h on h.id=m.household_id
+        where m.household_id=$1 and m.deleted_at is null order by m.id"
+    );
+    let mut rows = sqlx::query_scalar::<_, String>(sqlx::AssertSqlSafe(sql.as_str()))
+        .bind(caller.household_id())
+        .bind(caller.member_id())
+        .fetch(conn);
+    let mut array = document.array("members")?;
+    while let Some(raw) = rows.try_next().await? {
+        array.sql_row(&raw);
+    }
+    array.finish();
+    Ok(())
+}
 pub async fn all(
     conn: &mut PgConnection,
     household: Uuid,

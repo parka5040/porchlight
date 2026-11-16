@@ -36,7 +36,9 @@ fun PorchlightApp(services: AppServices, gate: @Composable (content: @Composable
                     startRoute = restoreRoute(restore, services::routeAvailable)
                     saveableRoute = RouteCodec.encode(startRoute!!)
                 }
-                settings = stored
+                // Restoration consumes the persisted route once. Subsequent route writes must not
+                // invalidate shell settings (navigation already owns the active back stack).
+                settings = stored.copy(currentRoute = AppRoute.Today)
                 loadError = false
             }
         } catch (e: CancellationException) { throw e }

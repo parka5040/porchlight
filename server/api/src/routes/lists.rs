@@ -3,7 +3,7 @@ use crate::{error::ApiError, extract::Caller, idempotency::IdemTx, state::AppSta
 use axum::{
     Json,
     extract::{Path, Query, State},
-    response::Response,
+    response::{IntoResponse, Response},
 };
 use futures_util::future::BoxFuture;
 use serde_json::Value;
@@ -11,30 +11,34 @@ use uuid::Uuid;
 
 pub use crate::list_types::*;
 
-#[utoipa::path(get,path="/v1/lists",params(ListsQuery),responses((status=200,description="Current resource",body=ListsPage),crate::openapi::UniversalProblems,crate::openapi::ForbiddenProblem,crate::openapi::NotFoundProblem,crate::routes::items::ReadValidationProblem))]
+#[utoipa::path(get,path="/v1/lists",params(ListsQuery),responses((status=200,description="Current resource",body=ListsPage),crate::openapi::RateLimitProblem,crate::openapi::UniversalProblems,crate::openapi::ForbiddenProblem,crate::openapi::NotFoundProblem,crate::routes::items::ReadValidationProblem))]
 /// Orphan cleanup is opt-in and restricted to list owners/admins. Without the
 /// retained parent ACL, responses are redacted delete-only descriptors, not content.
 pub async fn list(
     State(s): State<AppState>,
     c: Caller,
     Query(q): Query<ListsQuery>,
-) -> Result<Json<ListsPage>, ApiError> {
+) -> Result<Response, ApiError> {
+    let permit = s.admit_snapshot(&c).await?;
     let mut tx = crate::items::read_snapshot(&s).await?;
     let page = crate::lists::collection(&s, &mut tx, &c, q).await?;
+    let response = Json(page).into_response();
     tx.commit().await?;
-    Ok(Json(page))
+    Ok(crate::concurrency::with_body(response, permit))
 }
-#[utoipa::path(get,path="/v1/lists/{id}",params(("id"=Uuid,Path),ListQuery),responses((status=200,description="Current resource",body=ListResponse),crate::openapi::UniversalProblems,crate::openapi::ForbiddenProblem,crate::openapi::NotFoundProblem,crate::routes::items::ReadValidationProblem))]
+#[utoipa::path(get,path="/v1/lists/{id}",params(("id"=Uuid,Path),ListQuery),responses((status=200,description="Current resource",body=ListResponse),crate::openapi::RateLimitProblem,crate::openapi::UniversalProblems,crate::openapi::ForbiddenProblem,crate::openapi::NotFoundProblem,crate::routes::items::ReadValidationProblem))]
 pub async fn get(
     State(s): State<AppState>,
     c: Caller,
     Path(id): Path<Uuid>,
     Query(q): Query<ListQuery>,
-) -> Result<Json<ListResponse>, ApiError> {
+) -> Result<Response, ApiError> {
+    let permit = s.admit_snapshot(&c).await?;
     let mut tx = crate::items::read_snapshot(&s).await?;
     let r = crate::lists::response(&mut tx, &c, id, q.occurrence_id, false).await?;
+    let response = Json(r).into_response();
     tx.commit().await?;
-    Ok(Json(r))
+    Ok(crate::concurrency::with_body(response, permit))
 }
 
 #[utoipa::path(post,path="/v1/lists",request_body=CreateList,responses((status=201,description="Created resource",body=ListResponse),crate::openapi::UniversalProblems,crate::openapi::ForbiddenProblem,crate::openapi::NotFoundProblem,crate::openapi::MutationProblems,crate::openapi::RateLimitProblem))]

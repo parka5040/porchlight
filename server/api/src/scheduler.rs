@@ -1,4 +1,7 @@
 //! Persisted, reusable, single-runner jobs. Job effects and success state commit together.
+#[path = "deploy_health.rs"]
+mod deploy_health;
+
 use chrono::{DateTime, Duration, NaiveTime, Utc};
 use chrono_tz::Tz;
 use futures_util::future::BoxFuture;
@@ -141,7 +144,12 @@ impl Scheduler {
         .collect();
         let mut count = 0;
         for job in self.jobs.iter().filter(|job| due.contains(&job.name)) {
-            let mut tx = begin_as(&self.pool, &Actor::system()).await?;
+            let mut tx = porchlight_db::tx::begin(&self.pool).await?;
+            // Election ownership must outlive callbacks that await work on other connections.
+            sqlx::query("SET LOCAL idle_in_transaction_session_timeout = 0")
+                .execute(&mut *tx)
+                .await?;
+            porchlight_db::tx::attribute(&mut tx, &Actor::system()).await?;
             let due:Option<i32>=sqlx::query_scalar("select attempts from porchlight.scheduler_jobs where name=$1 and next_due_at<=$2 for update skip locked").bind(&job.name).bind(now).fetch_optional(&mut *tx).await?;
             let Some(attempts) = due else {
                 tx.rollback().await?;
@@ -222,6 +230,31 @@ impl Scheduler {
         ));
         self
     }
+    fn with_operational(mut self, state: &crate::state::AppState) -> Self {
+        let root = state.settings.data_dir.clone();
+        let pinned = state.pki.clone();
+        self.jobs.push(Job::new(
+            "server_certificate",
+            Schedule::Every(std::time::Duration::from_secs(86400)),
+            move |conn, now| {
+                let root = root.clone();
+                let pinned = pinned.clone();
+                Box::pin(async move { deploy_health::certificate(conn, now, &root, &pinned).await })
+            },
+        ));
+        let root = state.settings.data_dir.clone();
+        let backups = state.settings.backup_dir.clone();
+        self.jobs.push(Job::new(
+            "disk_headroom",
+            Schedule::Every(std::time::Duration::from_secs(3600)),
+            move |conn, now| {
+                let root = root.clone();
+                let backups = backups.clone();
+                Box::pin(async move { deploy_health::disk(conn, now, &root, &backups).await })
+            },
+        ));
+        self
+    }
     pub async fn from_state(
         state: &crate::state::AppState,
         clock: Arc<dyn Clock>,
@@ -229,7 +262,9 @@ impl Scheduler {
         Self::derivation_with_fetcher(state.pool.clone(), clock, state.calendar_fetcher.clone())
             .await
             .map(|scheduler| {
-                scheduler.with_blobs(state.settings.data_dir.clone(), state.disk_budget.clone())
+                scheduler
+                    .with_blobs(state.settings.data_dir.clone(), state.disk_budget.clone())
+                    .with_operational(state)
             })
     }
     pub async fn derivation(pool: PgPool, clock: Arc<dyn Clock>) -> anyhow::Result<Self> {

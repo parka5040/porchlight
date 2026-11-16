@@ -11,6 +11,7 @@ import java.nio.file.*
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.test.*
+import kotlin.time.Duration.Companion.milliseconds
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class AuditFinalClientBFix1DesktopTest {
@@ -41,8 +42,8 @@ class AuditFinalClientBFix1DesktopTest {
         val files = object : AttachmentStore by MemoryAttachmentStore() {
             override suspend fun clear() { clears++; if (fail) { fail = false; error("fail-once private cleanup") } }
         }
-        val cache = memoryCache(files) { f.now }
-        val data = HouseholdData(cache, GeneratedCall.trusted(f.controller), { f.now })
+        val cache = memoryCache(files) { f.now + testScheduler.currentTime.milliseconds }
+        val data = HouseholdData(cache, GeneratedCall.trusted(f.controller), { f.now + testScheduler.currentTime.milliseconds })
         val dir = directory(); val bus = FakeSessionBus()
         f.controller.restore()
         cache.install(emptySnapshot(1).copy(notifications = listOf(notificationFixture())))

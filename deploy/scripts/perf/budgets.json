@@ -1,0 +1,13 @@
+{
+  "read_p95_ms": 200,
+  "read_p99_ms": 500,
+  "write_p95_ms": 500,
+  "heavy_edit_p95_ms": 1500,
+  "sse_p95_ms": 500,
+  "targeted_wire_bytes_per_device_edit_p95": 100000,
+  "targeted_all_devices_current_p95_ms": 2000,
+  "api_memory_bytes_exclusive": 786432000,
+  "postgres_memory_bytes_exclusive": 1825361101,
+  "http_5xx_fraction_exclusive": 0.001,
+  "oom_allowed": 0
+}

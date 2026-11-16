@@ -889,3 +889,55 @@ pub async fn snapshot_contribution(
             .collect::<Result<_, _>>()?,
     })
 }
+
+/// Snapshot writer: SQL text for availability, existing typed Rust decoration for suggestions.
+pub(crate) async fn write_snapshot(
+    conn: &mut PgConnection,
+    c: &Caller,
+    document: &mut crate::json_document::Document,
+) -> Result<(), ApiError> {
+    use futures_util::TryStreamExt;
+    {
+        let mut rows = sqlx::query_scalar::<_, String>("select (jsonb_build_object('member_id',m.id,'version',coalesce(p.version,0),'windows',coalesce((select jsonb_agg(jsonb_build_object('weekday',w.weekday,'start',w.starts_local,'end',w.ends_local) order by w.weekday,w.starts_local,w.ends_local) from porchlight.availability_windows w where w.member_id=m.id),'[]'::jsonb),'conflicts','[]'::jsonb))::text from porchlight.household_members m left join porchlight.availability_profiles p on p.member_id=m.id where m.household_id=$1 and m.deleted_at is null and ($3 or m.id=$2) order by m.id")
+            .bind(c.household_id()).bind(c.member_id()).bind(c.sees_all()).fetch(&mut *conn);
+        let mut array = document.array("availability")?;
+        while let Some(raw) = rows.try_next().await? {
+            array.sql_row(&raw);
+        }
+        array.finish();
+    }
+    write_suggestions(conn, c, document, None).await
+}
+pub(crate) async fn write_suggestions(
+    conn: &mut PgConnection,
+    c: &Caller,
+    document: &mut crate::json_document::Document,
+    item_id: Option<Uuid>,
+) -> Result<(), ApiError> {
+    use futures_util::TryStreamExt;
+    let item_filter = if item_id.is_some() {
+        "and s.item_id=$4"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "select s.id,s.household_id,s.member_id,s.item_id,s.occurrence_id,s.proposed_start,s.proposed_end,s.status,s.run_id,s.version,s.created_at,o.version as occurrence_version from porchlight.schedule_suggestions s join porchlight.items i on i.id=s.item_id left join porchlight.item_occurrences o on o.id=s.occurrence_id and o.item_id=s.item_id where {} and ($3 or s.member_id=$2) {item_filter} order by s.id",
+        crate::routes::reads::VISIBLE
+    );
+    let query = sqlx::query_as::<_, SnapshotSuggestion>(sqlx::AssertSqlSafe(sql.as_str()))
+        .bind(c.household_id())
+        .bind(c.member_id())
+        .bind(c.sees_all());
+    let query = if let Some(id) = item_id {
+        query.bind(id)
+    } else {
+        query
+    };
+    let mut rows = query.fetch(conn);
+    let mut array = document.array("suggestions")?;
+    while let Some(row) = rows.try_next().await? {
+        array.row(&suggestion_response(row.row, row.occurrence_version, None))?;
+    }
+    array.finish();
+    Ok(())
+}

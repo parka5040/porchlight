@@ -18,6 +18,8 @@ mod listeners;
 mod m6_revocation_cancellation;
 mod members_matrix;
 mod pinning;
+mod prerollout_deploy_hard;
+mod prerollout_srv_fix1;
 mod revocation;
 mod revocation_edges;
 mod trust_edges;

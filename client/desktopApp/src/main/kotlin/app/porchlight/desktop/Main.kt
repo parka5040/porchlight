@@ -22,24 +22,31 @@ fun main(args: Array<String>) {
         kotlin.system.exitProcess(app.porchlight.shared.backups.backupPullSmoke(Path.of(launch.smokeDevice), launch.smokeOrigin!!))
     }
     val directory = Path.of(System.getenv("XDG_DATA_HOME") ?: (System.getProperty("user.home") + "/.local/share"), "porchlight")
-    val instance = DesktopInstance.acquire(directory, afterUpdate = "--after-update" in args) ?: return
+    val instance = DesktopInstance.acquire(directory, afterUpdate = "--after-update" in args,
+        predecessorPid = args.firstOrNull { it.startsWith("--after-update-pid=") }?.substringAfter('=')?.toLong()) ?: return
     application {
     var visible by remember { mutableStateOf(!launch.minimized) }
     var focus by remember { mutableIntStateOf(0) }
     val services = remember { DesktopAppServices() }
+    val controller = remember { services.trust.controller }
+    val shutdown = remember {
+        app.porchlight.shared.live.DesktopShutdown(
+            cleanup = { services.close(); controller.close() }, releaseInstance = instance::close,
+            finish = { EventQueue.invokeLater { exitApplication() }; kotlin.system.exitProcess(0) },
+            hardStop = { Runtime.getRuntime().halt(0) })
+    }
     LaunchedEffect(services) {
         val actions = desktopTrayActions(services.backups.state.value,
-            { EventQueue.invokeLater { visible = true; focus++ } }, { EventQueue.invokeLater { exitApplication() } })
+            { EventQueue.invokeLater { visible = true; focus++ } }, shutdown::request)
         services.startLive(actions.open.invoke, actions.quit.invoke)
         launch { services.trayAvailable.collect { if (it == false) visible = true } }
         while (isActive) { if (instance.awaitFocusRequest()) { visible = true; focus++ } else break }
     }
-    val controller = remember { services.trust.controller }
-    DisposableEffect(services, controller) { onDispose { controller.close(); services.close(); instance.close() } }
-    Window(visible = visible, onCloseRequest = { if (app.porchlight.shared.live.desktopCloseHides(services.trayAvailable.value == true)) visible = false else exitApplication() }, title = "Porchlight", icon = PorchlightWindowIcon()) {
+    DisposableEffect(shutdown) { onDispose { shutdown.request() } }
+    Window(visible = visible, onCloseRequest = { if (app.porchlight.shared.live.desktopCloseHides(services.trayAvailable.value == true)) visible = false else shutdown.request() }, title = "Porchlight", icon = PorchlightWindowIcon()) {
         DisposableEffect(window, controller) {
             val listener = object : java.awt.event.WindowFocusListener {
-                override fun windowGainedFocus(event: java.awt.event.WindowEvent) { controller.onForeground(); services.updates.onResume() }
+                override fun windowGainedFocus(event: java.awt.event.WindowEvent) { controller.onForeground(); services.updates.onResume(); services.onForeground() }
                 override fun windowLostFocus(event: java.awt.event.WindowEvent) = Unit
             }
             window.addWindowFocusListener(listener)

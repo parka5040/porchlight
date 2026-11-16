@@ -6,6 +6,7 @@ import app.porchlight.shared.transport.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.nio.file.*
@@ -39,12 +40,47 @@ class PassivePull(private val root: Path, private val source: BackupSource, priv
         retryAt = now().epochSeconds + seconds
     }
     private fun syncDirectory(dir: Path) { FileChannel.open(dir, StandardOpenOption.READ).use { it.force(true) } }
+    private val scheduleWake = kotlinx.coroutines.channels.Channel<Unit>(kotlinx.coroutines.channels.Channel.CONFLATED)
+    private val scheduleRevision = java.util.concurrent.atomic.AtomicLong()
+    fun onForeground() { scheduleWake.trySend(Unit) }
     suspend fun tick() = pullInternal(false)
-    override suspend fun pull() = pullInternal(true)
-    fun start(scope: CoroutineScope) = scope.launch {
-        while (isActive) {
-            try { tick() } catch (_: CancellationException) { currentCoroutineContext().ensureActive() }
-            delay(60_000)
+    override suspend fun pull() { try { pullInternal(true) } finally { scheduleRevision.incrementAndGet(); scheduleWake.trySend(Unit) } }
+    /** Cached role only admits scheduling. Every actual attempt still freshly authorizes over mTLS. */
+    fun start(scope: CoroutineScope, households: kotlinx.coroutines.flow.Flow<String?> = kotlinx.coroutines.flow.flowOf(null),
+        resumes: kotlinx.coroutines.flow.Flow<Long> = kotlinx.coroutines.flow.flowOf(0L)) = scope.launch {
+        var selectedHousehold: String? = null
+        kotlinx.coroutines.flow.combine(households, resumes) { household, _ -> household }.collectLatest { household ->
+            if (household == null) { resetView(); selectedHousehold = null; return@collectLatest }
+            if (selectedHousehold != null && selectedHousehold != household) resetView()
+            selectedHousehold = household
+            mutex.withLock { mutable.value = mutable.value.copy(allowed = true) }
+            var cachedDeadline: Long? = null
+            var revision = scheduleRevision.get()
+            while (isActive) {
+                val currentRevision = scheduleRevision.get()
+                if (revision != currentRevision) { cachedDeadline = null; revision = currentRevision }
+                val deadline = cachedDeadline ?: mutex.withLock {
+                    if (retryAt > 0) retryAt else withContext(Dispatchers.IO) {
+                        val dir = root.resolve(hash(household.toByteArray()))
+                        val due = dir.resolve(".next-pull")
+                        try {
+                            safe(root); safe(dir); safe(due)
+                            if (Files.exists(due, LinkOption.NOFOLLOW_LINKS))
+                                Files.newInputStream(due, LinkOption.NOFOLLOW_LINKS).use { it.readNBytes(32).toString(Charsets.UTF_8).toLongOrNull() } ?: 0L
+                            else 0L
+                        } catch (_: Exception) { 0L } // the due attempt reports storage failure with backoff
+                    }
+                }
+                cachedDeadline = deadline
+                val wait = (deadline - now().epochSeconds).coerceAtLeast(0).coerceAtMost(300) * 1000
+                ownershipStep("schedule.wait.$wait")
+                // JVM timers can exclude suspend. Eligible admins recheck only cached wall time at least every
+                // five minutes, without touching disk or network until due; members never enter this loop.
+                if (wait > 0) { withTimeoutOrNull(wait) { scheduleWake.receive() }; continue }
+                try { tick() } catch (_: CancellationException) { currentCoroutineContext().ensureActive() }
+                cachedDeadline = null
+                if (mutex.withLock { !mutable.value.allowed && retryAt == 0L }) break
+            }
         }
     }
     private fun safe(path: Path) { require(!Files.isSymbolicLink(path)) { "Unsafe backup path" } }
@@ -100,6 +136,7 @@ class PassivePull(private val root: Path, private val source: BackupSource, priv
                     Files.setPosixFilePermissions(lock, PosixFilePermissions.fromString("rw-------"))
                     val held = try { channel.tryLock() } catch (_: java.nio.channels.OverlappingFileLockException) { null }
                     if (held == null) {
+                        failed()
                         if (force) mutable.value = mutable.value.copy(error = "Another desktop process is pulling backups")
                         return@withContext
                     }

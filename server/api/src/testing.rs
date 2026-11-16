@@ -60,6 +60,7 @@ pub struct TestOptions {
     pub proxy_timeout: Duration,
     pub tls_timeout: Duration,
     pub header_timeout: Duration,
+    pub write_stall: Duration,
     pub max_connections: usize,
     pub limits: crate::ratelimit::RateLimits,
     pub rate_clock: Arc<dyn Fn() -> std::time::Instant + Send + Sync>,
@@ -81,6 +82,7 @@ impl Default for TestOptions {
             proxy_timeout: Duration::from_secs(1),
             tls_timeout: Duration::from_secs(2),
             header_timeout: Duration::from_secs(30),
+            write_stall: Duration::from_secs(60),
             max_connections: 512,
             limits: crate::ratelimit::RateLimits::generous(),
             rate_clock: Arc::new(std::time::Instant::now),
@@ -132,6 +134,7 @@ impl TestServer {
         let data = DataDir::new(&dir.0);
         let pool = PgPoolOptions::new()
             .max_connections(opts.db_pool_size)
+            .acquire_timeout(crate::db::POOL_ACQUIRE_TIMEOUT)
             .connect_with(
                 connect_options_as(pool, Role::App, Some("porchlight-api-test"))
                     .unwrap()
@@ -212,6 +215,7 @@ impl TestServer {
             proxy_timeout: opts.proxy_timeout,
             tls_timeout: opts.tls_timeout,
             header_timeout: opts.header_timeout,
+            write_stall: opts.write_stall,
             max_connections: opts.max_connections,
         };
         let (shutdown, rx) = oneshot::channel();

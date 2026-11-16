@@ -6,11 +6,27 @@ use sqlx::{
 };
 
 /// Server-side limits for app connections: a held lock or a runaway query fails instead of hanging.
-pub const APP_SETTINGS: &[(&str, &str)] = &[("lock_timeout", "5s"), ("statement_timeout", "30s")];
+pub const APP_SETTINGS: &[(&str, &str)] = &[
+    ("lock_timeout", "5s"),
+    ("statement_timeout", "30s"),
+    ("idle_in_transaction_session_timeout", "60s"),
+];
+pub const POOL_ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+/// Export table spooling is bounded by the export's 15-minute snapshot deadline.
+pub const EXPORT_IDLE_TIMEOUT: &str = "15min";
 /// The migrator waits at most 30 s for a lock (including sqlx's migration lock) instead of hanging.
 pub const MIGRATOR_SETTINGS: &[(&str, &str)] = &[("lock_timeout", "30s")];
 
 pub fn connect_options(url: &str, settings: &[(&str, &str)]) -> anyhow::Result<PgConnectOptions> {
+    let variable = if settings == MIGRATOR_SETTINGS {
+        "PORCHLIGHT_MIGRATOR_URL_FILE"
+    } else {
+        "PORCHLIGHT_DATABASE_URL_FILE"
+    };
+    let file_value = std::env::var_os(variable)
+        .map(|path| crate::config::credential_file(std::path::Path::new(&path)))
+        .transpose()?;
+    let url = file_value.as_deref().map(String::as_str).unwrap_or(url);
     let options: PgConnectOptions = url
         .parse()
         .map_err(|_| anyhow::anyhow!("invalid database URL"))?;

@@ -12,20 +12,28 @@ class NotificationRepository(private val api: NotificationsApi, private val cach
     val notifications = cache.view.map { it.notifications }.distinctUntilChanged()
     val prefs = cache.view.map { it.notificationPrefs }.distinctUntilChanged()
     internal var afterWrite: suspend () -> Unit = {}
-    suspend fun refresh(): List<Notification> = cache.inSession { fence ->
+    internal var scopedAfterWrite: (suspend (SyncResource) -> Boolean)? = null
+    private suspend fun follow(resource: SyncResource) { if (scopedAfterWrite?.invoke(resource) != true) afterWrite() }
+    suspend fun refresh(): List<Notification> = cache.orderedRead { fence ->
         allPages { cursor -> api.notificationsList(version, unread = false, cursor = cursor, limit = 200).let { it.items to it.nextCursor } }
             .also { cache.replaceNotifications(fence, it) }
     }
-    suspend fun refreshPrefs(): PrefsRead = cache.inSession { fence -> api.notificationsPrefsGet(version).also { cache.putNotificationPrefs(fence, it) } }
+    internal suspend fun refetchIds(ids: Set<String>): Unit = cache.orderedRead { fence ->
+        for (part in ids.sorted().chunked(100)) {
+            val rows = api.notificationsList(version, ids = part.joinToString(",")).items
+            cache.replaceNotificationIds(fence, part.toSet(), rows)
+        }
+    }
+    suspend fun refreshPrefs(): PrefsRead = cache.orderedRead { fence -> api.notificationsPrefsGet(version).also { cache.putNotificationPrefs(fence, it) } }
     suspend fun read(id: String, key: String = writes.newKey()): WriteResult<Notification> = cache.inSession { fence ->
-        writes.execute(key) { api.notificationsRead(id, version, it, buildJsonObject {}) }.withRefresh { afterWrite() }
+        writes.execute(key) { api.notificationsRead(id, version, it, buildJsonObject {}) }.withRefresh { follow(SyncResource.Notification(id)) }
     }
     suspend fun readAll(key: String = writes.newKey()): WriteResult<ReadAllResult> = cache.inSession { fence ->
-        writes.execute(key) { api.notificationsReadAll(version, it, buildJsonObject {}) }.withRefresh { afterWrite() }
+        writes.execute(key) { api.notificationsReadAll(version, it, buildJsonObject {}) }.withRefresh { follow(SyncResource.Inbox) }
     }
     suspend fun putPrefs(expectedVersion: Int, prefs: NotificationPrefs, key: String = writes.newKey()): WriteResult<PrefsRead> = cache.inSession { fence ->
         writes.execute(key) { api.notificationsPrefsPut(expectedVersion.toString(), version, it, prefs) }
-            .also { if (it is WriteResult.Success) cache.putNotificationPrefs(fence, it.value) }.withRefresh { afterWrite() }
+            .also { if (it is WriteResult.Success) cache.putNotificationPrefs(fence, it.value) }.withRefresh { follow(SyncResource.NotificationPrefs) }
     }
 }
 

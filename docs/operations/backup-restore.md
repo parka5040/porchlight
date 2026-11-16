@@ -19,7 +19,12 @@ mount are hashed in bounded chunks, then streamed directly into tar → age. The
 always staged **on disk**, below `PORCHLIGHT_DUMP_TMPDIR=/dumpwork`, bound from the private 0700
 `<stack-root>/backup-work/` (`var/backup-work/` in dev). Install/upgrade/dev helpers provision this bind as the
 backup UID; manual Compose users must do likewise. Allow disk space for one complete dump; exclude this private
-work directory from cold copies and snapshots. No plaintext tar file is written. Only encrypted `.partial-*` output
+work directory from cold copies and snapshots. No plaintext tar file is written. After success the producer
+persists `.working-space-need`: the measured dump-plus-encrypted-output disk demand high-water mark. The API's
+hourly admin headroom check combines it with 15%-free block/inode thresholds; before first success only percentage
+thresholds are available. Production uses a 0600 backup password file (native `PORCHLIGHT_BACKUP_PASSWORD_FILE`),
+not a Docker environment value. Credential binds are regenerated from the encrypted bundle's private `.env` on
+restore; old images still accept environment values for rollback compatibility. See [deployment hardening](deploy-hardening.md). Only encrypted `.partial-*` output
 goes into `backups/`, then is fsynced and renamed atomically.
 SIGTERM/SIGINT stops child process groups, removes both staging trees/partial output and marks an unfinished run
 failed. An already committed success is never downgraded by pruning failure or interruption. SIGKILL cannot run
@@ -77,7 +82,11 @@ account belongs to. Restore refuses an incompatible override or inaccessible/non
 not broaden 0700 data/backup/work directories or the 0600 environment/secrets. Cross-host restores therefore do
 not retain an unusable source UID. A restored cluster may receive deployment-specific port/network overrides
 through the operator's environment: `PG_PORT`, `LAN_PORT`, `ENROLL_PORT`, `LAN_BIND`, `ENROLL_HOST`,
-`ENROLL_CIDRS`, `PORCHLIGHT_ENDPOINTS`, `BACKEND_SUBNET`, `INGRESS_SUBNET`. Explicit values are validated before
+`ENROLL_CIDRS`, `PORCHLIGHT_ENDPOINTS`, `BACKEND_SUBNET`, `INGRESS_SUBNET`. The restore flag `--lan-bind <IPv4>`
+wins over both the caller's `LAN_BIND` and the bundled binding; it is validated before any Docker contact. Legacy
+bundles with a missing/empty binding require an explicit flag or target environment binding before replacement,
+even with `--no-start`. Wildcard exposure requires a deliberate `--lan-bind 0.0.0.0` (or an existing explicit bundled
+binding); an ambient wildcard environment default is not accepted. Explicit values are validated before
 replacement and persisted before the first target Compose call, including `--no-start`. Choose nonoverlapping
 networks and unused ports; the installer cannot detect other hosts' allocations. Secrets remain from the bundle. See [upgrade](upgrade.md) for rollback and
 the per-stack installer lock, also held throughout restore.

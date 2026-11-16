@@ -1,0 +1,6 @@
+CREATE INDEX cache_notification_item ON CacheNotification(item_id);
+CREATE INDEX cache_planning_item ON CachePlanning(item_id);
+CREATE INDEX cache_visibility_generation ON CacheVisibility(generation);
+CREATE INDEX cache_occurrence_expiry ON CacheOccurrence(expires_at);
+CREATE INDEX cache_agenda_expiry ON CacheAgenda(expires_at);
+CREATE INDEX cache_reminder_expiry ON CacheReminder(expires_at);

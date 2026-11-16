@@ -25,6 +25,18 @@ fn db_error(_: sqlx::Error) -> std::io::Error {
     interrupted()
 }
 
+async fn snapshot_timeout(conn: &mut sqlx::PgConnection) -> sqlx::Result<()> {
+    sqlx::query("select set_config('idle_in_transaction_session_timeout', $1, true)")
+        .bind(crate::db::EXPORT_IDLE_TIMEOUT)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "prerollout_srv_admit.rs"]
+mod prerollout_srv_admit;
+
 /// Also runs when preparation fails, the client disconnects, or the task unwinds.
 struct LeaseGuard {
     pool: PgPool,
@@ -188,6 +200,7 @@ fn produce_with(
         &send,
         sqlx::query("set transaction isolation level repeatable read read only").execute(&mut *tx),
     )?;
+    wait(&runtime, &send, snapshot_timeout(&mut tx))?;
     #[cfg(not(test))]
     let backend = 0;
     #[cfg(test)]

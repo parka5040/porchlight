@@ -6,6 +6,8 @@ import androidx.compose.runtime.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -30,16 +32,16 @@ fun inboxGroups(rows: List<Notification>, at: Instant, tzid: String): List<Inbox
 }
 /** MobileInbox structure, safe server templates rather than interpolating item titles. Desktop DESIGN-PENDING. */
 @Composable fun InboxContent(groups: List<InboxGroup>, read: (String) -> Unit, readAll: () -> Unit,
-    open: (Notification) -> Unit, preferences: () -> Unit) {
-    LazyColumn(Modifier.fillMaxSize().padding(PorchlightTokens.spaceMd.dp).testTag("inbox"), verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceInset.dp)) {
-        item { FlowRow(horizontalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceSm.dp)) {
+    open: (Notification) -> Unit, preferences: () -> Unit, state: LazyListState = rememberLazyListState()) {
+    LazyColumn(Modifier.fillMaxSize().padding(PorchlightTokens.spaceMd.dp).testTag("inbox"), state = state, verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceInset.dp)) {
+        item(key = "actions", contentType = "actions") { FlowRow(horizontalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceSm.dp)) {
             ShellButton("Mark all read", onClick = readAll)
             ShellButton("Notification preferences", onClick = preferences)
         } }
-        if (groups.isEmpty()) item { EmptyState("All caught up", "No household notifications yet.") }
+        if (groups.isEmpty()) item(key = "empty", contentType = "empty") { EmptyState("All caught up", "No household notifications yet.") }
         groups.forEach { group ->
-            item(key = "group-${group.title}") { Text(group.title, style = MaterialTheme.typography.titleMedium) }
-            items(group.rows, key = { it.id }) { row -> PorchlightCard(Modifier.fillMaxWidth().testTag("notification-${row.id}")) {
+            item(key = "group-${group.title}", contentType = "heading") { Text(group.title, style = MaterialTheme.typography.titleMedium) }
+            items(group.rows, key = { it.id }, contentType = { "notification" }) { row -> PorchlightCard(Modifier.fillMaxWidth().testTag("notification-${row.id}")) {
                 Text(row.summary.title, style = MaterialTheme.typography.titleMedium)
                 Text(row.summary.body)
                 Text("${notificationTopicLabel(row.summary.category)}" + if (row.readAt == null) " · Unread" else " · Read")
@@ -61,9 +63,13 @@ fun inboxGroups(rows: List<Notification>, at: Instant, tzid: String): List<Inbox
     val member = view.members.firstOrNull { it.id == view.settings?.memberId }
     var at by remember { mutableStateOf(services.clock.now()) }
     LaunchedEffect(services) { while (isActive) { at = services.clock.now(); delay(60_000) } }
+    val tzid = member?.tzid ?: "UTC"
+    val zone = remember(tzid) { runCatching { TimeZone.of(tzid) }.getOrDefault(TimeZone.UTC) }
+    val day = at.toLocalDateTime(zone).date
+    val groups = remember(view.notifications, day, tzid) { inboxGroups(view.notifications, at, tzid) }
     Column(Modifier.fillMaxSize()) {
         DataStatus(data); WriteStatus(writer)
-        InboxContent(inboxGroups(view.notifications, at, member?.tzid ?: "UTC"),
+        InboxContent(groups,
             { id -> scope.launch { writer.submit { data.notifications.read(id, it).feedback() } } },
             { scope.launch { writer.submit { data.notifications.readAll(it).feedback() } } },
             { row -> row.itemId?.let { navigate(AppRoute.Item(it, row.occurrenceId)) } },

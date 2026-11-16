@@ -155,6 +155,7 @@ class NavigationArgsRegressionTest(private val width: Int, private val platform:
         waitForIdle()
         assertTrue(nav.currentDestination!!.hasRoute<AppRoute.Lists>(), "Attached list navigation must not revive an old Lists detail")
         assertEquals(AppRoute.Lists("attached", "occ-0"), nav.currentBackStackEntry!!.toRoute<AppRoute.Lists>())
+        waitUntil(timeoutMillis = 10_000) { fixture.cache.view.value.lists.any { it.id == "attached" && it.occurrenceId == "occ-0" } }
         assertTrue(fixture.cache.view.value.lists.any { it.id == "attached" && it.occurrenceId == "occ-0" },
             "Attached occurrence must be loaded: ${fixture.cache.view.value.lists.map { it.id to it.occurrenceId }} requests=${fixture.listRequests}")
         onNodeWithText("Attached list", substring = false).assertExists()
@@ -215,6 +216,8 @@ class NavigationArgsRegressionTest(private val width: Int, private val platform:
         // eviction rejection must not win the race against the successful delete callback.
         val refreshFinished = kotlinx.coroutines.CompletableDeferred<Unit>()
         fixture.data.items.afterWrite = { refreshFinished.await() }
+        // Item detail composes after its read lands off the Compose dispatcher.
+        waitUntil(timeoutMillis = 5_000) { onAllNodesWithContentDescription("Delete Fixture 0").fetchSemanticsNodes().isNotEmpty() }
         onNodeWithContentDescription("Delete Fixture 0").performScrollTo().performClick()
         onNodeWithContentDescription("Confirm delete").performClick()
         waitUntil { "card-0" in fixture.cache.view.value.evictedItemIds }
@@ -307,7 +310,7 @@ class NavigationArgsRegressionTest(private val width: Int, private val platform:
         onNodeWithText("This item is no longer available.").assertIsDisplayed()
     }
     @Test fun mdHiddenCollectionScrollSurvivesTabSwitchAndBack() = screen(AppRoute.Board()) { _, nav, _ ->
-        onNodeWithContentDescription("Open Fixture 8").performScrollTo()
+        onNodeWithTag("board-columns").performScrollToNode(hasContentDescription("Open Fixture 8"))
         val before = onNodeWithTag("board-columns").fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
         assertTrue(before > 0, "Must exercise real collection scroll")
         val boardId = nav.currentBackStackEntry!!.id

@@ -5,6 +5,7 @@ import kotlinx.coroutines.*
 import app.porchlight.shared.transport.dto.DeviceList
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -28,6 +29,7 @@ sealed interface TrustState {
     data object Ready : TrustState
     data object ReEnroll : TrustState
     data class LocalTrustLost(val android: Boolean) : TrustState
+    data object StorageRecoveryRequired : TrustState
     data class UpgradeRequired(val minVersion: String) : TrustState
     data object WalletLocked : TrustState
     /** Desktop: the owner-only folder holding this device's key record/secret is unsafe (symlink, another user's,
@@ -80,6 +82,8 @@ class RenewalAttempt(val targetBinding: String, val keyAlias: String, val csr: S
 class LocalTrustUnavailable : Exception("Local trust cannot be recovered; re-enroll this device")
 /** This device's key secret is in Secret Service, which is locked or unreachable. Never answered by another store. */
 open class WalletUnavailable(cause: Throwable? = null) : Exception("Unlock your Secret Service wallet, then retry. This device's key stays in Secret Service; there is no fallback store.", cause)
+/** An answered/failed prompt is final until the user explicitly retries. */
+internal class WalletUnlockDismissed(cause: Throwable? = null) : WalletUnavailable(cause)
 /** R85: while enrolling a device that has no key yet, Secret Service was present but unusable (failed to start, no
  * default collection, unlock dismissed or timed out). The gate may offer the owner-only file as an explicit choice. */
 class SecretServiceUnusableForEnrollment(cause: Throwable?) : WalletUnavailable(cause)
@@ -153,6 +157,8 @@ class TrustController(
     private val actionScope = CoroutineScope(SupervisorJob() + dispatcher)
     private val closed = MutableStateFlow(false)
     private val restored = MutableStateFlow(false)
+    private var walletRetryJob: Job? = null
+    private var walletRetryMillis = 1_000L
     private val refreshStarted = MutableStateFlow(false)
     private val renewalWake = Channel<Unit>(Channel.CONFLATED)
     private val mutableBusy = MutableStateFlow(false)
@@ -177,7 +183,9 @@ class TrustController(
             catch (e: app.porchlight.shared.files.PrivateDirectoryUnavailable) { mutableActionError.value = keyStorageProblem(e.path, e.reason) }
             catch (e: EnrollmentSaveFailure) { mutableActionError.value = e.message }
             catch (e: ApiProblem) { mutableActionError.value = e.maintenanceMessage ?: if (e.type == "idempotency-key-reused") "This enrollment was already processed. Enter the original password, or choose Start over." else if (e.type == "upgrade-required") "This app version is too old. Update Porchlight, then retry the enrollment with the same password." else "Request failed: ${e.type}. Try again or ask a household admin." }
-            catch (_: Exception) { mutableActionError.value = "Unable to complete this action. Check your connection or wallet and retry." }
+            catch (_: Exception) { mutableActionError.value = if (state.value == TrustState.StorageRecoveryRequired)
+                "Local cleanup still failed. Check free space and file permissions, then try again or clear local cache."
+                else "Unable to complete this action. Check your connection or wallet and retry." }
             finally { mutableBusy.value = false }
         }
     }
@@ -304,19 +312,39 @@ class TrustController(
      * (logout, re-enrollment/revocation, a different device or member). Restore, close, PIN relock, wallet/upgrade
      * gates and session expiry followed by a same-identity login keep it, so the persisted read cache survives. */
     val sessionEpoch: StateFlow<Long> = epoch
+    private val mutableItemSync = MutableStateFlow(false)
+    /** Server support, scoped to the current identity; absence always restores the legacy protocol. */
+    val itemSync: Boolean get() = mutableItemSync.value
+    val itemSyncSupport: StateFlow<Boolean> = mutableItemSync.asStateFlow()
+    private fun readCapabilities(me: JsonObject) {
+        mutableItemSync.value = (me["capabilities"] as? JsonArray)?.any {
+            (it as? JsonPrimitive)?.contentOrNull == "item-sync-v1"
+        } == true
+    }
     // Cache commits and epoch advances share a linearization point. Never held across network calls.
     internal val sessionCommitMutex = Mutex()
     /** The production root installs these hooks BEFORE restore. Standalone controllers own no cache.
      * Ending hides/clears immediately; starting must reconcile durable ownership before opening any gate. */
     internal var identityEnded: (suspend () -> Unit)? = {}
     internal var identityStarting: suspend (DeviceTrust) -> Unit = {}
+    // Disposable-file recovery must remain available when a failed startup purge gates the shell.
+    internal var recoverLocalCache: (suspend () -> Unit)? = null
+    internal var retryCacheCleanup: (suspend () -> Unit)? = null
+    suspend fun retryStorageRecovery(clearCache: Boolean = false) {
+        try {
+            if (clearCache) recoverLocalCache?.invoke() else retryCacheCleanup?.invoke()
+            restore()
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { trustState = TrustState.StorageRecoveryRequired; throw e }
+    }
+    private class StorageAdmissionFailure(cause: Exception) : Exception("Household storage admission failed", cause)
     private var preparingIdentity = false
     private suspend fun prepareIdentity(value: DeviceTrust) {
         sessionCommitMutex.withLock { preparingIdentity = true; mutableLiveAdmission.value = null }
         var admitted = false
         try { identityStarting(value); admitted = true }
         catch (e: CancellationException) { throw e }
-        catch (e: Exception) { trustState = TrustState.LocalTrustLost(platform == "android"); throw e }
+        catch (e: Exception) { trustState = TrustState.StorageRecoveryRequired; throw StorageAdmissionFailure(e) }
         finally { withContext(NonCancellable) { sessionCommitMutex.withLock {
             preparingIdentity = false
             if (admitted) publishLiveAdmission()
@@ -336,6 +364,7 @@ class TrustController(
                 trustState = terminal
                 restoringIdentity = false
             }
+            mutableItemSync.value = false
             epoch.update { it + 1 }
         }
     }
@@ -389,12 +418,14 @@ class TrustController(
     internal val sessionRevision: StateFlow<Long> = revision
     private var trust: DeviceTrust? = null
         set(value) {
-            if (field?.session != value?.session) {
+            val replaced = field?.session != value?.session
+            field = value
+            if (replaced) {
+                // Revision collectors must see the replacement token, including undispatched binding restarts.
                 revision.update { it + 1 }
                 clearAccountAction()
                 renewalWake.trySend(Unit)
             }
-            field = value
         }
     private var pendingLogout: DeviceTrust? = null
     private var api: ApiTransport? = null
@@ -413,7 +444,7 @@ class TrustController(
             if (replaced) signedIn()
         } catch (e: Exception) {
             // Includes ambiguous/cancelled saves: restore reloads the durable record and retries admission.
-            if (replaced) trustState = TrustState.LocalTrustLost(platform == "android")
+            if (replaced && e !is StorageAdmissionFailure) trustState = TrustState.LocalTrustLost(platform == "android")
             throw e
         }
     }
@@ -441,8 +472,10 @@ class TrustController(
         pinUnlocked = !pinRequired
         if (trustState == TrustState.Ready || trustState == TrustState.PinRequired) signedIn()
     }
-    suspend fun restore() = mutex.withLock {
+    suspend fun restore(): Unit = mutex.withLock {
         check(!closed.value) { "Trust controller closed" }
+        walletRetryJob?.let { if (it != currentCoroutineContext()[Job]) it.cancel() }
+        walletRetryJob = null
         val previous = trust
         if (!pinRequired) trustState = TrustState.Loading
         restoringIdentity = true
@@ -480,8 +513,19 @@ class TrustController(
             loadedIdentity = true
         } catch (e: CancellationException) {
             throw e
-        } catch (_: WalletUnavailable) {
+        } catch (e: WalletUnavailable) {
             trustState = if (platform == "desktop") TrustState.WalletLocked else TrustState.LocalTrustLost(true)
+            if (platform == "desktop" && e !is WalletUnlockDismissed) {
+                val wait = walletRetryMillis
+                walletRetryMillis = (wait * 2).coerceAtMost(60_000L)
+                walletRetryJob = actionScope.launch {
+                    delay(wait)
+                    if (!closed.value && state.value == TrustState.WalletLocked) restore()
+                }
+            }
+        } catch (_: StorageAdmissionFailure) {
+            // The credentials loaded successfully. Keep them and gate only household storage.
+            trustState = TrustState.StorageRecoveryRequired
         } catch (e: app.porchlight.shared.files.PrivateDirectoryUnavailable) {
             // Not lost trust: the key is intact behind a folder the user can fix. Never offer to clear it.
             trustState = TrustState.KeyStorageUnavailable(e.path, e.reason)
@@ -493,13 +537,14 @@ class TrustController(
         } finally {
             sessionCommitMutex.withLock {
                 restoringIdentity = !loadedIdentity
-                if (loadedIdentity) publishLiveAdmission()
+                if (loadedIdentity) { walletRetryMillis = 1_000L; publishLiveAdmission() }
             }
         }
     }
     /** Closing is not an identity change: the persisted cache stays for the next process. */
     fun close() {
         if (!closed.compareAndSet(false, true)) return
+        walletRetryJob?.cancel()
         // Serialize disposal with connect; a factory completing after close also sees closed above.
         actionScope.launch {
             mutex.withLock { api?.close(); api = null }
@@ -648,7 +693,7 @@ class TrustController(
             // An unknown server outcome or unsaved success keeps the attempt for exact replay.
             // Only an attempt created by this call can be discarded on a provably-unsent failure.
             if (created && (e is ConnectFailure || e is RequestNotSent || (e is DeviceCertificateRevoked && e.requestNotSent))) clearAttemptSafely(target)
-            if (committed) trustState = TrustState.LocalTrustLost(platform == "android")
+            if (committed && e !is StorageAdmissionFailure) trustState = TrustState.LocalTrustLost(platform == "android")
             throw e
         } finally {
             enrollment.close()
@@ -674,6 +719,7 @@ class TrustController(
     }
     suspend fun ownDevices(): List<OwnDevice> = mutex.withLock {
         val me = call("GET", "/v1/me")
+        readCapabilities(me)
         val member = me.getValue("member_id").jsonPrimitive.content
         val response = call("GET", "/v1/devices")
         val devices = try { WireJson.decodeFromJsonElement<DeviceList>(response).devices }
@@ -720,6 +766,15 @@ class TrustController(
         identityCleanupCompleted(ending)
         sessionCommitMutex.withLock { publishLiveAdmission() }
     }
+    /** A cold PIN-locked network worker needs protocol discovery, not UI admission or a full cache read. */
+    internal suspend fun refreshSyncCapabilities() {
+        val snapshot = refreshSnapshot() ?: return
+        val me = refreshCall(snapshot, "GET", "/v1/me")
+        mutex.withLock {
+            if (!isCurrent(snapshot)) throw CancellationException("Household session changed")
+            readCapabilities(me)
+        }
+    }
     /** Public clients use the 30-day threshold; server renewal-too-early overrides that heuristic. */
     suspend fun refreshEndpointsAndRenew() { refreshEndpointsAndRenewInternal(false) }
     internal suspend fun refreshEndpointsAndRenew(forceRenewal: Boolean) { refreshEndpointsAndRenewInternal(forceRenewal) }
@@ -753,12 +808,14 @@ class TrustController(
     private suspend fun refreshEndpointsAndRenewInternal(forceRenewal: Boolean): Boolean = refreshMutex.withLock refresh@ {
         val initial = refreshSnapshot() ?: return@refresh true
         val me = refreshCall(initial, "GET", "/v1/me")
+        mutex.withLock { if (isCurrent(initial)) readCapabilities(me) }
         val endpoints = orderedEndpoints(refreshCall(initial, "GET", "/v1/endpoints").getValue("endpoints").jsonArray.map { it.jsonPrimitive.content })
         var snapshot = mutex.withLock commitEndpoints@ {
             if (!isCurrent(initial)) return@commitEndpoints null
             store(initial.value.withIdentity(me.getValue("member_id").jsonPrimitive.content, endpoints)
                 .withSession(initial.value.session, me["session_expires_at"]?.jsonPrimitive?.contentOrNull ?: initial.value.sessionExpiresAt))
             connectIfChanged(checkNotNull(trust))
+            readCapabilities(me)
             RefreshSnapshot(checkNotNull(trust), checkNotNull(api), epoch.value)
         } ?: return@refresh true
         if (snapshot.value.pendingRenewal != null || forceRenewal || needsRenewal(now(), Instant.parse(snapshot.value.certificateExpiresAt))) {

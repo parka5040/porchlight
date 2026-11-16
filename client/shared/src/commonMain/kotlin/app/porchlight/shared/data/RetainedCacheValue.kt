@@ -9,6 +9,13 @@ class RetainedCacheValue<T> internal constructor(private val value: T, private v
         resources = dependencies.associateWith { view.resourceVisibility[it] }
         identity = view.identityVisibility
     }
+    /** Quarantine retains local input without making its server-derived representation usable. */
+    fun retained(view: CacheView): Boolean = resources?.let { bound ->
+        identity === view.identityVisibility && bound.all { (resource, token) ->
+            token === view.resourceVisibility[resource] ||
+                (token != null && token === view.quarantinedResources[resource])
+        }
+    } ?: (view.visibilityRevision == revision)
     fun current(view: CacheView): T? = value.takeIf {
         resources?.let { bound -> identity === view.identityVisibility && bound.all { (resource, token) ->
             token === view.resourceVisibility[resource]

@@ -1,0 +1,10 @@
+-- Platform factories rebuild this disposable cache on a version mismatch.
+CREATE TABLE CacheFileNamespace (
+ singleton INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
+ namespace INTEGER NOT NULL
+);
+CREATE TABLE CacheCleanupFailure (
+ singleton INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
+ attempts INTEGER NOT NULL,
+ retry_at INTEGER NOT NULL
+);

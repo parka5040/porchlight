@@ -68,6 +68,8 @@ pub struct NetPolicy {
     pub tls_timeout: Duration,
     /// Includes waiting for the next request head on an idle HTTP/1 keep-alive connection.
     pub header_timeout: Duration,
+    /// Only time spent in a Pending write/flush counts; idle SSE is healthy.
+    pub write_stall: Duration,
     /// Independent budget for each listener, held from accept through HTTP completion.
     pub max_connections: usize,
 }
@@ -79,6 +81,7 @@ impl Default for NetPolicy {
             proxy_timeout: Duration::from_secs(5),
             tls_timeout: Duration::from_secs(10),
             header_timeout: Duration::from_secs(30),
+            write_stall: Duration::from_secs(60),
             max_connections: 512,
         }
     }
@@ -228,6 +231,17 @@ async fn tcp(
     policy: NetPolicy,
     hub: crate::stream_hub::StreamHub,
 ) -> Result<(), ConnectionFailure> {
+    stream
+        .set_nodelay(true)
+        .map_err(|_| ConnectionFailure::new("tcp", "options"))?;
+    socket2::SockRef::from(&stream)
+        .set_tcp_keepalive(
+            &socket2::TcpKeepalive::new()
+                .with_time(Duration::from_secs(60))
+                .with_interval(Duration::from_secs(15))
+                .with_retries(4),
+        )
+        .map_err(|_| ConnectionFailure::new("tcp", "options"))?;
     let addr = if transport == Transport::Funnel {
         canonical_addr(
             read_proxy_v2(&mut stream, policy.proxy_timeout)
@@ -238,6 +252,8 @@ async fn tcp(
     } else {
         canonical_addr(peer)
     };
+    // Funnel has consumed its trusted PROXY preamble; both paths now share IO policy.
+    let stream = crate::write_deadline::WriteDeadline::new(stream, policy.write_stall);
     let stream = tokio::time::timeout(policy.tls_timeout, acceptor.accept(stream))
         .await
         .map_err(|_| ConnectionFailure::new("tls", "timeout"))?
@@ -379,8 +395,13 @@ async fn run_inner(
         mut agent_accept,
     ]: [AcceptState; 4],
 ) -> anyhow::Result<()> {
-    let mtls = TlsAcceptor::from(tls::mtls_server_config(&state.pki, state.revoked.clone())?);
-    let enroll_tls = TlsAcceptor::from(tls::enroll_server_config(&state.pki)?);
+    let (mtls, enroll_tls) = tls::reloading_server_configs(
+        state.pki.clone(),
+        state.revoked.clone(),
+        crate::pki_store::DataDir::new(state.settings.data_dir.clone()).server_cert(),
+    )?;
+    let mtls = TlsAcceptor::from(mtls);
+    let enroll_tls = TlsAcceptor::from(enroll_tls);
     let mtls_router = routes::mtls_router(state.clone());
     let enroll_router = routes::enroll_router(state.clone());
     let hub = state.hub.clone();
@@ -423,7 +444,7 @@ async fn run_inner(
             accepted = agent_accept.accept(Transport::Agent, optional_unix(&listeners.agent)) => {
                 let Some(stream) = accepted else { continue };
                 let Some(permit) = permit(&agent_budget, Transport::Agent) else { continue };
-                spawn_connection(&mut connections, permit, Transport::Agent, http(stream, agent_router.clone(), ConnInfo { transport: Transport::Agent, client_addr: None, client_cert_fingerprint: None }, policy.header_timeout, hub.clone()));
+                spawn_connection(&mut connections, permit, Transport::Agent, http(crate::write_deadline::WriteDeadline::new(stream, policy.write_stall), agent_router.clone(), ConnInfo { transport: Transport::Agent, client_addr: None, client_cert_fingerprint: None }, policy.header_timeout, hub.clone()));
             }
             result = connections.join_next(), if !connections.is_empty() => {
                 if let Some(Err(_)) = result {

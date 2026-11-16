@@ -78,7 +78,7 @@ class AuditFinalClientCAndroidOwnerTest {
             lifetime = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler)); runtime = runtime(); bind()
             controller.restore()
             if (fail) {
-                assertTrue(controller.state.value is TrustState.LocalTrustLost)
+                assertEquals(TrustState.StorageRecoveryRequired, controller.state.value)
                 assertNull(controller.liveAdmission.value)
                 assertEquals("first", native.owner()?.memberId, "Failed native retirement must retain the mismatch marker")
                 lifetime.cancel(); controller.close(); runCurrent(); cache.close()

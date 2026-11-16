@@ -22,7 +22,7 @@ fn member(s: &TestServer) -> Caller {
 }
 fn admin(s: &TestServer) -> Caller {
     Caller::Agent {
-        token_id: Uuid::nil(),
+        token_id: Uuid::now_v7(),
         member_id: s.init.admin_member_id,
         label: "Export fixture".into(),
         scopes: vec!["admin".into()],

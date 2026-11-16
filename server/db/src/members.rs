@@ -51,12 +51,15 @@ pub async fn report_device_zone_at(
 ) -> Result<bool> {
     let (zone, _) = porchlight_core::time::storage_zone(zone.name())
         .map_err(|_| validation("unknown storage time zone"))?;
-    let mut tx = begin_as(pool, actor).await?;
-    // No-op GET reports must not wait behind the device's mutation lock.
-    if !report_needed(&mut tx, member, device, zone).await? {
-        tx.rollback().await?;
-        return Ok(false);
+    // Unlocked no-op reports need only one read, with no actor GUC or transaction.
+    // A possible change is rechecked under the existing device/scope lock protocol.
+    {
+        let mut conn = pool.acquire().await?;
+        if !report_needed(&mut conn, member, device, zone).await? {
+            return Ok(false);
+        }
     }
+    let mut tx = begin_as(pool, actor).await?;
     let live: Option<Uuid> = sqlx::query_scalar("select member_id from porchlight.devices where id=$1 and member_id=$2 and revoked_at is null for no key update").bind(device).bind(member).fetch_optional(&mut *tx).await?;
     if live.is_none() || !report_needed(&mut tx, member, device, zone).await? {
         tx.rollback().await?;
@@ -86,13 +89,13 @@ async fn report_needed(
     device: Uuid,
     zone: Tz,
 ) -> Result<bool> {
-    let old = get(conn, member).await?;
-    let live:bool=sqlx::query_scalar("select exists(select 1 from porchlight.devices where id=$1 and member_id=$2 and revoked_at is null)").bind(device).bind(member).fetch_one(&mut *conn).await?;
-    if !live || old.role == "dependent" || old.tz_source != "device" {
-        return Ok(false);
-    }
-    let authority_live:bool=sqlx::query_scalar("select exists(select 1 from porchlight.devices where id=$1 and member_id=$2 and revoked_at is null)").bind(old.tz_authority_device_id).bind(member).fetch_one(&mut *conn).await?;
-    Ok(!authority_live || (old.tz_authority_device_id == Some(device) && old.tzid != zone.name()))
+    sqlx::query_scalar("SELECT m.role<>'dependent' AND m.tz_source='device'
+        AND EXISTS(SELECT 1 FROM porchlight.devices d WHERE d.id=$2 AND d.member_id=m.id AND d.revoked_at IS NULL)
+        AND (NOT EXISTS(SELECT 1 FROM porchlight.devices a WHERE a.id=m.tz_authority_device_id AND a.member_id=m.id AND a.revoked_at IS NULL)
+          OR (m.tz_authority_device_id=$2 AND porchlight.pl_effective_member_zone(m.role,m.tzid,h.tzid)<>$3))
+        FROM porchlight.household_members m JOIN porchlight.households h ON h.id=m.household_id
+        WHERE m.id=$1 AND m.deleted_at IS NULL")
+        .bind(member).bind(device).bind(zone.name()).fetch_optional(conn).await?.ok_or(Error::NotFound)
 }
 async fn checked(
     scope: &mut items::WriteScope<'_, '_>,

@@ -1,0 +1,16 @@
+: hb
+
+event: ready
+data: {"cursor":41}
+
+id: 42
+event: item.changed
+data: {"seq":42,"kind":"item.changed","entity_type":"item","entity_id":"00000000-0000-7000-8000-000000000002"}
+
+id: 44
+event: item.access_changed
+data: {"seq":44,"kind":"item.access_changed","entity_type":"item","entity_id":"00000000-0000-7000-8000-000000000002","evicted":true}
+
+event: resnapshot
+data: {"reason":"cursor_expired"}
+

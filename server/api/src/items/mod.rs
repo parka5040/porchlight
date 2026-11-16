@@ -28,6 +28,7 @@ use acl::occurrence_row;
 pub(crate) use acl::restrict_feed;
 pub use acl::{attach_current, domain_error, filter_capabilities, resource_capabilities, response};
 pub(crate) use acl::{authorize, load};
+pub(crate) use read::ReadBatch;
 pub use read::{list, occurrences, occurrences_with_zone, read_snapshot};
 pub(crate) use validate::{field_decode, reference_error};
 pub use write::{Operation, mutate};

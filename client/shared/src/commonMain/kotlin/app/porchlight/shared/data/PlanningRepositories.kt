@@ -25,6 +25,7 @@ fun importSummaryLines(value: ImportSummary): List<String> = listOf(
         " (invalid events: ${value.invalidSkipped}; cancelled/EXDATE occurrences: ${value.cancelledSkipped})" else " (breakdown unavailable)") + "; removed: ${value.removed}; deleted: ${value.deleted}",
 ) + (if (value.removalSuppressed) listOf("Incomplete calendar: removal suppressed") else emptyList()) + value.warnings.map { "${it.uid ?: "Calendar"} · ${it.code}: ${it.message}" }
 private suspend fun <T> fenced(cache: ReadCache?, op: suspend (ReadCache.Fence?) -> T): T = if (cache == null) op(null) else cache.inSession { op(it) }
+private suspend fun <T> fencedRead(cache: ReadCache?, op: suspend (ReadCache.Fence?) -> T): T = if (cache == null) op(null) else cache.orderedRead { op(it) }
 private suspend fun <T> followUp(result: WriteResult<T>, refresh: suspend () -> Unit): WriteResult<T> {
     if (result !is WriteResult.Success) return result
     return try { refresh(); result } catch (e: CancellationException) { throw e }
@@ -44,6 +45,13 @@ class FeedRepository(call: GeneratedCall, private val writes: WriteCoordinator, 
     private val api = CalendarApi(call)
     var afterWrite: suspend () -> Unit = {}
     suspend fun list(): List<Source> = fenced(cache) { fence -> allPages { api.calendarList(BuildInfo.VERSION, cursor = it, limit = 200).let { p -> p.items to p.nextCursor } } }
+    internal suspend fun refreshSummaries() = requireNotNull(cache).orderedRead { fence ->
+        val summaries = list().filter { it.deletedAt == null }.map { source ->
+            SourceSnapshot(source.id, source.name, source.enabled, source.version,
+                source.url?.let { io.ktor.http.Url(it).host }, source.lastStatus, source.lastFetchAt)
+        }
+        cache.replaceSources(fence, summaries)
+    }
     suspend fun add(request: SourceRequest, key: String = writes.newKey()): WriteResult<Source> = fenced(cache) { fence ->
         followUp(writes.execute(key) { api.calendarAdd(BuildInfo.VERSION, it, request) }, afterWrite)
     }
@@ -60,9 +68,10 @@ class FeedRepository(call: GeneratedCall, private val writes: WriteCoordinator, 
 class AvailabilityRepository(call: GeneratedCall, private val writes: WriteCoordinator, private val cache: ReadCache? = null) {
     private val api = PlanningApi(call)
     var afterWrite: suspend () -> Unit = {}
+    internal var scopedAfterWrite: (suspend (String) -> Boolean)? = null
     val rows: Flow<List<AvailabilityResponse>> = cache?.view?.map { it.availability }?.distinctUntilChanged() ?: flowOf(emptyList())
     fun observe(member: String) = rows.map { it.find { a -> a.memberId == member } }
-    suspend fun refresh(member: String): AvailabilityResponse = fenced(cache) { fence ->
+    suspend fun refresh(member: String): AvailabilityResponse = fencedRead(cache) { fence ->
         api.planningAvailability(member, BuildInfo.VERSION).also { cache?.putAvailability(requireNotNull(fence), it) }
     }
     suspend fun put(member: String, version: Int, windows: List<Window>, key: String = writes.newKey()): WriteResult<AvailabilityResponse> = fenced(cache) { fence ->
@@ -70,31 +79,33 @@ class AvailabilityRepository(call: GeneratedCall, private val writes: WriteCoord
         val request = AvailabilityRequest(windows.map { it.copy(start = normalizeAvailabilityTime(it.start), end = normalizeAvailabilityTime(it.end)) })
         followUp(writes.execute(key) { api.planningPutAvailability(member, version.toString(), BuildInfo.VERSION, it, request) }.also {
             if (it is WriteResult.Success) cache?.putAvailability(requireNotNull(fence), it.value)
-        }, afterWrite)
+        }) { if (scopedAfterWrite?.invoke(member) != true) afterWrite() }
     }
 }
 fun suggestionRejectionKey(row: SuggestionResponse) = "${row.id}:${row.version}:${row.occurrenceVersion}"
 class PlanningRepository(call: GeneratedCall, private val writes: WriteCoordinator, private val cache: ReadCache? = null) {
     private val api = PlanningApi(call)
     var afterAccept: suspend () -> Unit = {}
+    internal var scopedAfterWrite: (suspend (String?) -> Boolean)? = null
+    private suspend fun follow(item: String?) { if (scopedAfterWrite?.invoke(item) != true) afterAccept() }
     val rows: Flow<List<SuggestionResponse>> = cache?.view?.map { it.suggestions }?.distinctUntilChanged() ?: flowOf(emptyList())
-    suspend fun refresh(member: String? = null): List<SuggestionResponse> = fenced(cache) { fence ->
+    suspend fun refresh(member: String? = null): List<SuggestionResponse> = fencedRead(cache) { fence ->
         allPages { api.planningSuggestions(BuildInfo.VERSION, memberId = member, cursor = it, limit = 200).let { p -> p.items to p.nextCursor } }
             .also { cache?.replaceSuggestions(requireNotNull(fence), member, it) }
     }
     suspend fun suggest(member: String?, key: String = writes.newKey()): WriteResult<SuggestResponse> = fenced(cache) { fence ->
-        followUp(writes.execute(key) { api.planningSuggest(BuildInfo.VERSION, it, SuggestRequest(member)) }) { refresh(member); afterAccept() }
+        followUp(writes.execute(key) { api.planningSuggest(BuildInfo.VERSION, it, SuggestRequest(member)) }) { if (scopedAfterWrite?.invoke(null) != true) { refresh(member); afterAccept() } }
     }
     suspend fun accept(row: SuggestionResponse, key: String = writes.newKey()): WriteResult<SuggestionResponse> = fenced(cache) { fence ->
         val version = requireNotNull(row.occurrenceVersion) { "Occurrence no longer available; refetch suggestions" }
         refetchRejected(fence, row) { followUp(writes.execute(key) { api.planningAccept(row.id, version.toString(), BuildInfo.VERSION, it, buildJsonObject {}) }.also {
             if (it is WriteResult.Success) cache?.putSuggestion(requireNotNull(fence), it.value)
-        }, afterAccept) }
+        }) { follow(row.itemId) } }
     }
     suspend fun dismiss(row: SuggestionResponse, key: String = writes.newKey()): WriteResult<SuggestionResponse> = fenced(cache) { fence ->
         refetchRejected(fence, row) { followUp(writes.execute(key) { api.planningDismiss(row.id, row.version.toString(), BuildInfo.VERSION, it, buildJsonObject {}) }.also {
             if (it is WriteResult.Success) cache?.putSuggestion(requireNotNull(fence), it.value)
-        }, afterAccept) }
+        }) { follow(null) } }
     }
     private suspend fun <T> refetchRejected(fence: ReadCache.Fence?, row: SuggestionResponse, op: suspend () -> T): T {
         try { return op() } catch (p: ApiProblem) {

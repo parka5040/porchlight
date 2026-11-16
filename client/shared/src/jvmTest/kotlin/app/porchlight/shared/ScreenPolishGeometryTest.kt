@@ -523,7 +523,8 @@ class ScreenPolishGeometryTest(private val widthDp: Int, private val scale: Floa
     @Test fun fix1CalendarDayHeadingUsesHumanDate() {
         assumeTrue(widthDp < PorchlightTokens.expandedBreakpoint)
         screen(AppRoute.Calendar(CalendarView.Week, "2026-10-09")) {
-            onNodeWithText("Sunday, Oct 4").performScrollTo().assertIsDisplayed()
+            onNodeWithTag("calendar-scroll").performScrollToNode(hasText("Sunday, Oct 4"))
+            onNodeWithText("Sunday, Oct 4").assertIsDisplayed()
             onNodeWithText("Sunday · 2026-10-04").assertDoesNotExist()
             onNodeWithText("Sunday, Oct 4, 2026").assertDoesNotExist()
         }
@@ -533,8 +534,10 @@ class ScreenPolishGeometryTest(private val widthDp: Int, private val scale: Floa
         assumeTrue(widthDp < PorchlightTokens.expandedBreakpoint)
         screen(AppRoute.Calendar(CalendarView.Week, "2027-01-01")) {
             onNodeWithText("Dec 27, 2026 – Jan 2, 2027").assertExists()
-            onNodeWithText("Sunday, Dec 27, 2026").performScrollTo().assertIsDisplayed()
-            onNodeWithText("Friday, Jan 1, 2027").performScrollTo().assertIsDisplayed()
+            onNodeWithTag("calendar-scroll").performScrollToNode(hasText("Sunday, Dec 27, 2026"))
+            onNodeWithText("Sunday, Dec 27, 2026").assertIsDisplayed()
+            onNodeWithTag("calendar-scroll").performScrollToNode(hasText("Friday, Jan 1, 2027"))
+            onNodeWithText("Friday, Jan 1, 2027").assertIsDisplayed()
         }
     }
 

@@ -1,9 +1,49 @@
+-- Disposable files and retry state belong to this persisted cache, not a process-local epoch.
+CREATE TABLE CacheFileNamespace (
+ singleton INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
+ namespace INTEGER NOT NULL
+);
+getFileNamespace:
+SELECT namespace FROM CacheFileNamespace WHERE singleton = 1;
+putFileNamespace:
+INSERT OR REPLACE INTO CacheFileNamespace VALUES (1, ?);
+clearFileNamespace:
+DELETE FROM CacheFileNamespace;
+
+CREATE TABLE CacheCleanupFailure (
+ singleton INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
+ attempts INTEGER NOT NULL,
+ retry_at INTEGER NOT NULL
+);
+getCleanupFailure:
+SELECT * FROM CacheCleanupFailure WHERE singleton = 1;
+putCleanupFailure:
+INSERT OR REPLACE INTO CacheCleanupFailure VALUES (1, ?, ?);
+clearCleanupFailure:
+DELETE FROM CacheCleanupFailure;
+
+-- Private artifact deletion is committed with the metadata removal and survives replay/restart.
+CREATE TABLE CacheAttachmentCleanup (
+ kind TEXT NOT NULL,
+ id TEXT NOT NULL,
+ PRIMARY KEY(kind,id)
+);
+allAttachmentCleanup:
+SELECT * FROM CacheAttachmentCleanup ORDER BY kind,id;
+putAttachmentCleanup:
+INSERT OR IGNORE INTO CacheAttachmentCleanup VALUES (?,?);
+deleteAttachmentCleanup:
+DELETE FROM CacheAttachmentCleanup WHERE kind = ? AND id = ?;
+clearAttachmentCleanup:
+DELETE FROM CacheAttachmentCleanup;
+
 CREATE TABLE CacheNotification (
  id TEXT NOT NULL PRIMARY KEY,
  item_id TEXT,
  expires_at INTEGER,
  payload TEXT NOT NULL
 );
+CREATE INDEX cache_notification_item ON CacheNotification(item_id);
 CREATE TABLE CacheNotificationPrefs (
  id TEXT NOT NULL PRIMARY KEY,
  item_id TEXT,
@@ -24,6 +64,19 @@ putCacheOwner:
 INSERT OR REPLACE INTO CacheOwner VALUES (1, ?, ?, ?);
 clearCacheOwner:
 DELETE FROM CacheOwner;
+
+-- Snapshot watermarks wait behind their committed file-cleanup obligations too.
+CREATE TABLE CachePendingSync (
+ singleton INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
+ cursor INTEGER NOT NULL,
+ last_full_sync INTEGER NOT NULL
+);
+putPendingSync:
+INSERT OR REPLACE INTO CachePendingSync VALUES (1, ?, ?);
+getPendingSync:
+SELECT * FROM CachePendingSync;
+clearPendingSync:
+DELETE FROM CachePendingSync;
 
 CREATE TABLE SyncState (
  singleton INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
@@ -63,6 +116,7 @@ CREATE TABLE CacheOccurrence (
  payload TEXT NOT NULL
 );
 CREATE INDEX cache_occurrence_item ON CacheOccurrence(item_id);
+CREATE INDEX cache_occurrence_expiry ON CacheOccurrence(expires_at);
 
 CREATE TABLE CacheAgenda (
  id TEXT NOT NULL PRIMARY KEY,
@@ -73,6 +127,7 @@ CREATE TABLE CacheAgenda (
 );
 CREATE INDEX cache_agenda_item ON CacheAgenda(item_id);
 CREATE INDEX cache_agenda_occurrence ON CacheAgenda(occurrence_id);
+CREATE INDEX cache_agenda_expiry ON CacheAgenda(expires_at);
 
 CREATE TABLE CacheBoard (
  id TEXT NOT NULL PRIMARY KEY,
@@ -99,6 +154,7 @@ CREATE TABLE CacheReminder (
 );
 CREATE INDEX cache_reminder_item ON CacheReminder(item_id);
 CREATE INDEX cache_reminder_occurrence ON CacheReminder(occurrence_id);
+CREATE INDEX cache_reminder_expiry ON CacheReminder(expires_at);
 
 CREATE TABLE CacheWrite (
  id TEXT NOT NULL PRIMARY KEY,
@@ -107,6 +163,11 @@ CREATE TABLE CacheWrite (
  payload TEXT NOT NULL
 );
 CREATE INDEX cache_write_item ON CacheWrite(item_id);
+
+getMember:
+SELECT * FROM CacheMember WHERE id = ?;
+getSettings:
+SELECT * FROM CacheSettings WHERE id = ?;
 
 allMembers:
 SELECT * FROM CacheMember ORDER BY id;
@@ -179,6 +240,8 @@ DELETE FROM CacheSettings;
 
 allReminders:
 SELECT * FROM CacheReminder ORDER BY id;
+putReminder:
+INSERT OR REPLACE INTO CacheReminder VALUES (?,?,?,?,?);
 clearReminders:
 DELETE FROM CacheReminder;
 deleteReminder:
@@ -237,6 +300,9 @@ CREATE TABLE CachePlanning (
  payload TEXT NOT NULL,
  PRIMARY KEY(kind,id)
 );
+CREATE INDEX cache_planning_item ON CachePlanning(item_id);
+getPlanning:
+SELECT * FROM CachePlanning WHERE kind = ? AND id = ?;
 allPlanning:
 SELECT * FROM CachePlanning ORDER BY kind,id;
 putPlanning:
@@ -247,6 +313,21 @@ evictPlanning:
 DELETE FROM CachePlanning WHERE item_id = ?;
 removePlanning:
 DELETE FROM CachePlanning WHERE kind = ? AND id = ?;
+
+CREATE TABLE CacheProjectionScope (
+ kind TEXT NOT NULL,
+ id TEXT NOT NULL,
+ payload TEXT NOT NULL,
+ PRIMARY KEY(kind,id)
+);
+allProjectionScopes:
+SELECT * FROM CacheProjectionScope ORDER BY kind,id;
+putProjectionScope:
+INSERT OR REPLACE INTO CacheProjectionScope VALUES (?,?,?);
+removeProjectionScope:
+DELETE FROM CacheProjectionScope WHERE kind = ? AND id = ?;
+clearProjectionScopes:
+DELETE FROM CacheProjectionScope;
 
 -- c5: metadata only; attachment bytes remain in app-private platform storage.
 CREATE TABLE CacheList (id TEXT NOT NULL, occurrence_id TEXT NOT NULL DEFAULT '', item_id TEXT, expires_at INTEGER, payload TEXT NOT NULL, PRIMARY KEY (id, occurrence_id));
@@ -320,10 +401,13 @@ CREATE TABLE CacheVisibility (
  evicted INTEGER NOT NULL,
  PRIMARY KEY(kind, id)
 );
+CREATE INDEX cache_visibility_generation ON CacheVisibility(generation);
 allVisibility:
 SELECT * FROM CacheVisibility;
 getVisibility:
 SELECT generation FROM CacheVisibility WHERE kind = ? AND id = ?;
+referenceVisibility:
+SELECT generation, evicted FROM CacheVisibility WHERE kind = ? AND id = ?;
 visibilityGeneration:
 SELECT coalesce(max(generation), 0) FROM CacheVisibility;
 putVisibility:
@@ -367,6 +451,30 @@ deleteCommentHistory:
 DELETE FROM CacheCommentHistory WHERE item_id = ?;
 clearCommentHistories:
 DELETE FROM CacheCommentHistory;
+
+-- Item-bundle publication reads only the indexed parent scope, never household payloads.
+itemWrites:
+SELECT * FROM CacheWrite WHERE item_id = ? ORDER BY id;
+listScopes:
+SELECT * FROM CacheList WHERE occurrence_id != '' ORDER BY rowid;
+itemOccurrences:
+SELECT * FROM CacheOccurrence WHERE item_id = ? ORDER BY id;
+itemAgendas:
+SELECT * FROM CacheAgenda WHERE item_id = ? ORDER BY id;
+itemBoards:
+SELECT * FROM CacheBoard WHERE item_id = ? ORDER BY id;
+itemReminders:
+SELECT * FROM CacheReminder WHERE item_id = ? ORDER BY id;
+itemNotifications:
+SELECT * FROM CacheNotification WHERE item_id = ? ORDER BY id;
+itemPlanning:
+SELECT * FROM CachePlanning WHERE item_id = ? ORDER BY kind,id;
+itemComments:
+SELECT * FROM CacheComment WHERE item_id = ? ORDER BY id;
+itemAttachments:
+SELECT * FROM CacheAttachment WHERE item_id = ? ORDER BY id;
+itemCommentHistory:
+SELECT * FROM CacheCommentHistory WHERE item_id = ?;
 
 -- Every snapshot installs these projections together inside the cache transaction.
 

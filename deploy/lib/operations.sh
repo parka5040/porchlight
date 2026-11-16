@@ -57,3 +57,58 @@ fetch_source() {
     ssh) rsync -a --no-links --protect-args -- "$source/" "$destination/" ;;
   esac
 }
+# The same fd survives verified installer exec handoffs and nested retention calls.
+installer_lock() {
+  local root=$1
+  # shellcheck disable=SC2174 # Installer umask also protects newly created parents.
+  mkdir -m 700 -p "$root" || return
+  [[ ! -L $root/.installer.lock ]] || { printf 'installer lock must not be a symlink\n' >&2; return 2; }
+  if [[ ${PORCHLIGHT_INSTALL_LOCK_ROOT:-} != "$root" || ! /proc/$$/fd/9 -ef $root/.installer.lock ]]; then
+    exec 9>>"$root/.installer.lock"
+  fi
+  flock -n 9 || { printf 'installer already running for this stack\n' >&2; return 2; }
+  export PORCHLIGHT_INSTALL_LOCK_ROOT=$root
+}
+# Desktop-only retention. Hold the transaction lock from link reads through the last deletion.
+desktop_prune_images() (
+  installer_lock "$1" || return
+  python3 -I -B - "$1" <<'PY_DESKTOP_PRUNE'
+import json,os,pathlib,re,shutil,sys
+base=pathlib.Path(sys.argv[1]); releases=base/'releases'
+if releases.is_symlink() or not releases.is_dir(): raise ValueError('unsafe desktop releases folder')
+releases=releases.resolve(); keep=set()
+if not (base/'current').is_symlink(): raise ValueError('desktop activation missing')
+for name in ('current','previous'):
+ link=base/name
+ if link.is_symlink():
+  target=link.resolve(strict=True)
+  if target.parent!=releases: raise ValueError('unsafe desktop activation link')
+  keep.add(target.name)
+# Native jpackage processes and their bundled JVM live below the resolved image, not current.
+# Non-dumpable own processes (keyring daemons, sandboxes) refuse exe; their world-readable argv[0] still
+# names the launcher. Only if neither can be read is pruning skipped rather than risking a running image.
+for process in pathlib.Path('/proc').iterdir():
+ if not process.name.isdigit(): continue
+ try:
+  if process.stat().st_uid!=os.getuid(): continue
+  image=pathlib.Path(os.readlink(process/'exe'))
+ except (FileNotFoundError,ProcessLookupError): continue
+ except PermissionError:
+  try: argv0=(process/'cmdline').read_bytes().split(b'\0',1)[0]
+  except (FileNotFoundError,ProcessLookupError): continue
+  except PermissionError: sys.exit(0)
+  if not argv0.startswith(b'/'): continue
+  image=pathlib.Path(os.fsdecode(argv0)).resolve()
+ try: relative=image.relative_to(releases)
+ except ValueError: continue
+ if relative.parts: keep.add(relative.parts[0])
+for image in releases.iterdir():
+ if image.name in keep or not re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)',image.name): continue
+ if image.is_symlink() or not image.is_dir(): continue
+ manifest=image/'release-manifest.json'
+ if manifest.is_symlink() or not manifest.is_file() or not (image/'install.sh').is_file() or not (image/'app').is_dir(): continue
+ try: version=json.loads(manifest.read_text())['version']
+ except (OSError,ValueError,KeyError): continue
+ if version==image.name: shutil.rmtree(image)
+PY_DESKTOP_PRUNE
+)

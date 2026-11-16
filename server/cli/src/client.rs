@@ -71,6 +71,15 @@ impl Client {
     pub async fn request(&self, method: &str, path: &str, body: Value) -> Result<Value> {
         self.request_inner(method, path, body, None, None).await
     }
+    /// Sync pages have an 8 MiB identity budget, plus transport safety margin.
+    pub async fn item_sync(&self, path: &str) -> Result<Value> {
+        let stream = tokio::time::timeout(DEADLINE, UnixStream::connect(&self.socket))
+            .await
+            .map_err(|_| Error::Local("Agent connection timed out"))?
+            .map_err(|_| Error::Local("Could not connect to agent socket"))?;
+        let req = request("GET", path, Value::Null, Some(&self.token), "porchlight")?;
+        send_limited(stream, req, 9 * 1024 * 1024).await
+    }
     pub async fn request_version(
         &self,
         method: &str,
@@ -321,6 +330,12 @@ pub async fn send<I>(stream: I, request: Request<Full<Bytes>>) -> Result<Value>
 where
     I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    send_limited(stream, request, MAX_RESPONSE_BYTES).await
+}
+async fn send_limited<I>(stream: I, request: Request<Full<Bytes>>, limit: usize) -> Result<Value>
+where
+    I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
         .await
         .map_err(|_| Error::Local("HTTP handshake failed"))?;
@@ -338,12 +353,16 @@ where
                 .get("retry-after")
                 .and_then(|h| h.to_str().ok()),
         );
-        let body = Limited::new(response.into_body(), MAX_RESPONSE_BYTES)
+        let body = Limited::new(response.into_body(), limit)
             .collect()
             .await
             .map_err(|error| {
                 if error.is::<LengthLimitError>() {
-                    Error::Local("HTTP response exceeds 4 MiB limit")
+                    Error::Local(if limit == MAX_RESPONSE_BYTES {
+                        "HTTP response exceeds 4 MiB limit"
+                    } else {
+                        "HTTP response exceeds item-sync limit"
+                    })
                 } else {
                     Error::Local("Could not read HTTP response")
                 }

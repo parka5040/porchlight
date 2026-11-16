@@ -48,6 +48,14 @@ SELECT format('GRANT EXECUTE ON FUNCTION %s TO porchlight_migrator', p.oid::regp
 FROM pg_proc p WHERE p.pronamespace = 'pg_catalog'::regnamespace AND p.proname ~ '^pg_(try_)?advisory_' \gexec
 
 \connect porchlight
+-- Superuser bootstrap only, including upgrades of already initialized clusters.
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements WITH SCHEMA public;
+-- Query text/statistics and reset are operator-only, never app/agent/migrator.
+REVOKE ALL ON public.pg_stat_statements, public.pg_stat_statements_info FROM PUBLIC;
+SELECT format('REVOKE ALL ON FUNCTION public.pg_stat_statements_reset(%s) FROM PUBLIC', pg_get_function_identity_arguments(oid))
+FROM pg_proc WHERE pronamespace = 'public'::regnamespace AND proname = 'pg_stat_statements_reset' \gexec
+SELECT format('REVOKE ALL ON FUNCTION %s FROM PUBLIC', oid::regprocedure)
+FROM pg_proc WHERE pronamespace = 'public'::regnamespace AND proname LIKE 'pg_stat_statements%' \gexec
 SELECT format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC', p.oid::regprocedure)
 FROM pg_proc p WHERE p.pronamespace = 'pg_catalog'::regnamespace AND p.proname ~ '^pg_(try_)?advisory_' \gexec
 SELECT format('GRANT EXECUTE ON FUNCTION %s TO porchlight_migrator', p.oid::regprocedure)

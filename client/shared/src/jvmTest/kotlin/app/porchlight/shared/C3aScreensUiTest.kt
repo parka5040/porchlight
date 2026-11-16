@@ -32,7 +32,7 @@ class C3aScreensUiTest {
         val serverMember = member.copy(initials = "ZX")
         runDesktopComposeUiTest(width = 650, height = 1200) {
             setContent { PorchlightTheme(ThemeMode.Evening, false) {
-                TodayContent(listOf(TodayGroup(TodaySection.needs_owner, listOf(ownable, row.copy(id = "b", title = "Assigned")))), 7, listOf(serverMember), {}, {})
+                TodayContent(listOf(TodayGroup(TodaySection.needs_owner, listOf(ownable, row.copy(id = "b", title = "Assigned", occurrence = occurrenceRead("occ-b", "b"))))), 7, listOf(serverMember), {}, {})
             } }
             onNodeWithContentDescription("Take Laundry").assertExists()
             onNodeWithContentDescription("Take Assigned").assertDoesNotExist()

@@ -78,7 +78,9 @@ Raising the quota does not override the disk reserve. Other processes can still 
 checks are not an OS filesystem quota, and the one-API-instance / one-household-per-volume invariant still applies.
 
 PostgreSQL explicitly uses `shared_buffers=512MB` (spec), `work_mem=4MB`, `maintenance_work_mem=128MB`,
-`max_connections=50`. The connection arithmetic is **16 + 4 + 3 = 23** API slots: default request pool
+`max_connections=50`, `effective_cache_size=1GB`, `autovacuum_work_mem=64MB`, and preloaded
+`pg_stat_statements` with `track=top` (superuser bootstrap creates/restricts the extension on install and upgrade).
+The connection arithmetic is **16 + 4 + 3 = 23** API slots: default request pool
 (`server/api/src/config.rs`), four one-slot LISTEN pools (projector, derive worker, stream hub, revocation via
 `db::listener_pool`), three scheduler pools (blob GC, GC metadata, item operations). Of 50 slots, three retain
 PostgreSQL's default superuser reserve, leaving **24 ordinary slots** beyond those 23: budget three for concurrent
@@ -261,8 +263,11 @@ The controller uses these fixed production settings:
 | Certificate SANs | DNS `porchlight.lan`, `localhost`; IP `127.0.0.1`, `<server-lan-ip>` |
 
 Install always passes `--no-funnel`. Repeated `--extra-san-dns <fqdn>` adds SANs without replacing the required
-ones; it does **not** activate Funnel or publish a new endpoint. Use the post-LAN `funnel` command below. Postgres stays
-loopback-only on 5432; ingress 9443 is not published.
+ones; it does **not** activate Funnel or publish a new endpoint. Use the post-LAN `funnel` command below. Production
+Postgres has no published host port; use Compose exec. Ingress 9443 is not published. Fresh install persists one
+resolved LAN-only IPv4 `LAN_BIND`; wildcard exposure needs explicit `--lan-bind 0.0.0.0` at the installer. See
+[hardening acceptance](deploy-hardening.md) for legacy upgrade notices, credential files, container write paths,
+health/stop budgets, network egress, scoped dry-run pruning and exact controller verification commands.
 
 Without `--admin-name`, the controller prompts for a display name. The login username is `admin`.
 Interactive install requires a local terminal on stdin and stdout; type the password only after the prompt appears.
@@ -525,10 +530,12 @@ restart/reboot, VPN relay-change, phones and later Funnel gates in [server-accep
 
 ## Certificate replacement and recovery budgets
 
-`porchlight server-cert` writes a new leaf but does **not** reload a running API: it reads its certificate at startup.
-Prefer the installed, verified `install.sh server-cert --root <stack-root> --san-dns porchlight.lan ...` command with the
-complete desired DNS/IP SAN set; it stops/recreates the API and checks readiness. Direct offline CLI users must restart
-or recreate their serving API and verify LAN TLS/application readiness afterwards. `--show` cannot be combined with
+The running API checks server-certificate expiry daily and automatically renews below 60 days. Its shared TLS
+resolver loads atomic leaf replacements on subsequent LAN/Funnel/enrollment handshakes without restarting, retaining
+the household CA, key and SANs. Administrator expiry alerts use 90/60/30/7-day bands. For intentional SAN changes,
+prefer the installed, verified `install.sh server-cert --root <stack-root> --san-dns porchlight.lan ...` command with the
+complete desired DNS/IP SAN set; it still stops/recreates the API and checks readiness. Direct offline CLI users must
+verify new-connection LAN TLS/application readiness afterwards (older servers still require a restart). `--show` cannot be combined with
 SAN flags; put numeric addresses in `--san-ip`, not `--san-dns`.
 
 The installed installer accepts `--api-health-timeout <seconds>` (1–600, default 30) for certificate/Funnel

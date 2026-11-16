@@ -23,9 +23,22 @@ class DesktopInstance private constructor(private val directory: Path, private v
         @Suppress("UNREACHABLE_CODE") false
     }
     fun focusRequested(): Boolean = Files.deleteIfExists(directory.resolve("focus/focus-request"))
-    override fun close() { watcher.close(); lock.release(); channel.close() }
+    private val closed = java.util.concurrent.atomic.AtomicBoolean()
+    override fun close() {
+        if (!closed.compareAndSet(false, true)) return
+        try { lock.release() } finally { try { channel.close() } finally { watcher.close() } }
+    }
     companion object {
-        fun acquire(directory: Path, afterUpdate: Boolean = false): DesktopInstance? {
+        fun acquire(directory: Path, afterUpdate: Boolean = false, predecessorPid: Long? = null): DesktopInstance? {
+            if (predecessorPid != null) {
+                require(afterUpdate && predecessorPid > 0)
+                val predecessor = ProcessHandle.of(predecessorPid).orElse(null)
+                val exitDeadline = System.nanoTime() + 10_000_000_000L
+                while (predecessor?.isAlive == true) {
+                    if (System.nanoTime() >= exitDeadline) return null // never admit storage while the old PID lives
+                    Thread.sleep(100)
+                }
+            }
             val deadline = System.nanoTime() + 10_000_000_000L
             do {
                 acquireOnce(directory, requestFocus = false)?.let { return it }

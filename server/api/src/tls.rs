@@ -157,6 +157,104 @@ pub fn enroll_server_config(pki: &ServerPki) -> anyhow::Result<Arc<ServerConfig>
     ))
 }
 
+/// Both TCP policies share a resolver. Renewal atomically replaces only the public leaf;
+/// each subsequent handshake loads it with the original key and install-verified CA.
+#[derive(Debug)]
+struct CurrentCert {
+    identity: Option<(std::time::SystemTime, u64, u64)>,
+    key: Arc<rustls::sign::CertifiedKey>,
+}
+#[derive(Debug)]
+pub struct ReloadingCert {
+    pki: Arc<ServerPki>,
+    path: std::path::PathBuf,
+    current: RwLock<CurrentCert>,
+}
+impl ReloadingCert {
+    pub fn new(pki: Arc<ServerPki>, path: std::path::PathBuf) -> anyhow::Result<Self> {
+        let (chain, key) = chain_and_key(&pki)?;
+        let key = rustls::sign::CertifiedKey::from_der(
+            chain,
+            key,
+            &rustls::crypto::ring::default_provider(),
+        )?;
+        // Force a first read: the file may already have been renewed after AppState was built.
+        Ok(Self {
+            pki,
+            path,
+            current: RwLock::new(CurrentCert {
+                identity: None,
+                key: Arc::new(key),
+            }),
+        })
+    }
+    fn certificate(&self) -> anyhow::Result<Arc<rustls::sign::CertifiedKey>> {
+        let metadata = match std::fs::metadata(&self.path) {
+            Ok(value) => value,
+            // In-memory test servers have no disk PKI. Production load() requires it before serving.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(self
+                    .current
+                    .read()
+                    .map_err(|_| anyhow::anyhow!("certificate lock"))?
+                    .key
+                    .clone());
+            }
+            Err(_) => anyhow::bail!("certificate metadata"),
+        };
+        use std::os::unix::fs::MetadataExt;
+        let modified = (metadata.modified()?, metadata.ino(), metadata.len());
+        let mut current = self
+            .current
+            .write()
+            .map_err(|_| anyhow::anyhow!("certificate lock"))?;
+        if current.identity != Some(modified) {
+            anyhow::ensure!(
+                metadata.is_file() && metadata.len() <= 65536,
+                "invalid server certificate file"
+            );
+            let pem = std::fs::read_to_string(&self.path)?;
+            self.pki.ca.verify_server_signature(&pem)?;
+            let chain = vec![
+                CertificateDer::from_pem_slice(pem.as_bytes())?,
+                CertificateDer::from(self.pki.ca.cert().cert_der.clone()),
+            ];
+            let key = PrivateKeyDer::from_pem_slice(self.pki.server_key_pem.as_bytes())?;
+            let key = rustls::sign::CertifiedKey::from_der(
+                chain,
+                key,
+                &rustls::crypto::ring::default_provider(),
+            )?;
+            *current = CurrentCert {
+                identity: Some(modified),
+                key: Arc::new(key),
+            };
+        }
+        Ok(current.key.clone())
+    }
+}
+impl rustls::server::ResolvesServerCert for ReloadingCert {
+    fn resolve(
+        &self,
+        _: rustls::server::ClientHello<'_>,
+    ) -> Option<Arc<rustls::sign::CertifiedKey>> {
+        self.certificate().ok()
+    }
+}
+
+pub fn reloading_server_configs(
+    pki: Arc<ServerPki>,
+    revoked: RevokedSet,
+    path: std::path::PathBuf,
+) -> anyhow::Result<(Arc<ServerConfig>, Arc<ServerConfig>)> {
+    let resolver = Arc::new(ReloadingCert::new(pki.clone(), path)?);
+    let mut mtls = (*mtls_server_config(&pki, revoked)?).clone();
+    let mut enroll = (*enroll_server_config(&pki)?).clone();
+    mtls.cert_resolver = resolver.clone();
+    enroll.cert_resolver = resolver;
+    Ok((Arc::new(mtls), Arc::new(enroll)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

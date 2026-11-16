@@ -10,7 +10,7 @@ use crate::{
 };
 use axum::{
     Json,
-    extract::{Path, Query, State},
+    extract::{Path, State},
     response::Response,
 };
 use futures_util::future::BoxFuture;
@@ -27,30 +27,49 @@ pub struct UploadSchema {
     pub file: String,
 }
 
-#[utoipa::path(get,path="/v1/items/{id}/comments",params(("id"=Uuid,Path),("cursor"=Option<String>,Query),("limit"=Option<u16>,Query)),responses((status=200,description="Visible comments in UUID order",body=CommentPage),crate::openapi::UniversalProblems,crate::routes::items::ReadValidationProblem,crate::openapi::NotFoundProblem,crate::openapi::ForbiddenProblem))]
+#[derive(serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+#[serde(deny_unknown_fields)]
+pub struct CommentParams {
+    pub cursor: Option<String>,
+    pub limit: Option<u16>,
+    /// 1..100 comma-separated UUIDs. Exclusive with cursor/limit; absent requested rows are removed or invisible.
+    pub ids: Option<String>,
+}
+pub(crate) fn comment_context(c: &Caller, id: Uuid) -> String {
+    format!("comments:{}:{}:{}", c.household_id(), c.member_id(), id)
+}
+#[utoipa::path(get,path="/v1/items/{id}/comments",params(("id"=Uuid,Path),CommentParams),responses((status=200,description="Visible comments in UUID order",body=CommentPage),crate::openapi::UniversalProblems,crate::routes::items::ReadValidationProblem,crate::openapi::NotFoundProblem,crate::openapi::ForbiddenProblem))]
 pub async fn list_comments(
     State(state): State<AppState>,
     c: Caller,
     Path(id): Path<Uuid>,
-    Query(q): Query<PageParams>,
+    crate::extract::ApiQuery(q): crate::extract::ApiQuery<CommentParams>,
 ) -> Result<Json<Page<Comment>>, ApiError> {
+    let ids = crate::pagination::parse_ids(q.ids.as_deref())?;
+    if ids.is_some() && (q.cursor.is_some() || q.limit.is_some()) {
+        return Err(ApiError::new(crate::error::Problem::InvalidRequest));
+    }
     // One read-only snapshot for the ACL check and the rows: a revocation (and anything written
     // after it) committed between the two statements must not reach a now-unauthorized reader.
     let mut conn = crate::items::read_snapshot(&state).await?;
     service::read_item(&mut conn, &c, id).await?;
-    let context = format!("comments:{}:{}:{}", c.household_id(), c.member_id(), id);
+    let context = comment_context(&c, id);
     let after: Option<Uuid> = q
         .cursor
         .as_deref()
         .map(|v| state.idem.cursor.decode(&context, v))
         .transpose()?;
-    let limit = q.limit()?;
-    let rows = sqlx::query_as::<_, Comment>(LIST_LIVE_COMMENTS_AFTER)
-        .bind(id)
-        .bind(after)
-        .bind((limit + 1) as i64)
-        .fetch_all(&mut *conn)
-        .await?;
+    let limit = if ids.is_some() {
+        100
+    } else {
+        PageParams {
+            cursor: None,
+            limit: q.limit,
+        }
+        .limit()?
+    };
+    let rows = comment_rows(&mut conn, id, after, limit + 1, ids.as_deref()).await?;
     conn.commit().await?;
     Ok(Json(state.idem.cursor.page(
         &context,
@@ -104,21 +123,29 @@ pub fn upload_comment<'a>(
 ) -> BoxFuture<'a, Result<Response, ApiError>> {
     Box::pin(blobs::upload(s, c, t, b, true))
 }
-#[utoipa::path(get,path="/v1/attachments/{id}",params(("id"=Uuid,Path)),responses((status=200,description="Stored bytes; sanitized filename, nosniff",content((String="image/jpeg"),(String="image/png"),(String="image/gif"),(String="image/webp"),(String="application/pdf"),(String="text/plain; charset=utf-8"))),crate::openapi::UniversalProblems,crate::openapi::NotFoundProblem,crate::openapi::ForbiddenProblem))]
+#[utoipa::path(get,path="/v1/attachments/{id}",params(("id"=Uuid,Path)),responses((status=200,description="Stored bytes; sanitized filename, nosniff",content((String="image/jpeg"),(String="image/png"),(String="image/gif"),(String="image/webp"),(String="application/pdf"),(String="text/plain; charset=utf-8"))),crate::openapi::RateLimitProblem,crate::openapi::UniversalProblems,crate::openapi::NotFoundProblem,crate::openapi::ForbiddenProblem))]
 pub async fn download(
     State(s): State<AppState>,
     c: Caller,
     Path(id): Path<Uuid>,
 ) -> Result<Response, ApiError> {
-    blobs::download(&s, c, id, false).await
+    let permit = s.downloads.acquire(c.admission_id(), c.member_id())?;
+    Ok(crate::concurrency::with_body(
+        blobs::download(&s, c, id, false).await?,
+        permit,
+    ))
 }
-#[utoipa::path(get,path="/v1/attachments/{id}/thumbnail",params(("id"=Uuid,Path)),responses((status=200,description="Thumbnail bytes; nosniff",content((String="image/jpeg"),(String="image/png"))),crate::openapi::UniversalProblems,crate::openapi::NotFoundProblem,crate::openapi::ForbiddenProblem))]
+#[utoipa::path(get,path="/v1/attachments/{id}/thumbnail",params(("id"=Uuid,Path)),responses((status=200,description="Thumbnail bytes; nosniff",content((String="image/jpeg"),(String="image/png"))),crate::openapi::RateLimitProblem,crate::openapi::UniversalProblems,crate::openapi::NotFoundProblem,crate::openapi::ForbiddenProblem))]
 pub async fn thumbnail(
     State(s): State<AppState>,
     c: Caller,
     Path(id): Path<Uuid>,
 ) -> Result<Response, ApiError> {
-    blobs::download(&s, c, id, true).await
+    let permit = s.downloads.acquire(c.admission_id(), c.member_id())?;
+    Ok(crate::concurrency::with_body(
+        blobs::download(&s, c, id, true).await?,
+        permit,
+    ))
 }
 #[utoipa::path(delete,path="/v1/attachments/{id}",description="Item attachment: uploader or item editor. Comment attachment: comment author within 15 minutes or super admin moderation; bumps the comment version.",params(("id"=Uuid,Path),crate::openapi::IfMatchHeader),responses((status=204,description="Soft deletion succeeded"),crate::openapi::UniversalProblems,crate::openapi::NotFoundProblem,crate::openapi::ForbiddenProblem,crate::openapi::MutationProblems,crate::routes::items::IfMatchProblem,crate::openapi::RateLimitProblem))]
 pub fn delete_attachment<'a>(
@@ -299,5 +326,21 @@ pub const ENDPOINTS: &[Endpoint] = &[
 const LIST_LIVE_COMMENTS_AFTER: &str = concat!(
     "SELECT ",
     service::comment_columns!(),
-    " FROM porchlight.comments WHERE item_id=$1 AND deleted_at IS NULL AND ($2::uuid IS NULL OR id>$2) ORDER BY id LIMIT $3"
+    " FROM porchlight.comments WHERE item_id=$1 AND deleted_at IS NULL AND ($2::uuid IS NULL OR id>$2) AND ($4::uuid[] IS NULL OR id=ANY($4)) ORDER BY id LIMIT $3"
 );
+
+pub(crate) async fn comment_rows(
+    conn: &mut sqlx::PgConnection,
+    id: Uuid,
+    after: Option<Uuid>,
+    limit: usize,
+    ids: Option<&[Uuid]>,
+) -> Result<Vec<Comment>, ApiError> {
+    Ok(sqlx::query_as::<_, Comment>(LIST_LIVE_COMMENTS_AFTER)
+        .bind(id)
+        .bind(after)
+        .bind(limit as i64)
+        .bind(ids)
+        .fetch_all(conn)
+        .await?)
+}

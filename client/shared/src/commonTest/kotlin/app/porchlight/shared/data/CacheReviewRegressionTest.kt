@@ -128,7 +128,7 @@ class CacheReviewRegressionTest {
                 val data = HouseholdData(cache, GeneratedCall({ api }, { null }), { now })
                 val row = attachmentFixture().copy(hasThumbnail = true)
                 cache.install(emptySnapshot(1).copy(items = listOf(itemRead(row.itemId)), occurrences = listOf(occurrenceRead("occ", row.itemId)), comments = listOf(commentFixture()), attachments = listOf(row)))
-                keys += "0-${row.id}-${row.version}-file"; keys += "0-${row.id}-${row.version}-thumb"; views += row.id
+                keys += attachmentKey(cache.attachmentNamespace, row, false); keys += attachmentKey(cache.attachmentNamespace, row, true); views += row.id
                 assertFailsWith<ApiProblem> { if (endpoint == "comment") data.comments.refresh(row.itemId) else data.attachments.download(row) }
                 assertTrue(cache.view.value.comments.isEmpty(), "$endpoint $status comments")
                 assertTrue(cache.view.value.attachments.isEmpty(), "$endpoint $status attachments")

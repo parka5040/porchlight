@@ -10,6 +10,8 @@ interface AttachmentActions {
     fun file(commentId: String? = null)
     fun camera(commentId: String? = null)
     suspend fun prepareViewer(id: String, mime: String, bytes: ByteArray): app.porchlight.shared.data.PreparedAttachmentViewer
+    suspend fun prepareContentViewer(id: String, mime: String, content: app.porchlight.shared.data.AttachmentContent): app.porchlight.shared.data.PreparedAttachmentViewer =
+        prepareViewer(id, mime, content.bytes())
     suspend fun open(id: String, mime: String, bytes: ByteArray) {
         val viewer = prepareViewer(id, mime, bytes)
         try { viewer.launch() } catch (e: Exception) {

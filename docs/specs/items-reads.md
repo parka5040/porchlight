@@ -70,6 +70,182 @@ capabilities and empty entries/Got it/viewers, with no name. Clients render "Pri
 content or a parent link. Authorized parent readers retain view/delete. This opt-in does not change stream/item
 ACL authority, and stale-delete `current` descriptors follow the same redaction.
 
+## Item sync bundle
+
+`GET /v1/items/{id}/sync` is the authoritative targeted replacement protocol advertised by
+`GET /v1/me` as `capabilities: ["item-sync-v1"]` (additive string array). Older clients ignore
+it; clients on servers without that capability keep full-snapshot sync. An unsupported endpoint
+is **not** evidence of deletion.
+
+The bundle uses one read-only REPEATABLE READ transaction and the snapshot document writer.
+Every item/child query is item-keyed before decoding. Normal read admission applies, plus four
+active responses per device (PAT identity on the agent surface); excess requests get the existing
+429 `rate-limited` problem and `Retry-After`. Permits survive unread/gzipped bodies and release on
+EOF/disconnect. No snapshot device/member/global admission is acquired. JSON negotiates gzip
+through the normal final response layer; no binary attachments are fetched.
+
+Top-level fields:
+
+- `items`: exactly one **ItemRead**, including the snapshot's relationships, reminders,
+  capabilities and pending flag (not the narrower item-detail shape).
+- `window_from`, `window_to`: server clock minus 180 days / plus 18 calendar months;
+  legacy aliases of `coverage.occurrences.from`/`to`, with zone/local metadata in that
+  coverage object (not a separate occurrence window).
+- `occurrences`, `scheduled_reminders`: the identical snapshot rows for this item. Membership
+  uses household-zone/DST refinement and the conservative detached generated/effective hull;
+  undated occurrences are included. Reminders are caller-private (agents see all) and require
+  both an included occurrence and a fire time in the half-open server window.
+- `board`: all household-board cards for this item under the caller's ACL, **including cards
+  outside the occurrence window**. A retained mine view filters these by its normal relationships.
+- `agenda`: `{member_id, from, to, items: ItemRead[]}` per requested window. Repeat
+  `agenda=<member UUID>:<RFC3339 from>:<RFC3339 to>` up to eight times; identical windows
+  are deduplicated. Each half-open window must be positive and at most 730 days. URL-encode
+  offset `+` signs. Membership, ACL, ordering, masked hard conflicts and load warnings share
+  `/v1/agenda`'s SQL/decoration. At most **200 agenda rows total** are returned across windows.
+  `coverage.agenda` contains `{member_id,from,to,zone,local_from,local_to,cursor,next_cursor,complete}`
+  per window; the same zone/local bounds appear on each top-level `agenda` window.
+  Repeat `agenda_cursor=<next_cursor>` for incomplete scopes on the same sync endpoint.
+  Unrequested scopes are untouched, not empty replacements.
+- `suggestions`: snapshot-shaped suggestions referencing this item, caller-private (all for agents).
+- `comments`, `attachments`, `lists`: populated only with `include=collaboration`, otherwise empty
+  **without replacement coverage**. Lists include attached templates and readable inherited
+  per-occurrence templates along split ancestry, never unrelated standalone lists. Attachment
+  entries are metadata only. Comments use ascending UUID keyset order, capped at **200** per
+  response. Send `comments_cursor=<comments_next_cursor>` to this same endpoint to continue;
+  nonempty comment pages' cursors also work with the ordinary comments collection.
+- Every document is bounded to **8 MiB uncompressed**, enforced by the document writer.
+  Agenda/comment rows are staged one at a time; a row crossing the byte budget starts the
+  continuation instead (so a page may have fewer than 200 rows). A bounded 32 KiB footer
+  allowance reserves coverage/cursors and delimiters within that budget. Canonical nonpaged
+  item/child sections (including board, suggestions, attachment/list metadata) must also fit.
+  If those sections alone exceed the budget, the endpoint fails closed with **422
+  `item-sync-too-large`** (`application/problem+json`), not a truncated bundle or a 500.
+  This grants no replacement coverage: retain unacknowledged work and use the ordinary
+  paginated collection reads to reconcile; retrying the same oversized bundle will not help.
+  Only agenda and comments have sync continuations; there are no canonical-section cursors.
+- `coverage`: `{item_id, continued, item_sections, occurrences:{from,to,zone,local_from,local_to}, undated_occurrences,
+  reminder_member_id, scheduled_reminders:{from,to}, board_scope:"household",
+  agenda:[{member_id,from,to,zone,local_from,local_to,cursor,next_cursor,complete}], suggestions, collaboration,
+  comments, comments_cursor, comments_complete}`. `reminder_member_id` is null for agents.
+  Initial responses have `continued:false,item_sections:true,suggestions:true`; `collaboration`
+  covers attachments/lists only when requested. `comments` explicitly covers comment pages.
+  Continuation requests contain only `agenda_cursor` and/or `comments_cursor`, never initial
+  `agenda`/`include` parameters, and return only those continued sections plus metadata. They
+  set `continued:true,item_sections:false,suggestions:false,collaboration:false`; the legacy
+  window/board metadata does not grant replacement coverage when `item_sections` is false.
+  Unrequested sections are omitted on continuations and grant **no** replacement coverage.
+
+### Exact occurrence coverage membership (additive metadata)
+
+`coverage.occurrences.zone` is the household IANA zone read in the same RR view as
+snapshot membership, **not** the device/member zone or the fixed item's zone.
+`local_from` and `local_to` are the exact `from`/`to` projections into that zone,
+ISO-8601 wall-clock strings without offset (fractional seconds retained). These three
+properties are optional in OpenAPI for compatibility with older servers; this server
+always emits them for occurrence coverage, including continuation metadata. Their absence
+on an older server requires snapshot fallback when local membership cannot be determined.
+Reminder coverage remains `{from,to}`: reminder fire times are instants only.
+
+**Membership compares resolved instants, not naive local bounds.** The local bounds
+are projections, not separately rounded dates or independent membership thresholds.
+Retain UTC `from`/`to` to distinguish both sides of a DST fold: converting a bound to
+local and back with the earlier-fold rule can change the bound. In particular, a window
+beginning at the second 01:30 does not cover a floating point resolving to the first
+01:30. Do not implement `local_from <= local_anchor < local_to`.
+
+For each cached occurrence of this item, apply the following independent client rule:
+
+1. Start with its generated anchor fields. Only when `is_detached` is true, replace
+   each `local_start`, `local_end`, `local_due`, `due_date` with its non-null
+   `override_local_start`, `override_local_end`, `override_local_due`, `override_due_date`.
+   Null overrides retain generated fields. For a detached **fixed** item with `tzid`,
+   re-resolve the effective local start/end pair in the **item's** zone and replace
+   `starts_at`/`ends_at`; similarly a non-null effective `local_due` replaces `due_at`.
+   Otherwise generated fixed instants are authoritative, including a known second-fold
+   instant; never re-resolve those instants from their generated wall time.
+2. Resolve local times with core's DST rule: choose the **earlier instant** in a fold;
+   in a gap, advance to the first valid wall-clock minute after the gap (not "add the
+   gap duration"). Resolve a positive local start/end pair together: if the resolved
+   end is at/before the resolved start, set end to resolved start plus the original
+   positive wall-clock duration (R10). Preserve the nominal local fields.
+3. In the household `coverage.occurrences.zone`, compute `S` as the first non-null of
+   `starts_at`, `due_at`, resolved `local_start`, resolved `local_due`, resolved midnight
+   of `due_date`. Compute `E` as the first non-null of `ends_at`, the resolved end of
+   a valid local start/end pair (including R10), resolved `local_end`, resolved midnight
+   of the day after `due_date`. Thus floating spans/points resolve in the household
+   zone; date-only rows cover the household-local day, regardless of the item's
+   `time_mode`/`all_day` flag. All-day spans follow their stored start/end anchors by
+   the same rule, and may span multiple local days. Each midnight is resolved separately,
+   so DST days need not be 24 hours. This priority also specifies mixed legacy anchor fields.
+4. If `S` is absent the row is undated (covered only with `undated_occurrences:true`).
+   Otherwise, if `E` exists, membership is `S < to && E > from`; if `E` is absent,
+   membership is `from <= S && S < to`. Spans touching only an endpoint are excluded;
+   points at `from` are included and points at `to` excluded. All comparisons are UTC.
+
+With `item_sections:true`, an absent occurrence satisfying this rule can be removed;
+rows outside coverage cannot. The SQL generated/detached hull is only a conservative
+candidate optimization, **not** a union of generated/effective membership. Classify the
+effective anchor only. Invalid raw-SQL timing rows retain the snapshot's SQL-bounded
+fail-open behavior; a client unable to decode/resolve an anchor must retain it and fall
+back, never infer deletion from an unclassifiable row.
+
+### Agenda window coverage
+
+Each `coverage.agenda[]` and `agenda[]` window also reports `zone`, `local_from`,
+`local_to`, on initial and continuation pages. Here `zone` is the requested member's
+**effective** zone (`tzid` for ordinary members, household zone for dependents), which
+can differ from occurrence coverage. The local bounds are exact projections of that
+window's UTC bounds. A nonexistent/other-household member has an empty agenda and no
+zone/local metadata. No zone metadata is placed in the authenticated cursor; a fresh
+RR view supplies it on each continuation, just like the projection rows.
+
+Agenda membership uses the cached **agenda projection**, not occurrence anchors:
+include when `(starts_at < to && ends_at > from)` or
+`(from <= due_at && due_at < to)`, or for `due_date` when
+`due_date >= UTC_date(from)-3 days`, `A < to`, and next-day local midnight `> from`;
+`A` is the first non-null of `starts_at`, `due_at`, and local `due_date` midnight.
+Date midnights here use PostgreSQL `AT TIME ZONE` in the reported zone, matching
+`/v1/agenda`: ambiguous midnight chooses the **later** instant, nonexistent midnight
+uses the pre-transition offset (not core's gap-to-first-valid rule). Floating agenda
+spans/points are already member-resolved instants from derivation; do not resolve
+occurrence wall fields again. Never use the household occurrence rule for agenda
+removal. Also honor the covered key interval `(A,occurrence_id)` and `complete`/cursor
+rules below: zone metadata does not turn a partial page into full-window coverage.
+
+Clients **must keep requesting until every scope is complete**. Each page is an authoritative
+replacement of **exactly the rows/key interval it covers**, like `/v1/agenda` pages: after the
+input cursor through the last returned key, or through the end when `complete` is true. An
+empty incomplete page covers no rows. Never erase an entire window/thread on a partial page.
+Apply omission removal only for covered intervals; aggregate full scopes only after exhaustion.
+No coverage authorizes household-wide deletion. Each continuation reads a fresh RR view;
+concurrent events keep the scope dirty for another reconciliation. There is no global stream cursor.
+
+Invisible, soft-deleted and physically purged items return the **same 404 not-found problem as
+item GET**. A capable client must evict that item and its child/file/projection scopes on this
+response, rather than retaining old private rows. Other failures retain unacknowledged work.
+
+`porch items sync <ID> [--agenda <member>:<from>:<to>] [--include collaboration] [--json]`
+follows every continuation and merges all pages into one JSON output, with final complete
+coverage and null continuation cursors. Only this command accepts up to 9 MiB per HTTP response
+(the server budget plus margin); other CLI JSON commands retain the 4 MiB safety limit.
+It uses the same read protocol. No new tables, write grants, outbox producers or derivation inputs
+are introduced; existing export and backup/restore coverage is unchanged. Client installation
+and event dispatch are separate rollout slices; capability alone does not enable differential
+sync until the client equivalence gate passes.
+
+### Exact requested-id refetches
+
+`GET /v1/notifications?ids=<UUID>,...` and `GET /v1/items/{id}/comments?ids=<UUID>,...`
+accept **1–100** validated UUIDs. These are complete, unpaginated scoped refetches (`next_cursor:null`),
+not a page of the collection: only requested, existing, visible rows are returned. A requested
+id absent from `items` means **removed or invisible for this caller** and must be evicted from
+that scope. Read notifications are included, but unreleased or another recipient's notifications
+are not. Notification sources still recheck the recipient's authoritative item ACL. Comment
+parent ACL is checked in the same RR view; an invisible parent returns 404 for whole-item eviction.
+`ids` is exclusive with `cursor`, `limit`, and (for notifications) `unread`; invalid UUIDs, empty
+sets, more than 100 entries and conflicting options return 400 invalid-request. Existing collection
+pagination is unchanged when `ids` is absent.
+
 ## S8a read extensions (0040–0044)
 
 `/v1/snapshot` includes `ics_sources`: live feed summaries only for app super admins and admin PAT agents, fetched inside the same read-only REPEATABLE READ transaction as items and the household stream scan cursor. The device-cache projection contains only `id`, `name`, URL `host`, `enabled`, categorical `last_status`, `last_fetch_at` and `version`. It omits the full URL (often a bearer secret), ETag/Last-Modified, import key and remote error/warning details. Full configuration stays behind the super-admin `/v1/feeds` route (admin PAT counterpart `/v1/admin/feeds`); devices fetch it on demand rather than storing it in the snapshot. Regular members receive an empty array, even when they own a feed appointment. Import scope rows are omitted. Source URLs/validators never appear in search.
@@ -165,6 +341,8 @@ Kinds and actor-self suppression are data in the owner-written `porchlight.notif
 | calendar_changed | yes | 0044 | Changed imported/feed appointment (details below) |
 | feed_error | no | 0044 | Failed/partial feed fetch (details below) |
 | backup_stale | no | 0057 | No successful household backup for more than 26 hours |
+| server_certificate_expiring | no | 0077 | Daily server-leaf expiry band (90/60/30/7 days); live super admins only |
+| disk_headroom_low | no | 0077 | Hourly byte/inode/backup-working-space headroom alert; live super admins only |
 
 To extend: in the workstream's reserved migration, `INSERT INTO porchlight.notification_kinds(kind,self_suppressed,description) VALUES (…) ON CONFLICT (kind) DO NOTHING`, and add a row here. Never redefine `pl_emit_notification_event` or a kind CHECK outside 0015. The notifier handles registered kinds generically with safe default templates for kinds it does not yet know.
 No notifications table or delivery/routing is implemented here (S6).

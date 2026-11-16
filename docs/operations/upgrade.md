@@ -15,6 +15,19 @@ verified handoff. The new extractor cannot retroactively protect that first hop.
 installer's `upgrade --source`: 0.1.6 keeps its old, unfenced rollback implementation even with new artifacts.
 These shipped scripts cannot be repaired by documentation or by replacing only the API image.
 
+## 0.1.7 → 0.1.8 durable-fence hop
+
+The installed 0.1.7 network wrapper verifies/downloads the new signed distribution, then **execs the verified
+new installer before quiescing services or creating its old runtime fence**. The 0.1.8 installer owns the entire
+mutation window: fsync durable fence → legacy runtime fence → stop old API/backup → gate agent SQL → old-image
+backup/dump → validate/stage configuration and credential files → switch → superuser bootstrap/migrate → new API
+health → fsync committed/forward-only phase → restore agent LOGIN → remove both fences. Old-image rollback still sees the runtime fence. A reboot in the new-API health window
+loses only the runtime fence; new Compose/API continue to see `/data/maintenance` and refuse writes. Before the
+handoff, the old API is serving the old database and no upgrade mutations have begun. Never select an old
+installer's `upgrade --source`; use the selected release's independently verified installer for local sources.
+An existing missing `LAN_BIND` produces a notice and preserves wildcard exposure until explicitly configured;
+see [hardening acceptance](deploy-hardening.md) for that command and controller-only container proofs.
+
 ## Subsequent upgrades
 
 Once the hardened release after 0.1.6 is installed, `porchlight-upgrade` is safe to use for subsequent signed
@@ -117,19 +130,26 @@ Read-side effects audited across the registered GET handlers and their shared ex
   not GET side effects. SSE replay/connection cursors are process-local; no durable read receipt is written.
   Background projection/notification work is not an externally acknowledged household edit and can be recomputed.
 
-The fence is `<run-dir>/maintenance`; server config `PORCHLIGHT_MAINTENANCE_FILE` / `--maintenance-file` defaults
-to `maintenance` beside the agent socket. The production installer requires this default path in its shared run
-mount. The API caches filesystem status for 250 ms; allow that delay after manual fence changes. A manual fence
+The durable fence is `<root>/data/maintenance`, fsynced with its parent before any new API starts; production
+Compose sets `PORCHLIGHT_MAINTENANCE_FILE=/data/maintenance`. Installer also writes `<run-dir>/maintenance`
+for old APIs during upgrade/rollback. Direct server configuration without that environment setting retains the
+legacy default beside the agent socket. Reboot can remove `/run`, never the durable fence. Both fences are
+removed only after successful completion/rollback (or handled forward recovery after rollback is disarmed).
+The API caches filesystem status for 250 ms; allow that delay after manual fence changes. A manual fence
 does not drain in-flight writes; the installer stops the old API before taking its dump. Independently, the
 installer sets `porchlight_agent NOLOGIN` and waits for termination of existing agent backends before either
 snapshot, preventing raw SQL commits from being acknowledged and then discarded by dump rollback. The role
 stays gated throughout migration and rollback (database bootstrap preserves existing role login attributes).
-After commit or rollback, including handled failures/signals, cleanup restores `LOGIN`; failure to do so is reported.
+After commit or successful rollback, cleanup restores `LOGIN` only after a durable committed decision. Failed
+rollback retains `NOLOGIN` and the HTTP fence; keep external SQL clients stopped until recovery is complete.
 Superuser/migrator credentials must remain operator-only: the agent gate does not fence those privileged writers.
 
-**Point of no return:** after health succeeds, a single shell assignment disarms destructive rollback before
-removing the fence. Signals at this boundary recover forward, including removing the fence. The plain dump is
-then removed. Backup/sidecar startup failures or handled signals thereafter keep the new release/API and
+**Point of no return:** after health succeeds, the installer atomically replaces the durable fence with its
+`committed` phase and fsyncs the file and directory **before** restoring agent LOGIN or removing either fence.
+Recovery consults that phase even if a signal interrupted the shell assignment. The new release/database are
+then forward-only. The marker remains through agent restoration and is finally unlinked with directory fsync;
+a crash around unlink may leave either a committed marker or no marker, never a rollback-authorizing pending
+marker. The plain dump is then removed. Backup/sidecar startup failures or handled signals thereafter keep the new release/API and
 its database, exit nonzero, and print `FORWARD RECOVERY` with private logs and a shell-quoted recovery command.
 Fix the auxiliary service error and run that command (`up --no-deps` for backup/sidecar); do not restore the
 pre-upgrade snapshot over new writes. A same-version upgrade is not an auxiliary-service repair. Success prints
@@ -143,18 +163,39 @@ partially migrated database. Post-exposure recovery must preserve the new databa
 
 ### Stale maintenance fence
 
-SIGKILL/power loss can leave `<run-dir>/maintenance`. The installer reports it and refuses service changes;
-it never silently removes an unexplained fence. Keep writes disabled while privately inspecting the active
-release, `<root>/tmp/install.*/` logs and recovery dump. Stop API/backup before any database recovery. Once the
-chosen release/database is consistent and its healthcheck passes, the owner may remove the fence and resume
-service. If the fence is absent, new writes may already have been acknowledged even if a plain dump remains:
-recover forward, never restore that dump over the live database. Do not run a second installer until recovery is
-resolved; remove an obsolete plain dump only after confirming it is no longer needed. Failed automatic rollback
-retains the HTTP fence; successful rollback and handled forward recovery remove it. SIGKILL/power loss can also
-leave the agent role `NOLOGIN`. Once the chosen release/database is consistent, restore it with
-`ALTER ROLE porchlight_agent LOGIN` using a private operator psql session. Handled failed rollbacks attempt to
-restore LOGIN too: stop external SQL clients and set the role NOLOGIN again before manual database recovery;
-the filesystem fence protects HTTP only. Never print credentials or connection strings.
+SIGKILL/power loss can leave `<root>/data/maintenance` and/or `<run-dir>/maintenance`. The durable file survives
+reboot. Both `pending` and `committed` keep the API write-fenced on startup; unknown/unreadable files fail closed.
+The installer reads and reports the phase, then refuses further service changes. It never performs an unattended
+restore or clears a stale marker. Hold the per-stack installer lock during manual recovery, stop external SQL
+clients and inspect only privately: the active signed release, configuration, logs and recovery dump.
+
+The exact 0600 UTF-8 phase file format is one of these single lines (including the final newline):
+
+```text
+porchlight-upgrade-v1 pending
+porchlight-upgrade-v1 committed
+```
+
+- **pending:** agent LOGIN has not been restored and HTTP remains fenced. Keep the agent NOLOGIN and stop
+  API/backup. Determine from private logs whether migration began. If it did, restore the complete pre-upgrade
+  dump using the old signed release/configuration and bootstrap; otherwise restore the old release/configuration
+  without replacing the database. Alternatively complete the new migration deliberately while still fenced.
+  Health-check the selected release/database, durably replace the marker with `committed`, then resume as below.
+- **committed (forward-only): NEVER restore the pre-upgrade dump.** SQL writes may already have been acknowledged,
+  even while HTTP remains fenced. Preserve the selected release and database; repair/start them and health-check
+  without database replacement. This also applies to a committed successful rollback: the selected release is then
+  the old release, and its resumed database must not be reset again. Restore agent LOGIN using a private operator
+  session (`ALTER ROLE porchlight_agent LOGIN`), remove the runtime fence, unlink the committed durable marker and
+  fsync its parent directory. Resume auxiliary services. Retire the plain dump only after verifying recovery.
+- **absent:** new writes may have been acknowledged; recovery is forward-only even if the dump or runtime marker
+  remains. Never infer permission to restore from a leftover dump. Resolve any runtime marker only after health.
+- **unknown/unreadable or legacy `upgrade pending`:** keep both HTTP and SQL writers disabled. The old format did
+  not durably record exposure; recover forward unless independent evidence proves that no writes were exposed.
+
+For a manual pending-to-committed transition use the newest verified installer's trusted operations helper
+(`durable-fence <root> commit`); its atomic replacement fsyncs the file and parent. Its `remove` action fsyncs the
+parent after unlink. Do not use an ordinary text editor or an unsynced `rm` as the durability protocol. Never
+print credentials or connection strings; do not retry another installer until the stale recovery state is resolved.
 
 ## Ordering-key maintenance (migration 0067)
 

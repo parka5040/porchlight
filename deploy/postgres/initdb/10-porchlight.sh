@@ -1,6 +1,17 @@
 #!/bin/sh
-# First start and restore. Secrets cross the process boundary via environment, never argv.
+# First start and restore. Read credential files natively; old stacks may still supply environment values.
 set -eu
+for role in MIGRATOR APP AGENT BACKUP; do
+  key=PORCHLIGHT_${role}_PASSWORD
+  file_key=${key}_FILE
+  eval 'path=${'"$file_key"'-}'
+  if [ -n "$path" ]; then
+    value=$(cat -- "$path")
+    [ -n "$value" ] || exit 1
+    export "$key=$value"
+  fi
+done
+unset value path
 : "${PORCHLIGHT_MIGRATOR_PASSWORD:?PORCHLIGHT_MIGRATOR_PASSWORD is required for bootstrap}"
 : "${PORCHLIGHT_APP_PASSWORD:?PORCHLIGHT_APP_PASSWORD is required for bootstrap}"
 : "${PORCHLIGHT_AGENT_PASSWORD:?PORCHLIGHT_AGENT_PASSWORD is required for bootstrap}"

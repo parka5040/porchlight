@@ -26,6 +26,7 @@ macro_rules! problem_catalog {
 }
 problem_catalog! {
     CalendarTooLarge => ("calendar-too-large",422,"Calendar exceeds apply work budget"),
+    ItemSyncTooLarge => ("item-sync-too-large",422,"Item sync exceeds 8 MiB document budget"),
     InvalidRequest => ("invalid-request",400,"Invalid request"),
     IdempotencyKeyRequired => ("idempotency-key-required",400,"Idempotency key required"),
     CsrInvalid => ("csr-invalid",400,"Invalid certificate request"),
@@ -55,6 +56,7 @@ problem_catalog! {
     PurgeDependencyUnhandled => ("purge-dependency-unhandled",409,"Purge requires a retention migration"),
     Internal => ("internal",500,"Internal server error"),
     Maintenance => ("maintenance",503,"Server is updating"),
+    DatabaseBusy => ("database-busy",503,"Database is busy"),
     // s7b: collaboration/ingest problems
     CommentEditExpired => ("comment-edit-expired",403,"Comment edit window expired"),
     AttachmentTooLarge => ("attachment-too-large",413,"Attachment exceeds 25 MiB limit"),
@@ -90,6 +92,7 @@ impl Problem {
         doc.push_str("\nExtensions: `upgrade-required` includes `min_client_version`; `version-conflict` includes `current`; `validation-failed` includes `errors: [{field, message, code?}]`. Body references use `validation-failed` (422), with `invalid-reference` or `stale-neighbour` field codes for board bounds; 404 is reserved for hidden/missing path resources. Idempotency keys cover method, path/query and body, **not If-Match**: rotate the key after `version-conflict`, otherwise the stored response replays. All bodies retain `type`, `title`, `status`, `detail`; internal errors never reveal details.\n");
         doc.push_str("\nA sealed 422 (including `stale-neighbour`) replays for its original key. After refetching neighbours or correcting validation, a retry with a changed body needs a **NEW Idempotency-Key**; reusing the old key returns `idempotency-key-reused`.\n");
         doc.push_str("\n`maintenance` (503) rejects mutations before authentication, body reads and idempotency while the installer write fence exists. `Retry-After: 1`; retry the identical request after waiting. Reads and healthchecks remain available.\n");
+        doc.push_str("\n`database-busy` (503) means request-pool acquisition exceeded its deadline (default 2 s). `Retry-After: 1`; retry the identical request. Mutations roll back without sealing the claim.\n");
         doc
     }
 }
@@ -156,8 +159,12 @@ impl ApiError {
             slug: problem.slug(),
             title,
             detail: None,
-            retry_after: None,
-            transient: false,
+            retry_after: if problem == Problem::DatabaseBusy {
+                Some(1)
+            } else {
+                None
+            },
+            transient: problem == Problem::DatabaseBusy,
             apply_timeout: false,
         }
     }
@@ -226,6 +233,10 @@ impl std::fmt::Display for ApiError {
 impl std::error::Error for ApiError {}
 impl From<sqlx::Error> for ApiError {
     fn from(error: sqlx::Error) -> Self {
+        if matches!(error, sqlx::Error::PoolTimedOut) {
+            tracing::warn!(kind = "database_pool_timeout", "request pool is busy");
+            return Self::new(Problem::DatabaseBusy);
+        }
         if let Some(db) = error.as_database_error() {
             // NOWAIT / lock timeout, serialization failure and deadlock abort the
             // transaction. Domain callbacks using `?` must never seal in that state.

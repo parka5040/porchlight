@@ -21,6 +21,8 @@ use uuid::Uuid;
 #[into_params(parameter_in = Query)]
 #[serde(deny_unknown_fields)]
 pub struct InboxParams {
+    /// 1..100 comma-separated UUIDs, including read rows. Exclusive with unread/cursor/limit.
+    pub ids: Option<String>,
     pub unread: Option<bool>,
     pub cursor: Option<String>,
     pub limit: Option<u16>,
@@ -169,11 +171,19 @@ async fn inbox(
     member: Uuid,
     p: InboxParams,
 ) -> Result<Json<Page<Notification>>, ApiError> {
-    let limit = PageParams {
-        cursor: None,
-        limit: p.limit,
+    let ids = crate::pagination::parse_ids(p.ids.as_deref())?;
+    if ids.is_some() && (p.unread.is_some() || p.cursor.is_some() || p.limit.is_some()) {
+        return Err(ApiError::new(Problem::InvalidRequest));
     }
-    .limit()?;
+    let limit = if ids.is_some() {
+        100
+    } else {
+        PageParams {
+            cursor: None,
+            limit: p.limit,
+        }
+        .limit()?
+    };
     let unread = p.unread.unwrap_or(false);
     let context = format!(
         "notifications:{}:{}:{}:{unread}",
@@ -196,7 +206,7 @@ async fn inbox(
     }
     // Filter BEFORE pagination: inaccessible coalesced sources cannot create empty/short pages.
     let sql = format!(
-        "{ROW} and (not $3 or read_at is null) and ($4::uuid is null or id<$4) and exists(select 1 from porchlight.notification_sources s join porchlight.notification_events e on e.id=s.event_id where s.notification_id=notifications.id and (e.item_id is null or porchlight.pl_item_can_read(e.item_id,$2))) order by id desc limit $5"
+        "{ROW} and (not $3 or read_at is null) and ($4::uuid is null or id<$4) and exists(select 1 from porchlight.notification_sources s join porchlight.notification_events e on e.id=s.event_id where s.notification_id=notifications.id and (e.item_id is null or porchlight.pl_item_can_read(e.item_id,$2))) and ($6::uuid[] is null or id=any($6)) order by id desc limit $5"
     );
     let rows: Vec<Row> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(caller.household_id())
@@ -204,6 +214,7 @@ async fn inbox(
         .bind(unread)
         .bind(after)
         .bind((limit + 1) as i64)
+        .bind(ids)
         .fetch_all(&mut *tx)
         .await?;
     let values = details(&mut tx, member, caller.household_id(), rows).await?;
@@ -231,6 +242,7 @@ pub async fn admin_list(
         &caller,
         p.member,
         InboxParams {
+            ids: None,
             unread: p.unread,
             cursor: p.cursor,
             limit: p.limit,

@@ -10,12 +10,21 @@ R64 background/PIN, durable delivery, fake-bus desktop protocol coverage and con
 - `AppServices.data.live`: application-owned `LiveSync?`, initialized by `HouseholdData.bindTrust`; `state`, `unreachableSince`, `networkChanged()` and `successfulRequest()` are reachability/reconnect seams. Ready and PinRequired share a usable background session: relock neither cancels nor reconnects SSE. Session replacement reconnects even when expiry/re-login state changes conflate. Epoch/token checks still fence frames, problems, generated replies and cache commits.
 - `withBackgroundSession(controller)`: application-owned scope captures the original epoch/token. Only sync reads and notification Complete/Read routes can use the stored key/session while PIN-locked. UI requests still throw HouseholdLocked/HouseholdLockedAfterReply; account/device/admin/step-up calls require the PIN. All other trust gates block background API work. TrustGate still hides cached UI content. Workers restore the key/session without unlocking the UI.
 - `NotificationRepository`: typed recipient-private `notifications`/`prefs`; paginated refresh, Read/ReadAll and PutPrefs. ScreenWrites retains immutable UI retry keys/body/version. Six channels remain unchanged. Device-local Stay connected is opt-in.
-- `ReadCache.acknowledgeCursor(seq)`: durable monotonic acknowledgement AFTER refetch/eviction. Notifications/prefs stage with the atomic snapshot. List/entry tickles also refetch retained per-occurrence check scopes (bounded to 32); resnapshot stages these scoped checks before promoting its cursor. `putOccurrences(...,includeUndated)` removes only rows authoritatively covered by the answer. Resource visibility generations fence delayed pre-eviction reads independently of the household identity epoch.
+- `ReadCache.acknowledgeCursor(seq)`: durable monotonic acknowledgement AFTER refetch/eviction. Its cursor-only
+  transaction retains the normal identity/owner/reset gates without decoding payload rows or emitting a presentation
+  view; `cache.sync` carries the live cursor. Full-refresh tickles share application-owned in-flight work and skip a
+  follow-up when its installed cursor already covers their sequence. A tickle awaits only its satisfying demand
+  cohort, never unrelated later refreshes, so a sustained burst cannot starve subsequent eviction frames. Flights
+  include the session revision; replacing a token restarts on current-session work, not an obsolete cancellation.
+  Request-start fence capture and cohort activation are atomic with demand admission; a restored-access event needs
+  a post-eviction read, not a cursor-covered older read whose fence would discard the restored item. The admission
+  lock is released before network work.
+  Evictions remain immediate, never scheduled behind network work, and LiveSync still applies before acknowledging. Notifications/prefs stage with the atomic snapshot. List/entry tickles also refetch retained per-occurrence check scopes (bounded to 32); resnapshot stages these scoped checks before promoting its cursor. `putOccurrences(...,includeUndated)` removes only rows authoritatively covered by the answer. Resource visibility generations fence delayed pre-eviction reads independently of the household identity epoch.
 - `AlarmLedger`: private durable codes/generations, seven-day reconciliation and pending-derivation preservation. Inactive/delivered tickets older than seven days are pruned; monotonic nextCode prevents reuse. Android caches the ledger per process and commits only changed preference rows; desktop checkpoints changed per-code files under `alarm-tickets/`. Legacy tables migrate once. Delivered tickets also reconcile remote completion/eviction. Codes are not reset on identity end. Snooze uses original code/generation/timestamp and only due/delivered tickets; retry returns the identical ticket, older generations never overwrite a newer snooze. Source fireAt is retained, so server reschedules override local snooze; delivered snooze clears its flag. Today offers snooze only after delivery.
 - Reminder scheduling and local delivery share the server's open-status rule: every status except `done`/`skipped`, including `backlog`. Desktop advances the seven-day window at least every 60 seconds even with no tickets or cache emissions, and immediately on resume; that cadence also observes clock/time-zone changes. Android's unconstrained 15-minute WorkManager safety net reconciles from cache before network work; boot/time/zone/permission broadcasts reconcile the window as well as rearming existing tickets.
 - `DeliveryInventory`: separate from disposable read cache, persists OS tags/versions/handles, pending delivery and local-dismissal tombstones (no titles/bodies/session tokens). Android commits before notify and after success; replay replaces the same tag. Cold-start unread alerts are delivered; remote read/removal/completion cancels persisted OS deliveries, including local alarms. Permission-denied local delivery remains pending and is retried on recovery. Desktop additionally persists the notification server's unique bus owner: restore handles only for that owner, never cancel reused IDs on a replacement server. Desktop delivery is at-least-once across the unavoidable Notify-reply-to-disk crash window, not an exactly-once claim.
 - Android notification receivers enqueue expedited WorkManager (including snooze), never perform network writes. Durable inputs include original id/version/key and a non-secret session fingerprint; old-account work cannot acquire replacement credentials. Complete/Read use the scoped repositories. Exhausted unsealed 409 contention and ambiguous outcomes (including proxy/non-problem errors and undecodable replies) return Worker retry with the same frozen inputs/key. Version conflicts/terminal errors produce a persisted nonsecret recovery notice, not silent automatic conflict replay. Pre-31 expedited fallback has ForegroundInfo; WorkManager and stream services declare specialUse. Due alarms read disk only and do not require network/PIN; posting inventories are committed before the alarm is marked fired.
-- Android background stream service is user-opt-in and START_STICKY; BOOT_COMPLETED restarts it only when opted in. Foreground UI also enables SSE for its lifetime. An opted-out background receiver performs disk-only delivery/reschedule, never a bind-triggered snapshot/SSE; its 15-minute worker performs one snapshot. Opted-in workers reuse live binding/replay. Application-owned NetworkCallback wakes reconnect. Receiver scheduling and durable ledger writes run on IO/goAsync. Exact alarms use USE_EXACT_ALARM on API33+ and SCHEDULE_EXACT_ALARM maxSdkVersion=32 (R66); only API31-32 supports normal denial/recovery testing.
+- Android background stream service is user-opt-in and START_STICKY; BOOT_COMPLETED restarts it only when opted in. Foreground UI also enables SSE for its lifetime. An opted-out background receiver performs disk-only delivery/reschedule, never a bind-triggered snapshot/SSE; its CONNECTED 15-minute network worker performs bounded cursor catch-up on capable servers, or the legacy full read. A separate unconstrained worker reconciles local alarms/notifications offline. Opted-in healthy streams retain their unread-only safety net. Application-owned NetworkCallback wakes reconnect. Receiver scheduling and durable ledger writes run on IO/goAsync. Exact alarms use USE_EXACT_ALARM on API33+ and SCHEDULE_EXACT_ALARM maxSdkVersion=32 (R66); only API31-32 supports normal denial/recovery testing.
 - Desktop `DesktopBus` exports SNI/dbusmenu and uses freedesktop Notifications. Alarm timers wait for the next fireAt, bus owner/watcher changes use signals, and reachability waits for lastSuccess+5 minutes. No healthy-bus polling or unchanged ledger writes. Session-bus absence retries at 15-second intervals. `DesktopInstance` uses a private lock and WatchService focus signal. Corrupt delivery JSON gives a notice and rebuild, never an indefinitely pending initializer.
 - Desktop **Start at login** is opt-in and resolves the packaged `bin/porchlight` wrapper from the native launcher (`jpackage.app-path`/process command), using the installer's stable current symlink when available. The app owns one XDG entry; the installer never enables XDG startup. Explicit installer `--niri` selects the alternative spawn-at-startup mechanism and removes XDG startup only after activation. Settings shows a selectable niri snippet; leave Start at login OFF when using it. Runtime refuses a duplicate XDG entry if niri already starts Porchlight. Existing `--minimized` niri entries remain supported; new entries use `--tray`. No systemd units.
 
@@ -34,6 +43,23 @@ disables/forces it, while an existing `_JAVA_AWT_WM_NONREPARENTING` wins. X11 ke
   Notification dismissals use the original action's worker/key so delivery metadata failure is retryable.
   Host tests inject decode, migration-force and settings-relocation failures for each entry category; actual
   Android framework dispatch and power-loss recovery still need device verification.
+
+## Desktop lifetime and resource bounds
+
+- Passive backup scheduling uses the cached own-member role, not a periodic `/v1/me` probe. Members have no timer or
+  periodic backup requests. Admins cache the persisted nightly/retry deadline and recheck wall time locally at most
+  every five minutes, without network or disk scans unless due. Window focus and resume/role changes also wake it;
+  each due pull freshly authorizes before requesting backup status or bytes.
+- Tray/notification/logind connections start after local trust/identity admission, never inside its storage barrier.
+  Appearance and resume monitors retry unavailable connections with backoff capped at 60 seconds; healthy resume
+  connections use signals rather than polling. Missing logind retains the stream watchdog fallback.
+- ScreenSession retains at most 64 clean entries per editor/write/upload category, preserving unsaved drafts,
+  conflicts and ambiguous/in-flight operations. Shutdown closes this session before the cache/transport.
+- Quit stops account/renewal admission and coordinates cleanup off AWT, allowing at most 2.9 seconds before exit;
+  an independent five-second hard stop bounds process termination. The singleton stays held until process death,
+  even if cleanup times out: cancellation alone does not prove storage/trust writers have stopped. The updater's
+  replacement waits for the old PID before opening shared storage. Native notification replies have one shared
+  2.5-second drain deadline; unfinished outcomes remain durable/ambiguous for the next process.
 
 ## Desktop protocol and ONE tray
 
@@ -120,18 +146,94 @@ printf '{"android":true,"desktop":true}\n' > var/gates/m5-client-<run>/visible-u
 
 The script checks fresh evidence and captures the paired Android screenshot over adb. A missing/false attestation or missing desktop PNG FAILS, never silently skips. Evidence is controller-attested, not an automated pixel assertion; review the paired images before signing off M5. A cache PASS alone is not visual proof. Desktop tray/focus/no-bus/autostart checks above are a separate required runtime checklist.
 
+## Targeted background catch-up
+
+Targeted dispatch is **ON** behind the single `HouseholdData.targetedSyncVerified = true` switch in
+`shared/.../data/SyncController.kt`, and still requires `/v1/me` advertising `item-sync-v1`. Old servers remain legacy.
+`PrerolloutClientSyncDifferentialTest` supplies the client equivalence gate: 200 seeded household mutation sequences
+(default campaign about 22 seconds), fresh full-read SQL/content and presentation comparisons, retained member agendas
+and board scopes, failures/continuations, mid-fetch eviction, process reconstruction and identity changes. Longer
+campaigns use `PORCH_SYNC_CLIENT_SEEDS`; a failure reports its seed and shrunk mutations (`PORCH_SYNC_CLIENT_SEED`
+replays it). The targeted path batches for 250 ms, permits two targeted reads, replaces declared scopes only, and
+acknowledges only the fully applied delivered prefix. Targeted 429/503 responses impose a shared identity/storage/session
+not-before deadline using Retry-After, capped at five minutes. Replays, reconnects and continuation/scoped GETs
+honour that deadline; a replacement identity/session does not inherit it. Cooldown sleepers hold no collection lane
+or shared read permit. Session replacement cancels old cohorts and wakes their sleepers, including when the new
+session starts only a snapshot. Admission is checked again after waiting/acquiring resources. A cooldown discovered
+between scoped GETs unwinds the cohort; replay retries its uncovered work outside the lanes instead of sleeping
+inside them. A failed attachment purge also blocks acknowledgements and stream-health recovery, even when unrelated
+HTTP reads succeed or heartbeats arrive. Its storage notice offers **Clear local cache** after correcting permissions
+or free space; automatic purge retries use durable one-minute-to-one-hour backoff, not each stream delivery.
+Receiving a frame or heartbeat does not reset reconnect backoff: a successful application plus durable acknowledgement
+(or successful resnapshot) does.
+Duplicate in-flight positions share their original application,
+so replay cannot repeat eviction fences behind an unapplied prefix. Overlapping/failing pages cannot acknowledge ahead
+of their commits; reconnect replays unapplied work. Terminal resnapshot and unknown kinds use the coalesced full-refresh
+fallback, with a 30-second snapshot-start floor and Retry-After scoped to identity/session/storage admission.
+Full-refresh jobs are application-owned but cancelled when that admission changes, even without a replacement waiter.
+Every admitted job remains registered through pending-cohort drainage, including after a failed predecessor; cancellation
+and the startup barrier include those jobs. SQL install leases independently check the session revision as well as identity
+and storage, so a delayed binding notification cannot install an old session's staged reply.
+Cooldown waits hold neither the refresh mutex nor targeted read permits; admission is checked again before reading.
+Stream startup also awaits the finite set of snapshot cohorts already admitted after its initial refresh, so a pending
+replacement-session snapshot cannot overwrite that stream's first acknowledgement. Ordinary refresh/event waiters
+still await only their own cohort. See
+[client-data.md](client-data.md#targeted-sync-rollout-018) for durable coverage and compatibility.
+
+The model's 15-device cost test counts decoded JSON bytes, not compressed network traffic. A long-thread, six-item
+fixture shows much cheaper comment-ID repair, but completion bundles can exceed legacy bytes because they also repair
+retained dependency/collaboration projections. These measurements are not a universal reduction or production benchmark.
+
+`LiveSync.catchUp` opens the existing pinned `/v1/stream` source with `Last-Event-ID` equal to the durable
+acknowledged cursor and `Porchlight-Capabilities: item-sync-v1`. It uses the same targeted application and delivered-prefix
+acknowledgements as foreground streaming. `ready`, heartbeats, numeric gaps and EOF are **not** completion barriers.
+The negotiated `caught_up {cursor}` control proves the connect watermark was delivered or filtered. Every tickle before
+it, **including IDs newer than its watermark**, must finish applying and committing its acknowledgement before close.
+The control cursor is never persisted: filtered-only backlog leaves the old acknowledgement intact, and a newer tickle
+acknowledgement must not regress. Frames after the barrier are left for the next replay. See the
+[wire recipe](../specs/stream.md#bounded-background-catch-up-recipe).
+
+Catch-up has a 60-second deadline; unfinished replay returns a retry signal, closes the socket and retains the last
+committed prefix. Application-owned resource reads can finish after waiter cancellation, but cannot acknowledge an
+unprocessed tickle. External cancellation still propagates. `resnapshot` (including invalid/expired/pruned cursors and
+projection resets) awaits the earlier delivered prefix then runs the existing throttled full refresh and installs its
+snapshot cursor. Drain/early EOF do not claim completion. Missing/invalid local cursor or unadvertised/disabled targeting
+uses the old full-read safety net. A cold PIN-locked network worker first discovers unknown support via a fenced `/v1/me`
+read; it does not unlock the UI or run certificate renewal merely to discover the protocol.
+
+Android's `household-sync` periodic work and one-time FGS fallback require CONNECTED networking. Periodic UPDATE migrates
+old persisted work's constraints. Separate unconstrained `household-reconcile` and local fallback work reconcile alarms,
+notifications and permissions from disk even offline; receivers remain disk-only. A healthy opted-in long-lived stream
+retains the existing unread-only safety net. Stale/opted-out capable workers use bounded replay instead of snapshot,
+board or agenda reads; an unchanged cursor produces none of those requests. One connection lock prevents competing
+prefix trackers: a bounded replay wakes/yields a stale long-lived socket, which reconnects after the bounded pass.
+Closing that pass marks it Stopped, never a healthy stay-connected stream. The worker retains its original cache
+identity/storage lease through both application and acknowledgement; an identity change in that gap cannot acknowledge
+into the new cache or falsely complete the old replay.
+
+Desktop resume uses the **simpler long-lived replay option**: logind wakes the existing LiveSync reconnect, which opens
+from its acknowledged cursor, applies the same targeted path, ignores `caught_up` as a close instruction and continues
+with new publications. A second short-lived stream would duplicate replay and race prefix tracking without improving
+correctness. Missing logind retains the watchdog fallback; resume does not add an unconditional snapshot.
+
+`PrerolloutClientSyncCatchUpTest`, `PrerolloutClientSyncBackgroundTest` and `PrerolloutClientSyncCatchUpBindingTest` cover
+backlog/barrier ordering, newer publications, filtered backlog, cursor-commit ordering, timeout/reset/legacy fallback,
+cold locked discovery and real Ktor headers/parser with fake transport. `PrerolloutClientSyncWorkerTest` tests the
+Android worker pass without network and checks the actual constraint builders. These host tests do not establish real
+WorkManager/Doze dispatch or physical wake/network behavior; the controller-only device checks below remain required.
+
 ## Fix-round host evidence and controller follow-up
 
 `PYTHONDONTWRITEBYTECODE=1 python3 -B -I deploy/tests/m5-client-gate-test.py` exercises the actual driver parsers, persisted-key dismissal precondition, R66 API-specific exact policy and the absence of Activity-start recovery crutches. Shared JVM tests call the same original-key repository dismissal function as C4GateDismissControllerTest; this does NOT substitute for the real AVD check.
 
-The soak now checks a remote title update after reboot before any Activity startup, and after each network toggle without launching the Activity. Use the unchanged demo/soak commands above with fresh one-use enrollment URIs. Keep the device opted in (the fixture sets Stay connected). Controller should additionally turn it OFF, kill/restart the receiver/worker process, and verify no SSE/no snapshot on an alarm receiver and exactly one worker snapshot. Check sticky process-death recovery, actual boot service start, exact recovery on API31-32, packaged Start at login toggling and niri/XDG exclusivity in a real session. These runtime observations remain controller-only.
+The soak now checks a remote title update after reboot before any Activity startup, and after each network toggle without launching the Activity. Use the unchanged demo/soak commands above with fresh one-use enrollment URIs. Keep the device opted in (the fixture sets Stay connected). Controller should additionally turn it OFF, kill/restart the receiver/worker process, and verify no SSE/no snapshot on an alarm receiver and one bounded worker stream on a capable server (no snapshot/board/agenda for an unchanged cursor), or one legacy full read. Check sticky process-death recovery, actual boot service start, exact recovery on API31-32, packaged Start at login toggling and niri/XDG exclusivity in a real session. These runtime observations remain controller-only.
 
 ## Live runtime contract (fix rounds 2–3)
 
 - Production heartbeat is 120 s (`docs/specs/stream.md`). Both the watchdog and the transport line-read deadline derive from `STREAM_WATCHDOG_MS`: two missed heartbeats plus 10 s (250 s). Keep server `PORCHLIGHT_STREAM_HEARTBEAT_SECS=120` (or shorter); a longer configured interval requires coordinated client constant/deadline changes and idle-stream checks, not just a server restart. An idle household must survive four heartbeat intervals without reconnect; network changes cancel the current socket and reconnect immediately. Reachability uses bounded wall-time checks (<=60 s), member-local banner time and Retry wakes the stream.
 - Desktop subscribes to logind `PrepareForSleep(false)` on the system bus and immediately wakes LiveSync to reconnect the pre-suspend socket. Missing logind/system bus falls back to the watchdog; the session-bus tray remains independent. Desktop reminder waits re-evaluate wall time at least every 60 s. On resume, already-armed, undelivered reminders whose authoritative identity/time is unchanged remain deliverable within the existing seven-day local window; completed, removed or disabled reminders cancel. The spec has no separate numeric suspend grace: this uses the existing seven-day window, not a new overdue first-sync flood. Alarm-file damage is quarantined; allocation resumes above the observed code high-water mark. Atomic alarm row/counter renames fsync the file and directory. Quarantines stay private beside the ledger; review/remove them only after confirming recovery. If recovery itself fails, keep the visible storage/restart notice and disable the local alarm ledger for that process (including Snooze); never allocate codes with an unknown durable high-water. Inbox/server notification delivery stays independent when its storage is usable.
 - Start at login is XDG **or** niri, never both. If niri already owns startup, an enabled XDG switch is persisted OFF once; the explanation is dismissible in Settings (not a launch notice). Close hides the window whenever the actual SNI tray is available; unrelated error notices never force show/quit. Missing tray shows the window and Close quits. Focus IPC watches only the `focus/` subdirectory and closed watchers end cleanly.
-- Opted-out Android streaming follows STARTED, not focus/RESUMED. Re-entry resumes from cached cursor without an unconditional snapshot. The 15-minute worker always awaits a bounded safety-net read: notifications only while an opted-in Connected stream has a frame newer than `STREAM_WATCHDOG_MS` (API requests do not count), otherwise one full refresh; timeouts return Worker retry, while external cancellation still propagates; then alarms/delivery reconcile. BOOT/MY_PACKAGE_REPLACED start the opted-in FGS before alarm disk work. Refused FGS start queues a one-time worker; service-owned jobs cancel at destruction.
+- Opted-out Android streaming follows STARTED, not focus/RESUMED. Re-entry resumes from cached cursor without an unconditional snapshot. The CONNECTED 15-minute network worker always awaits a bounded safety-net read: notifications only while an opted-in Connected stream has a frame newer than `STREAM_WATCHDOG_MS` (API requests do not count), otherwise cursor catch-up on capable servers or the legacy full refresh; timeouts return Worker retry, while external cancellation still propagates. Independent unconstrained work reconciles alarms/delivery offline; successful network work reconciles again. BOOT/MY_PACKAGE_REPLACED start the opted-in FGS before alarm disk work. Refused FGS start queues a one-time worker; service-owned jobs cancel at destruction.
 - Queued action ownership is a persisted random local generation bound to the enrolled device identity, not a session-token hash. Learning its member ID does not regenerate the owner; actual device/member identity-end still clears it. Existing device:member owner records migrate without resetting the generation. Same-identity expiry/re-login retains it; explicit logout/re-enrollment clears it. Older token-hash queues from before this change cannot safely be migrated: mismatches show a generic action failure notice. Snooze remains a local, generation-fenced action. Worker and host/controller dismissal share original-key repository dispatch.
 - User-close/swipe of a server notification marks it read on both platforms. Local-alarm dismissal is local on both. Desktop failed dismissal retains a local tombstone and asks the user to mark read from Inbox (no persistent desktop retry queue). Branded Android small icon and SNI ARGB pixmap match the app; the connection/action-service public text is connection-specific, not “1 reminder”.
 - Gate dismissal instrumentation force-stops its target; the fixture dismisses the keyguard and deliberately relaunches before waiting for propagation/digest. Reboot and network recovery checks still never launch an Activity. The host driver behaviour tests fake adb/time only; fake soak PASS messages are captured, never printed as CI gate evidence. API >=33 exact-denial override is logged per R66.

@@ -50,18 +50,7 @@ class DesktopAppServices : AppServices, AutoCloseable {
     private val passivePull = app.porchlight.shared.backups.PassivePull(
         File(System.getProperty("user.home"), ".local/share/porchlight/backups").toPath(),
         app.porchlight.shared.backups.TrustedBackupSource(trust.controller), { clock.now() },
-    ).also { pull ->
-        pull.start(scope)
-        scope.launch {
-            kotlinx.coroutines.flow.combine(trust.controller.state, trust.controller.sessionEpoch) { state, epoch -> state to epoch }
-                .collectLatest { (state, _) ->
-                    pull.resetView()
-                    if (state == app.porchlight.shared.trust.TrustState.Ready) {
-                        try { pull.tick() } catch (_: CancellationException) { currentCoroutineContext().ensureActive() }
-                    }
-                }
-        }
-    }
+    )
     override val backups: app.porchlight.shared.backups.DesktopBackups get() = passivePull
     private val lazyData = lazy {
         val file = File(directory, "read-cache.db")
@@ -103,6 +92,11 @@ class DesktopAppServices : AppServices, AutoCloseable {
             open()
         }, quit, runtimeNotice, trust.controller, trayActions, trayAvailable = trayAvailable, systemResumes = systemResumes)
         liveStarted.complete(checkNotNull(liveRuntime))
+        passivePull.start(scope, kotlinx.coroutines.flow.combine(data.cache.view, trust.controller.state,
+            trust.controller.sessionEpoch) { view, state, _ ->
+            view.members.find { it.id == view.settings?.memberId }
+                ?.takeIf { state == app.porchlight.shared.trust.TrustState.Ready && it.role == "super_admin" }?.householdId
+        }.distinctUntilChanged(), systemResumes)
         scope.launch {
             settings.settings.map { it.stayConnected }.distinctUntilChanged().collect { enabled ->
                 val path = launcher
@@ -113,10 +107,14 @@ class DesktopAppServices : AppServices, AutoCloseable {
             }
         }
     }
+    fun onForeground() { passivePull.onForeground() }
     override fun close() {
+        trust.controller.close() // stop account/renewal admission before draining storage owners
+        screenSession.close()
         // Drain native replies to disk before cancelling completion/binding work or closing the read cache.
         liveRuntime?.close()
         scope.cancel()
+        runBlocking { scope.coroutineContext[Job]?.join() }
         if (lazyData.isInitialized()) lazyData.value.close()
     }
 }

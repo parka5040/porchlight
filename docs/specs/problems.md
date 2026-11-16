@@ -5,6 +5,7 @@ Generated from `server/api/src/error.rs`; RFC 9457 bodies use `urn:porchlight:pr
 | Slug | Status | Title |
 | --- | --- | --- |
 | `calendar-too-large` | 422 | Calendar exceeds apply work budget |
+| `item-sync-too-large` | 422 | Item sync exceeds 8 MiB document budget |
 | `invalid-request` | 400 | Invalid request |
 | `idempotency-key-required` | 400 | Idempotency key required |
 | `csr-invalid` | 400 | Invalid certificate request |
@@ -34,6 +35,7 @@ Generated from `server/api/src/error.rs`; RFC 9457 bodies use `urn:porchlight:pr
 | `purge-dependency-unhandled` | 409 | Purge requires a retention migration |
 | `internal` | 500 | Internal server error |
 | `maintenance` | 503 | Server is updating |
+| `database-busy` | 503 | Database is busy |
 | `comment-edit-expired` | 403 | Comment edit window expired |
 | `attachment-too-large` | 413 | Attachment exceeds 25 MiB limit |
 | `storage-full` | 507 | Attachment storage is full |
@@ -54,3 +56,5 @@ Extensions: `upgrade-required` includes `min_client_version`; `version-conflict`
 A sealed 422 (including `stale-neighbour`) replays for its original key. After refetching neighbours or correcting validation, a retry with a changed body needs a **NEW Idempotency-Key**; reusing the old key returns `idempotency-key-reused`.
 
 `maintenance` (503) rejects mutations before authentication, body reads and idempotency while the installer write fence exists. `Retry-After: 1`; retry the identical request after waiting. Reads and healthchecks remain available.
+
+`database-busy` (503) means request-pool acquisition exceeded its deadline (default 2 s). `Retry-After: 1`; retry the identical request. Mutations roll back without sealing the claim.

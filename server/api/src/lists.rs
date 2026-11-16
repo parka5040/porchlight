@@ -137,6 +137,13 @@ async fn capabilities(
             })
             .collect());
     }
+    standalone_capabilities(c, r, &viewers(conn, r.id).await?)
+}
+fn standalone_capabilities(
+    c: &Caller,
+    r: &ListRow,
+    viewers: &[Uuid],
+) -> Result<Vec<ListCapability>, ApiError> {
     let caller = match c {
         Caller::Agent { .. } => CallerKind::Agent,
         Caller::Member { role, .. } => CallerKind::AppMember(
@@ -153,7 +160,7 @@ async fn capabilities(
         caller,
         vis,
         r.owner_id == c.member_id(),
-        viewers(conn, r.id).await?.contains(&c.member_id()),
+        viewers.contains(&c.member_id()),
     );
     if !access::standalone_list_can(&context, ListCapability::View) {
         return Err(ApiError::new(Problem::NotFound));
@@ -286,6 +293,16 @@ async fn response_with_orphans(
     .bind(occ)
     .fetch_all(&mut *conn)
     .await?;
+    Ok(assemble_response(r, vs, caps, rows, checks, occ))
+}
+fn assemble_response(
+    r: ListRow,
+    vs: Vec<Uuid>,
+    caps: Vec<ListCapability>,
+    rows: Vec<EntryRow>,
+    checks: Vec<(Uuid, Uuid, DateTime<Utc>)>,
+    occ: Option<Uuid>,
+) -> ListResponse {
     let checks: std::collections::HashMap<_, _> = checks
         .into_iter()
         .map(|(entry, member, at)| (entry, (member, at)))
@@ -306,7 +323,7 @@ async fn response_with_orphans(
             entries.push(e);
         }
     }
-    Ok(ListResponse {
+    ListResponse {
         fields: ListFields {
             id: r.id,
             item_id: r.item_id,
@@ -326,7 +343,109 @@ async fn response_with_orphans(
         entries,
         got_it,
         occurrence_id: occ,
-    })
+    }
+}
+
+/// Decorate one authorized page with a constant number of statements. Occurrence-specific
+/// detail reads keep their validation path; feeds always use the null occurrence context.
+pub async fn responses(
+    conn: &mut PgConnection,
+    c: &Caller,
+    ids: &[Uuid],
+    include_orphaned: bool,
+) -> Result<Vec<ListResponse>, ApiError> {
+    use std::collections::HashMap;
+    if ids.is_empty() {
+        return Ok(vec![]);
+    }
+    let rows: Vec<ListRow> = sqlx::query_as("SELECT * FROM porchlight.lists WHERE id=ANY($1) AND household_id=$2 AND deleted_at IS NULL")
+        .bind(ids).bind(c.household_id()).fetch_all(&mut *conn).await?;
+    let parent_ids: Vec<_> = rows.iter().filter_map(|r| r.item_id).collect();
+    let parents = if parent_ids.is_empty() {
+        None
+    } else {
+        Some(crate::items::ReadBatch::load(conn, c.household_id(), &parent_ids).await?)
+    };
+    let pairs: Vec<(Uuid, Uuid)> = sqlx::query_as("SELECT list_id,member_id FROM porchlight.list_viewers WHERE list_id=ANY($1) ORDER BY member_id")
+        .bind(ids).fetch_all(&mut *conn).await?;
+    let mut viewers: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
+    for (id, member) in pairs {
+        viewers.entry(id).or_default().push(member);
+    }
+    let mut allowed = HashMap::new();
+    let mut cleanup = HashMap::new();
+    for r in rows {
+        let caps = if let Some(item) = r.item_id {
+            let parents = parents.as_ref().expect("attached parents");
+            let deleted = parents.deleted(item).unwrap_or(true);
+            let orphan = include_orphaned
+                && deleted
+                && (r.owner_id == c.member_id() || c.require_admin().is_ok());
+            if deleted && !orphan {
+                continue;
+            }
+            match parents.caps(c, item) {
+                Ok(_) if orphan => vec![ListCapability::View, ListCapability::Delete],
+                Ok(caps) => ListCapability::ALL
+                    .into_iter()
+                    .filter(|cap| caps.contains(&cap.item_capability()))
+                    .filter(|cap| {
+                        !matches!(
+                            cap,
+                            ListCapability::ChangeVisibility | ListCapability::Reassign
+                        )
+                    })
+                    .collect(),
+                Err(e) if e.problem() == Problem::NotFound => {
+                    if orphan {
+                        cleanup.insert(r.id, ListResponse::cleanup(r));
+                    }
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        } else {
+            match standalone_capabilities(
+                c,
+                &r,
+                viewers.get(&r.id).map(Vec::as_slice).unwrap_or_default(),
+            ) {
+                Ok(caps) => caps,
+                Err(e) if e.problem() == Problem::NotFound => continue,
+                Err(e) => return Err(e),
+            }
+        };
+        allowed.insert(r.id, (r, caps));
+    }
+    let allowed_ids: Vec<_> = allowed.keys().copied().collect();
+    let entries: Vec<EntryRow> = sqlx::query_as("SELECT * FROM porchlight.list_entries WHERE list_id=ANY($1) AND archived_at IS NULL ORDER BY position COLLATE \"C\",id")
+        .bind(&allowed_ids).fetch_all(&mut *conn).await?;
+    let checks: Vec<(Uuid,Uuid,Uuid,DateTime<Utc>)> = sqlx::query_as("SELECT e.list_id,c.entry_id,c.checked_by,c.checked_at FROM porchlight.list_entry_checks c JOIN porchlight.list_entries e ON e.id=c.entry_id WHERE e.list_id=ANY($1) AND e.archived_at IS NULL AND c.occurrence_id IS NULL")
+        .bind(&allowed_ids).fetch_all(&mut *conn).await?;
+    let mut by_list: HashMap<Uuid, Vec<EntryRow>> = HashMap::new();
+    for entry in entries {
+        by_list.entry(entry.list_id).or_default().push(entry);
+    }
+    let mut by_check: HashMap<Uuid, Vec<(Uuid, Uuid, DateTime<Utc>)>> = HashMap::new();
+    for (list, entry, member, at) in checks {
+        by_check.entry(list).or_default().push((entry, member, at));
+    }
+    let mut result = Vec::with_capacity(ids.len());
+    for id in ids {
+        if let Some(cleanup) = cleanup.remove(id) {
+            result.push(cleanup);
+        } else if let Some((row, caps)) = allowed.remove(id) {
+            result.push(assemble_response(
+                row,
+                viewers.remove(id).unwrap_or_default(),
+                caps,
+                by_list.remove(id).unwrap_or_default(),
+                by_check.remove(id).unwrap_or_default(),
+                None,
+            ));
+        }
+    }
+    Ok(result)
 }
 pub async fn collection(
     s: &AppState,
@@ -382,14 +501,7 @@ pub async fn collection(
     .fetch_all(&mut *conn)
     .await?;
     let page = s.idem.cursor.page(&context, ids, limit, |id| *id)?;
-    let mut items = vec![];
-    for id in page.items {
-        match response_with_orphans(conn, c, id, None, false, q.include_orphaned).await {
-            Ok(r) => items.push(r),
-            Err(e) if e.problem() == Problem::NotFound => (),
-            Err(e) => return Err(e),
-        }
-    }
+    let items = responses(conn, c, &page.items, q.include_orphaned).await?;
     Ok(ListsPage {
         items,
         next_cursor: page.next_cursor,
@@ -399,6 +511,13 @@ pub async fn collection(
 pub async fn snapshot_contribution(
     conn: &mut PgConnection,
     c: &Caller,
+) -> Result<Vec<ListResponse>, ApiError> {
+    snapshot_scoped(conn, c, None).await
+}
+pub(crate) async fn snapshot_scoped(
+    conn: &mut PgConnection,
+    c: &Caller,
+    item_id: Option<Uuid>,
 ) -> Result<Vec<ListResponse>, ApiError> {
     let ids: Vec<Uuid> = sqlx::query_scalar(
         "SELECT id
@@ -410,22 +529,19 @@ pub async fn snapshot_contribution(
           WHERE p.id=item_id
           AND p.deleted_at IS NULL))
           AND ($2 OR porchlight.pl_list_can_read(id,$3))
+          AND ($4::uuid IS NULL OR item_id=$4 OR (mode='per_occurrence' AND item_id IN (
+          WITH RECURSIVE ancestors AS (SELECT id,split_from_item_id FROM porchlight.items WHERE id=$4 AND household_id=$1
+          UNION ALL SELECT p.id,p.split_from_item_id FROM porchlight.items p JOIN ancestors a ON p.id=a.split_from_item_id
+          AND p.household_id=$1) CYCLE id SET is_cycle USING path SELECT id FROM ancestors WHERE NOT is_cycle)))
           ORDER BY id",
     )
     .bind(c.household_id())
     .bind(c.sees_all())
     .bind(c.member_id())
+    .bind(item_id)
     .fetch_all(&mut *conn)
     .await?;
-    let mut result = vec![];
-    for id in ids {
-        match response(conn, c, id, None, false).await {
-            Ok(r) => result.push(r),
-            Err(e) if e.problem() == Problem::NotFound => (),
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(result)
+    responses(conn, c, &ids, false).await
 }
 /// Source projection for the shared search UNION. Binds household/member/agent/query as $1..$4.
 /// The owner applies the source/id keyset and limit to the combined sources before decoration.
@@ -451,16 +567,11 @@ pub async fn search_contribution(
         .bind(q)
         .fetch_all(&mut *conn)
         .await?;
-    let mut result = vec![];
-    for id in ids {
-        let r = row(conn, c, id, false).await?;
-        match capabilities(conn, c, &r).await {
-            Ok(_) => result.push(id),
-            Err(e) if e.problem() == Problem::NotFound => (),
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(result)
+    Ok(responses(conn, c, &ids, false)
+        .await?
+        .into_iter()
+        .map(|r| r.fields.id)
+        .collect())
 }
 // List/check mutations intentionally emit only their transactional outbox tickle.
 // S7a registers no business kind in R53's notification kind data registry.

@@ -9,6 +9,9 @@ import io.ktor.client.request.forms.*
 import io.ktor.client.plugins.onUpload
 import io.ktor.client.plugins.timeout
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import io.ktor.http.*
 import kotlinx.serialization.json.*
 
@@ -55,6 +58,8 @@ interface ApiTransport {
     suspend fun request(method: String, path: String, body: JsonObject? = null, session: String? = null,
                         idempotencyKey: String? = null, version: Long? = null, stepUp: String? = null): JsonObject
     suspend fun stream(after: Long, session: String?, receive: suspend (app.porchlight.shared.live.StreamFrame) -> Unit) { throw ConnectFailure() }
+    suspend fun stream(after: Long, session: String?, itemSync: Boolean, receive: suspend (app.porchlight.shared.live.StreamFrame) -> Unit) =
+        stream(after, session, receive)
     suspend fun requestReply(method: String, path: String, body: JsonObject? = null, session: String? = null,
         idempotencyKey: String? = null, version: Long? = null, stepUp: String? = null): JsonReply =
         JsonReply(request(method, path, body, session, idempotencyKey, version, stepUp))
@@ -94,6 +99,7 @@ class KtorApiTransport(
     private val policy: HeaderPolicy,
     private val connectFailure: (Throwable) -> Boolean,
     private val classifyFailure: (Exception) -> Exception = { it },
+    private val jsonDispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) : ApiTransport {
     private var endpoints = orderedEndpoints(endpoints)
     fun updateEndpoints(values: List<String>) { endpoints = orderedEndpoints(values) }
@@ -101,12 +107,13 @@ class KtorApiTransport(
     override suspend fun requestReply(method: String, path: String, body: JsonObject?, session: String?, idempotencyKey: String?, version: Long?, stepUp: String?): JsonReply {
         require(path.startsWith("/v1/"))
         val headers = policy.headers(method, session, idempotencyKey, version, stepUp)
+        val encodedBody = withContext(jsonDispatcher) { body?.toString() }
         for ((index, endpoint) in endpoints.withIndex()) {
             val response = try {
                 client.request(endpoint + path) {
                     this.method = HttpMethod.parse(method)
                     headers.forEach { (key, value) -> header(key, value) }
-                    if (body != null) { contentType(ContentType.Application.Json); setBody(body.toString()) }
+                    if (encodedBody != null) { contentType(ContentType.Application.Json); setBody(encodedBody) }
                 }
             } catch (e: Exception) {
                 // Never replay an ambiguous write/read failure, TLS failure, HTTP error or cancellation.
@@ -114,18 +121,25 @@ class KtorApiTransport(
                 if (index == endpoints.lastIndex) throw ConnectFailure()
                 continue
             }
-            val text = try { response.bodyAsText() } catch (e: Exception) { throw classifyFailure(e) }
-            if (response.status.value !in 200..299) {
-                if (response.contentType()?.withoutParameters() == ContentType.parse("application/problem+json")) throw ApiProblem.decode(text, retryAfterMillis(response.headers[HttpHeaders.RetryAfter]))
-                throw ApiProblem("http-error", response.status.value, "Request failed")
+            return withContext(jsonDispatcher) {
+                val text = try { response.bodyAsText() } catch (e: CancellationException) { throw e }
+                    catch (e: Exception) { throw classifyFailure(e) }
+                if (response.status.value !in 200..299) {
+                    if (response.contentType()?.withoutParameters() == ContentType.parse("application/problem+json")) throw ApiProblem.decode(text, retryAfterMillis(response.headers[HttpHeaders.RetryAfter]))
+                    throw ApiProblem("http-error", response.status.value, "Request failed",
+                        retryAfterMillis = retryAfterMillis(response.headers[HttpHeaders.RetryAfter]))
+                }
+                val json = if (text.isBlank()) buildJsonObject {} else try { WireJson.parseToJsonElement(text).jsonObject }
+                    catch (e: CancellationException) { throw e }
+                    catch (_: Exception) { throw ApiProblem("invalid-response", 502, "Invalid API response") }
+                JsonReply(json, response.status.value)
             }
-            val json = if (text.isBlank()) buildJsonObject {} else try { WireJson.parseToJsonElement(text).jsonObject }
-                catch (_: Exception) { throw ApiProblem("invalid-response", 502, "Invalid API response") }
-            return JsonReply(json, response.status.value)
         }
         throw ConnectFailure()
     }
-    override suspend fun stream(after: Long, session: String?, receive: suspend (app.porchlight.shared.live.StreamFrame) -> Unit) {
+    override suspend fun stream(after: Long, session: String?, receive: suspend (app.porchlight.shared.live.StreamFrame) -> Unit) =
+        stream(after, session, false, receive)
+    override suspend fun stream(after: Long, session: String?, itemSync: Boolean, receive: suspend (app.porchlight.shared.live.StreamFrame) -> Unit) {
         require(after >= 0)
         val headers = policy.headers("GET", session)
         for ((index, endpoint) in endpoints.withIndex()) {
@@ -133,13 +147,15 @@ class KtorApiTransport(
             try {
                 client.prepareGet(endpoint + "/v1/stream") {
                     headers.forEach { (key, value) -> header(key, value) }
+                    if (itemSync) header("Porchlight-Capabilities", "item-sync-v1")
                     header(HttpHeaders.Accept, "text/event-stream")
                     header("Last-Event-ID", after.toString())
                 }.execute { response ->
                     opened = true
                     if (response.status.value !in 200..299) {
-                        val text = response.bodyAsText()
-                        throw ApiProblem.decode(text, retryAfterMillis(response.headers[HttpHeaders.RetryAfter]))
+                        throw withContext(jsonDispatcher) {
+                            ApiProblem.decode(response.bodyAsText(), retryAfterMillis(response.headers[HttpHeaders.RetryAfter]))
+                        }
                     }
                     if (response.contentType()?.withoutParameters() != ContentType.Text.EventStream) throw app.porchlight.shared.live.InvalidStream()
                     val parser = app.porchlight.shared.live.SseParser()
@@ -176,9 +192,13 @@ class KtorApiTransport(
                 setBody(data); onUpload { sent, total -> progress(sent, total ?: data.contentLength ?: bytes.size.toLong()) }
             } } catch (e: CancellationException) { throw e }
             catch (e: Exception) { if (!connectFailure(e)) throw classifyFailure(e); if (index == endpoints.lastIndex) throw ConnectFailure(); continue }
-            val text = response.bodyAsText()
-            if (response.status.value !in 200..299) throw binaryProblem(response.status.value, response.contentType(), text, response.headers[HttpHeaders.RetryAfter])
-            return try { WireJson.parseToJsonElement(text).jsonObject } catch (_: Exception) { throw ApiProblem("invalid-response", 502, "Invalid upload reply") }
+            return withContext(jsonDispatcher) {
+                val text = response.bodyAsText()
+                if (response.status.value !in 200..299) throw binaryProblem(response.status.value, response.contentType(), text, response.headers[HttpHeaders.RetryAfter])
+                try { WireJson.parseToJsonElement(text).jsonObject }
+                catch (e: CancellationException) { throw e }
+                catch (_: Exception) { throw ApiProblem("invalid-response", 502, "Invalid upload reply") }
+            }
         }
         throw ConnectFailure()
     }
@@ -248,9 +268,10 @@ class KtorApiTransport(
         }
         throw ConnectFailure()
     }
-    private fun binaryProblem(status: Int, type: ContentType?, text: String, retry: String?, failureTitle: String = "Request failed"): ApiProblem =
+    private suspend fun binaryProblem(status: Int, type: ContentType?, text: String, retry: String?, failureTitle: String = "Request failed"): ApiProblem = withContext(jsonDispatcher) {
         if (type?.withoutParameters() == ContentType.parse("application/problem+json")) ApiProblem.decode(text, retryAfterMillis(retry))
         else ApiProblem("http-error", status, failureTitle)
+    }
     override fun close() { client.close() }
 }
 

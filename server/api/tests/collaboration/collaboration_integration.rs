@@ -322,7 +322,7 @@ async fn upload_replay_never_waits_for_ingest(pool: PgPool) {
         .state
         .ingest_slots
         .clone()
-        .acquire_many_owned(2)
+        .acquire_many_owned(porchlight_api::state::INGEST_SLOTS as u32)
         .await
         .unwrap();
     let replay = c.request(s.lan, request()).await.unwrap();

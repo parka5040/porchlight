@@ -1267,11 +1267,14 @@ fn queued_flush_is_one_acl_statement_and_indexable() {
         !route.contains("r=stream::delivery("),
         "one-row recheck per tickle"
     );
-    assert_eq!(route.matches("r=stream::delivery_batch(").count(), 1);
+    assert_eq!(
+        route.matches("r=stream::delivery_batch_capable(").count(),
+        1
+    );
     assert!(!route.contains("self.pending.pop_front()"));
     assert!(route.contains("return Some(tickle_chunk(batch.events))"));
     assert!(
-        route.contains("r=stream::delivery_batch("),
+        route.contains("r=stream::delivery_batch_capable("),
         "one batched recheck per body flush"
     );
 }
@@ -1432,6 +1435,7 @@ async fn stream_query_plan_uses_typed_primary_key_lookup(pool: PgPool) {
     .bind(500_i64)
     .bind(i64::MAX)
     .bind(None::<Vec<i64>>)
+    .bind(true)
     .fetch_one(&mut *tx)
     .await
     .unwrap();
@@ -1468,6 +1472,8 @@ fn serialized_tickle_conforms_to_openapi_schema() {
             entity_type: "item".into(),
             entity_id: Uuid::new_v4(),
             evicted,
+            item_id: None,
+            list_id: None,
         })
         .unwrap();
         crate::common::schema::conforms(&doc, schema, &wire);
@@ -1829,18 +1835,18 @@ fn notification_matrix_names_recipient_dimension() {
         .lines()
         .filter(|line| line.starts_with('|') && line.contains("SSE notification."))
         .collect();
-    assert_eq!(rows.len(), 162);
+    assert_eq!(rows.len(), 216);
     assert_eq!(
         rows.iter()
             .filter(|line| line.split('|').nth(6).unwrap().trim() == "self")
             .count(),
-        81
+        108
     );
     assert_eq!(
         rows.iter()
             .filter(|line| line.split('|').nth(6).unwrap().trim() == "other")
             .count(),
-        81
+        108
     );
 }
 

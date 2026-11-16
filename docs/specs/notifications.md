@@ -23,6 +23,8 @@
 | attempts transitions below 5 → 5 | live super admins | item/requested_gen/member; generic operational alert, no title/item-scoped ACL reference |
 | agent business write | same recipients | agent:<name> captured by existing event producer and displayed in summary |
 | backup_stale (0057 registry INSERT, R53) | live super admins | system producer hourly; last success (or household creation) strictly older than 26h; recipient + latest success UUID (initial if none) dedupe per stale episode; fixed operational template, activity delivery |
+| server_certificate_expiring (0077) | live super admins | daily injected-clock expiry bands 90/60/30/7 days; expiry/band/recipient dedupe; below 60 days renew and hot-reload; generic safe template/activity delivery |
+| disk_headroom_low (0077) | live super admins | hourly data/backup free blocks or inodes below 15%, or below measured concurrent backup disk demand; storage/UTC-day/recipient dedupe; generic safe template/activity delivery |
 
 Default reminder offsets are member-specific fallback only when an item has NO explicit item_reminders. Synthetic reminder UUIDs are stable per reminder-origin/member/offset. Migration 0068 adds immutable `items.reminder_origin_id` and `item_reminders.delivery_id` (NULL means the row's own ID, preserving all pre-upgrade witnesses). A split copies the default origin and explicit delivery identities to the tail before transferring projections, without remapping dedupe keys. Head-snapshot production concurrent with a split and future regeneration after a backward clock correction therefore use the same occurrence/member/reminder witness. These are copied values, not FKs to the head: later edits or purge cannot change the tail's identity. `scheduled_reminders.reminder_id` is a logical delivery identity rather than an authoritative item_reminders FK. Projection rows keep their `id` across regeneration (including splits) while the member/occurrence/reminder tuple and `fire_at` are unchanged. Projection regeneration carries forward already-due rows only when they have no emitted reminder dedupe event and their member/occurrence/reminder/fire-at tuple is still present in the authoritative regenerated schedule. The projection DELETE and due/unemitted filter share one statement; fired obligations are retired during regeneration while their dedupe witness exists, and the carry-forward additionally drops any tuple whose fire_at is older than the 90-day event-retention horizon (R74, below). Unrelated buffer/duration edits and recovery cannot erase that pending delivery obligation; rescheduling, removing offsets/recipients, closing or deleting the item still invalidate obsolete reminders. Newly introduced overdue offsets do not generate retroactive reminders. Replacement and carry-forward are atomic; scheduler excludes pending projections and the event dedupe tuple prevents repeat emission while its witness is retained (see lifetime limitation below). No agent writes to generated inbox/source/reminder data.
 
@@ -81,6 +83,18 @@ Every known event kind has a fixed title/body template; unknown kinds render gen
 | notification.updated | notification | member_id = recipient, category; merge into already released row |
 | notification.dismissed | notification | member_id = recipient, category; null → read_at transition |
 | settings.changed | notification_prefs | member_id = owner, section = notification_prefs |
+| notification.invalidated (0078; item-sync-v1 only) | notification | member_id = recipient; refetch this ID, remove if absent |
+
+0078 emits recipient-scoped invalidations when item metadata/ACL/relationship changes alter
+readable coalesced sources, when source links are severed (including purge/retention), and when
+released notification rows are physically deleted. These do not modify notification versions or
+counts. They share the transaction-local 200-entity dedupe/cap and terminal coarse-reset fallback
+in [stream.md](stream.md); legacy streams receive no additional frames. Source item IDs, masked
+titles and count/summary content never enter these frames. 0079 also invalidates every released
+notification whose source actor's display name actually changes (0080 compares OLD/NEW
+transition tables), so actor renames update both single-source and coalesced rendered summaries.
+Colour/zone/authority-only writes do not scan history; an actor index supports the source lookup. These announcements use the same protected transaction-keyed
+dedupe, 200-row cap, recipient scope and coarse-reset fallback.
 
 Only IDs/category/section tickles are emitted; titles, summaries, counts and event payloads never enter outbox. S6b's generic authoritative member-scope delivery/replay sends them only to that member's devices (no agent stream), including the dismissing device and its peers. Notification payload/SSE policy rows are appended to the one generated endpoint matrix. `server/api/tests/live/notifications.rs` covers tickle shape/recipient and TLS/PAT authorization;
 `server/api/tests/live/stream.rs` cover implemented stream delivery, replay ACL,

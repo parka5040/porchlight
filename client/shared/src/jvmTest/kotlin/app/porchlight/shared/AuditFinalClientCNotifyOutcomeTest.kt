@@ -88,15 +88,18 @@ class AuditFinalClientCNotifyOutcomeTest {
     @Test fun definiteErrorDoesNotPoisonFiredReminderAfterRestart() = definite(true, true)
     private fun definite(local: Boolean, restart: Boolean) = runBlocking {
         val bus = AuditFinalClientCNotifyBus().apply { reject = true }
-        AuditFinalClientCNotifyRuntime(bus).use { f ->
+        val now = java.util.concurrent.atomic.AtomicLong()
+        val retry = kotlinx.coroutines.channels.Channel<Unit>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+        AuditFinalClientCNotifyRuntime(bus, monotonicNanos = now::get, notifyRetryDelay = { retry.receive() }).use { f ->
             f.start(); f.install(local)
             withTimeout(5_000) { bus.first.await() }
             f.eventually("Definite rejection must durably restore the non-in-flight record") { f.records().singleOrNull()?.inFlight == false }
-            if (local) assertTrue(DesktopAlarmStore(f.dir).load().all().single().delivered, "Fixture must exercise an already fired reminder")
-            assertTrue(f.notice.value.orEmpty().contains("notifications unavailable"))
+            if (local) f.eventually("Fixture must exercise an already fired reminder") { DesktopAlarmStore(f.dir).load().all().singleOrNull()?.delivered == true }
+            f.eventually("Definite rejection must publish notification degradation") { f.notice.value.orEmpty().contains("notifications unavailable") }
             repeat(3) { f.cache.replaceNotifications(if (local) emptyList() else listOf(notificationFixture())); delay(40) }
             assertEquals(1, bus.attempts.get(), "Cache passes must respect the retry backoff")
-            if (restart) { f.stop(); bus.reject = false; f.start() } else bus.reject = false
+            if (restart) { f.stop(); bus.reject = false; f.start() }
+            else { bus.reject = false; now.set(1_000_000_000L); retry.send(Unit) }
             f.eventually("Healthy same-owner pass must retry rejected delivery") { f.records().singleOrNull()?.posted == true }
             assertEquals(1, bus.posts, "Rejection has no native effect; later success posts exactly once")
             assertEquals(2, bus.attempts.get())

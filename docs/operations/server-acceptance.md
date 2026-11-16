@@ -37,7 +37,9 @@ Private evidence directory: __________  Enrolled device record IDs: __________
 - [ ] Fresh household CA fingerprint recorded privately and compared at enrollment. Fingerprint evidence path:
   __________ (not the bootstrap token or `init.json`). Required LAN/localhost/IP SANs are present.
 - [ ] LAN mTLS is on 8443; enrollment is on LAN-only 8444 with `ENROLL_CIDRS=<lan-cidr>`;
-  Postgres binds only `127.0.0.1:5432`; Funnel target 9443 remains unpublished.
+  API/enrollment host binds match the persisted IPv4 LAN address (not tailnet/VPN/wildcard); no IPv6 wildcard;
+  Postgres has no published host port; Funnel target 9443 remains unpublished. Complete the controller-only
+  [hardening proofs](deploy-hardening.md), including fresh PostgreSQL init and userspace sidecar ownership.
 - [ ] Main laptop enrolled successfully using its fresh URI; the **API enrollment log** identifies the laptop's
   actual `<lan-cidr>` LAN address as peer, not a Docker gateway. Correlate timestamp/device with the successful
   enrollment and retain only sanitized peer evidence. Actual peer / log evidence / UTC: __________

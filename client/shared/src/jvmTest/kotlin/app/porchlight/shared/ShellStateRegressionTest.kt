@@ -16,6 +16,7 @@ import androidx.compose.ui.test.v2.runDesktopComposeUiTest
 import androidx.compose.ui.unit.*
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.toRoute
 import app.porchlight.shared.api.models.*
 import app.porchlight.shared.data.*
 import app.porchlight.shared.navigation.*
@@ -107,9 +108,8 @@ class ShellStateRegressionTest(private val width: Int, private val platform: Pla
     @Test fun ni1BoardScrollAndCompositionSurviveOpenSwitchAndCloseWithoutRefresh() = stableScroll(true)
     @Test fun ni1TodayScrollAndCompositionSurviveOpenSwitchAndClose() = stableScroll(false)
     private fun stableScroll(board: Boolean) = screen(if (board) AppRoute.Board() else AppRoute.Today) { fixture, nav, _ ->
-        waitUntil { onAllNodesWithContentDescription("Open Fixture 8").fetchSemanticsNodes().isNotEmpty() }
         val scroll = collectionScroll(board)
-        onNodeWithContentDescription("Open Fixture 8").performScrollTo()
+        scroll.performScrollToNode(hasContentDescription("Open Fixture 8"))
         val before = scroll.offset()
         val identity = scroll.fetchSemanticsNode().id
         val reads = fixture.boardReads.get()
@@ -122,7 +122,17 @@ class ShellStateRegressionTest(private val width: Int, private val platform: Pla
             assertEquals(reads, fixture.boardReads.get(), "Detail must not refresh Board")
         }
         unchanged()
-        onNodeWithContentDescription("Open Fixture 12").performSemanticsAction(SemanticsActions.OnClick) { it() }
+        // Select a different composed row through the real collection action, without scrolling.
+        val viewport = scroll.fetchSemanticsNode().boundsInRoot
+        val second = onAllNodes(hasContentDescription("Open Fixture", substring = true)).fetchSemanticsNodes()
+            .map { it.config[SemanticsProperties.ContentDescription].single() }
+            .first { description ->
+                val full = onNodeWithContentDescription(description).getUnclippedBoundsInRoot()
+                description != "Open Fixture 8" && full.top.value >= viewport.top && full.bottom.value <= viewport.bottom
+            }
+        onNodeWithContentDescription(second).performClick()
+        onNodeWithTag("detail-pane").assertExists()
+        assertEquals("card-${second.substringAfter("Open Fixture ")}", nav.currentBackStackEntry!!.toRoute<AppRoute.Item>().id)
         unchanged()
         // Close the detail stack exactly as system Back does, checking each intermediate selection too.
         runOnIdle { nav.popBackStack() }
@@ -134,7 +144,7 @@ class ShellStateRegressionTest(private val width: Int, private val platform: Pla
     @Test fun boardDetailOnDetailThenBackTwiceKeepsMountedCollectionAndScroll() = stackedDetails(true)
     @Test fun todayDetailOnDetailThenBackTwiceKeepsMountedCollectionAndScroll() = stackedDetails(false)
     private fun stackedDetails(board: Boolean) = screen(if (board) AppRoute.Board() else AppRoute.Today) { fixture, nav, _ ->
-        onNodeWithContentDescription("Open Fixture 8").performScrollTo()
+        collectionScroll(board).performScrollToNode(hasContentDescription("Open Fixture 8"))
         val before = collectionScroll(board).offset()
         val identity = collectionScroll(board).fetchSemanticsNode().id
         val collectionId = nav.currentBackStackEntry!!.id
@@ -165,7 +175,7 @@ class ShellStateRegressionTest(private val width: Int, private val platform: Pla
         unchanged()
     }
     @Test fun tabRestoreFindsCollectionBelowTwoDetailsAndIgnoresInactiveTabs() = screen(AppRoute.Board("mine")) { _, nav, _ ->
-        onNodeWithContentDescription("Open Fixture 8").performScrollTo()
+        collectionScroll(true).performScrollToNode(hasContentDescription("Open Fixture 8"))
         val before = collectionScroll(true).offset()
         val boardId = nav.currentBackStackEntry!!.id
         assertTrue(before > 0)
@@ -214,7 +224,7 @@ class ShellStateRegressionTest(private val width: Int, private val platform: Pla
                     } }
                 }
             }
-            onNodeWithContentDescription("Open Fixture 8").performScrollTo()
+            collectionScroll(true).performScrollToNode(hasContentDescription("Open Fixture 8"))
             val before = collectionScroll(true).offset()
             val collectionId = nav.currentBackStackEntry!!.id
             assertTrue(before > 0)
@@ -315,7 +325,7 @@ class ShellStateRegressionTest(private val width: Int, private val platform: Pla
     }
     @Test fun ni1CalendarViewScrollAndIdentitySurviveDetail() = screen(AppRoute.Calendar(CalendarView.Agenda, "2026-10-09")) { _, nav, _ ->
         val scroll = onNodeWithTag("calendar-scroll")
-        onNodeWithContentDescription("Open Fixture 8").performScrollTo()
+        scroll.performScrollToNode(hasContentDescription("Open Fixture 8"))
         val before = scroll.offset()
         assertTrue(before > 0, "Calendar scroll retention must exercise a nonzero offset")
         val identity = scroll.fetchSemanticsNode().id
@@ -323,10 +333,12 @@ class ShellStateRegressionTest(private val width: Int, private val platform: Pla
         onNodeWithTag("detail-pane").assertExists()
         assertEquals(identity, scroll.fetchSemanticsNode().id)
         assertEquals(before, scroll.offset())
-        onNodeWithContentDescription("Agenda").assertIsSelected()
+        assertEquals(CalendarView.Agenda, nav.getBackStackEntry<AppRoute.Calendar>().toRoute<AppRoute.Calendar>().view)
         runOnIdle { nav.popBackStack() }
         assertEquals(identity, scroll.fetchSemanticsNode().id)
         assertEquals(before, scroll.offset())
+        scroll.performScrollToNode(hasContentDescription("Agenda"))
+        onNodeWithContentDescription("Agenda").assertIsDisplayed().assertIsSelected()
     }
     @Test fun ni2BoardFilterChangesCloseDetailAndApplyImmediately() = screen(AppRoute.Board()) { _, _, _ ->
         for ((description, expected) in listOf("Mine" to "self", "Filter board for Member Two" to "other", "Household" to "all")) {
@@ -387,7 +399,8 @@ class ShellStateRegressionTest(private val width: Int, private val platform: Pla
         }
     }
     @Test fun m3ReselectingTodayScopeIsNoOpAndSubmitsNoWrite() = screen(AppRoute.Today) { fixture, nav, _ ->
-        onNodeWithContentDescription("Open Fixture 8").performScrollTo().performClick()
+        collectionScroll(false).performScrollToNode(hasContentDescription("Open Fixture 8"))
+        onNodeWithContentDescription("Open Fixture 8").performClick()
         onNodeWithTag("detail-pane").assertExists()
         val detailId = nav.currentBackStackEntry!!.id
         val identity = collectionScroll(false).fetchSemanticsNode().id
@@ -420,7 +433,13 @@ class ShellStateRegressionTest(private val width: Int, private val platform: Pla
     @Test fun mbTodayPreservesAgendaOffset() = calendarReselect(AppRoute.Calendar(CalendarView.Agenda), "Today", scroll = true)
     private fun calendarReselect(route: AppRoute.Calendar, description: String, scroll: Boolean = false) = screen(route) { fixture, nav, _ ->
         val collection = onNodeWithTag("calendar-scroll")
-        if (scroll) onNodeWithContentDescription("Open Fixture 8").performScrollTo()
+        if (scroll) {
+            collection.performScrollToNode(hasContentDescription("Open Fixture 8"))
+            // Re-selection needs a live control, not an offscreen row from the old eager tree.
+            // Return to the header but retain a real nonzero offset for the identity/no-op assertion.
+            collection.performScrollToNode(hasContentDescription(description))
+            collection.performSemanticsAction(SemanticsActions.ScrollBy) { it(0f, PorchlightTokens.spaceMd.toFloat()) }
+        }
         val before = collection.offset()
         if (scroll) assertTrue(before > 0, "Calendar re-selection must exercise nonzero scroll")
         val identity = collection.fetchSemanticsNode().id

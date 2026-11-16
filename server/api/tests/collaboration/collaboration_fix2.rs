@@ -320,7 +320,7 @@ async fn upload_permit_timeout_is_transient_without_pinning_pool(pool: PgPool) {
         .state
         .ingest_slots
         .clone()
-        .acquire_many_owned(2)
+        .acquire_many_owned(porchlight_api::state::INGEST_SLOTS as u32)
         .await
         .unwrap();
     let req = upload(&d, &path);
@@ -440,7 +440,7 @@ async fn upload_total_cap_and_per_device_stream_cap(pool: PgPool) {
         assert_eq!(capped.json()["type"], "urn:porchlight:problem:rate-limited");
         assert_eq!(
             s.state.ingest_slots.available_permits(),
-            2,
+            porchlight_api::state::INGEST_SLOTS,
             "streaming must not occupy ingest"
         );
     };

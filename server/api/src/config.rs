@@ -22,6 +22,7 @@ pub struct Settings {
     pub endpoints: Vec<String>,
     pub heartbeat: Duration,
     pub body_timeout: Duration,
+    pub snapshot_wait: Duration,
 }
 impl Settings {
     pub fn for_tests() -> Self {
@@ -49,6 +50,7 @@ impl Settings {
             endpoints: vec!["https://localhost:8443".into()],
             heartbeat: Duration::from_secs(1),
             body_timeout: Duration::from_secs(1),
+            snapshot_wait: Duration::from_secs(crate::state::SNAPSHOT_WAIT_SECS),
         }
     }
 }
@@ -72,10 +74,21 @@ pub struct ServeArgs {
     pub attachment_quota_bytes: u64,
     #[arg(long, env = "PORCHLIGHT_DISK_RESERVE_BYTES", default_value_t = 2 * 1024 * 1024 * 1024)]
     pub disk_reserve_bytes: u64,
-    #[arg(long, env = "PORCHLIGHT_DATABASE_URL", hide_env_values = true)]
+    #[arg(
+        long,
+        env = "PORCHLIGHT_DATABASE_URL",
+        default_value = "",
+        hide_env_values = true
+    )]
     pub database_url: String,
     #[arg(long, env = "PORCHLIGHT_DB_POOL_SIZE", default_value_t = 16)]
     pub db_pool_size: u32,
+    #[arg(long, env = "PORCHLIGHT_DB_ACQUIRE_TIMEOUT_SECS", default_value_t = 2)]
+    pub db_acquire_timeout_secs: u64,
+    #[arg(long, env = "PORCHLIGHT_WRITE_STALL_SECS", default_value_t = 60)]
+    pub write_stall_secs: u64,
+    #[arg(long, env = "PORCHLIGHT_SNAPSHOT_WAIT_SECS", default_value_t = crate::state::SNAPSHOT_WAIT_SECS)]
+    pub snapshot_wait_secs: u64,
     #[arg(long, env = "PORCHLIGHT_MIGRATOR_URL", hide_env_values = true)]
     pub migrator_url: Option<String>,
     #[arg(long, env = "PORCHLIGHT_LAN_ADDR", default_value = "0.0.0.0:8443")]
@@ -132,6 +145,7 @@ impl ServeArgs {
             enroll_cidrs: self.enroll_cidrs.clone(),
             proxy_timeout: Duration::from_secs(5),
             tls_timeout: Duration::from_secs(10),
+            write_stall: Duration::from_secs(self.write_stall_secs),
             ..Default::default()
         }
     }
@@ -157,6 +171,7 @@ impl ServeArgs {
             endpoints: self.endpoints.clone(),
             heartbeat: Duration::from_secs(self.heartbeat_secs),
             body_timeout: Duration::from_secs(self.body_timeout_secs),
+            snapshot_wait: Duration::from_secs(self.snapshot_wait_secs),
         }
     }
     pub fn validate(&self) -> anyhow::Result<()> {
@@ -186,6 +201,18 @@ impl ServeArgs {
             "invalid device certificate lifetimes"
         );
         anyhow::ensure!(self.db_pool_size > 0, "database pool size must be positive");
+        anyhow::ensure!(
+            self.db_acquire_timeout_secs > 0,
+            "pool acquire timeout must be positive"
+        );
+        anyhow::ensure!(
+            self.write_stall_secs > 0,
+            "write stall deadline must be positive"
+        );
+        anyhow::ensure!(
+            self.snapshot_wait_secs > 0,
+            "snapshot wait must be positive"
+        );
         anyhow::ensure!(self.heartbeat_secs > 0, "heartbeat must be positive");
         anyhow::ensure!(self.body_timeout_secs > 0, "body timeout must be positive");
         anyhow::ensure!(
@@ -212,6 +239,39 @@ fn valid_release_repo(value: &str) -> bool {
         && repo
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+/// Read a bounded owner-only regular file without following symlinks. Never include its contents in errors.
+pub(crate) fn credential_file(
+    path: &std::path::Path,
+) -> anyhow::Result<zeroize::Zeroizing<String>> {
+    use std::{io::Read, os::unix::fs::MetadataExt};
+    let fd = rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|_| anyhow::anyhow!("opening credential file"))?;
+    let file = std::fs::File::from(fd);
+    let metadata = file
+        .metadata()
+        .map_err(|_| anyhow::anyhow!("credential file metadata"))?;
+    anyhow::ensure!(
+        metadata.is_file() && metadata.mode() & 0o777 == 0o600 && metadata.len() <= 16384,
+        "credential file must be a bounded 0600 regular file"
+    );
+    let mut value = zeroize::Zeroizing::new(String::new());
+    file.take(16385)
+        .read_to_string(&mut value)
+        .map_err(|_| anyhow::anyhow!("reading credential file"))?;
+    anyhow::ensure!(value.len() <= 16384, "credential file too large");
+    let length = value.trim_end_matches(['\r', '\n']).len();
+    value.truncate(length);
+    anyhow::ensure!(
+        !value.is_empty() && !value.contains(['\r', '\n', '\0']),
+        "invalid credential file"
+    );
+    Ok(value)
 }
 
 pub(crate) fn redacted_url(url: &str) -> String {
@@ -248,6 +308,24 @@ impl fmt::Debug for ServeArgs {
 #[cfg(test)]
 mod release_tests {
     use super::*;
+    #[test]
+    fn credential_files_are_bounded_private_and_no_follow() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let settings = Settings::for_tests();
+        let path = settings.data_dir.join("credential");
+        crate::pki_store::write_secret_file(&path, b"fixture-value\n", true).unwrap();
+        assert!(credential_file(&path).unwrap().as_str() == "fixture-value");
+        let link = path.with_file_name("link");
+        symlink(&path, &link).unwrap();
+        assert!(credential_file(&link).is_err());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(credential_file(&path).is_err());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::write(&path, vec![b'x'; 16385]).unwrap();
+        assert!(credential_file(&path).is_err());
+        std::fs::write(&path, b"bad\nvalue").unwrap();
+        assert!(credential_file(&path).is_err());
+    }
     #[test]
     fn repository_pattern_is_exact() {
         for good in ["example-owner/porchlight", "A/repo.name_1-", "0/r"] {

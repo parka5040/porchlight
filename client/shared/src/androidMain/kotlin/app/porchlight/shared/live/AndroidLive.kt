@@ -140,21 +140,46 @@ class HouseholdSyncWorker(context: Context, params: WorkerParameters) : Coroutin
         try { services.data.cache.initialize() }
         catch (e: CancellationException) { throw e }
         catch (_: Exception) { return Result.retry() }
-        recoverLivePermissions(applicationContext, services)
-        if (!services.trust.controller.backgroundSessionUsable()) return Result.success()
         return try {
-            val completed = withBackgroundSession(services.trust.controller) {
-                liveSafetyNet(services.settings.settings.first().stayConnected,
-                    services.data.cache.sync.value != null && services.data.live?.hasRecentStreamFrame() == true,
-                    { services.data.notifications.refresh() }, { services.data.sync.refresh() })
-            }
-            if (!completed) return Result.retry()
-            recoverLivePermissions(applicationContext, services)
-            Result.success()
+            val completed = householdWorkerPass(network = true,
+                reconcile = { recoverLivePermissions(applicationContext, services) }, synchronize = {
+                    if (!services.trust.controller.backgroundSessionUsable()) true
+                    else withBackgroundSession(services.trust.controller) {
+                        // Keep the original cache epoch/storage lease through apply AND acknowledgement, not
+                        // just each individual refetch. Identity changes cannot acknowledge into a replacement cache.
+                        services.data.cache.inSession {
+                            withTimeoutOrNull(60_000) {
+                                if (services.data.cache.sync.value != null && !services.data.itemSync)
+                                    services.trust.controller.refreshSyncCapabilities()
+                                backgroundSafetyNet(services.settings.settings.first().stayConnected,
+                                    services.data.cache.sync.value != null && services.data.live?.hasRecentStreamFrame() == true,
+                                    services.data.targetedSync, services.data.cache.sync.value?.cursor, services.data.live,
+                                    { services.data.notifications.refresh() }, { services.data.sync.refresh() })
+                            } ?: false
+                        }
+                    }
+                })
+            if (completed) Result.success() else Result.retry()
         }
         catch (e: CancellationException) { throw e } catch (_: Exception) { Result.retry() }
     }
 }
+/** Unconstrained disk-only safety net: unavailable networking never blocks reminders or OS inventory repair. */
+class HouseholdReconcileWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
+    override suspend fun doWork(): Result = privateStorageBoundary(applicationContext)
+        .attempt(PrivateStorageEntry.Worker) {
+            val services = AndroidAppServices.get(applicationContext)
+            services.data
+            services.trust.controller.ensureRestored(); services.trust.controller.state.first { it != TrustState.Loading }
+            try {
+                services.data.cache.initialize()
+                householdWorkerPass(network = false, reconcile = { recoverLivePermissions(applicationContext, services) },
+                    synchronize = { error("Local reconciliation cannot perform network work") })
+                Result.success()
+            } catch (e: CancellationException) { throw e } catch (_: Exception) { Result.retry() }
+        }.getOrElse { Result.retry() }
+}
+private fun syncNetworkConstraint() = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
 /** Re-check on Activity resume, periodic refresh and exact-permission broadcasts; pending OS inventory retries too. */
 suspend fun recoverLivePermissions(context: Context, services: AndroidAppServices) {
     recoverLivePermissions(services.trust.controller, services.liveRuntime)
@@ -187,8 +212,11 @@ fun bindAndroidLive(context: Context, data: HouseholdData, scope: CoroutineScope
             runtime.withCurrent(epoch) { AndroidAlarms(context).snoozeOccurrence(occurrenceId) }
         } }
     }
-    WorkManager.getInstance(context).enqueueUniquePeriodicWork("household-sync", ExistingPeriodicWorkPolicy.KEEP,
-        PeriodicWorkRequestBuilder<HouseholdSyncWorker>(15, TimeUnit.MINUTES).build())
+    // UPDATE also installs the constraint on work persisted by older app versions.
+    WorkManager.getInstance(context).enqueueUniquePeriodicWork("household-sync", ExistingPeriodicWorkPolicy.UPDATE,
+        PeriodicWorkRequestBuilder<HouseholdSyncWorker>(15, TimeUnit.MINUTES).setConstraints(syncNetworkConstraint()).build())
+    WorkManager.getInstance(context).enqueueUniquePeriodicWork("household-reconcile", ExistingPeriodicWorkPolicy.KEEP,
+        PeriodicWorkRequestBuilder<HouseholdReconcileWorker>(15, TimeUnit.MINUTES).build())
     scope.launch { privateStorageBoundary(context).retry(PrivateStorageEntry.Live) {
         val controller = AndroidAppServices.get(context).trust.controller
         controller.ensureRestored(); controller.state.first { it != TrustState.Loading }
@@ -248,5 +276,7 @@ fun updateForegroundConnection(context: Context, enabled: Boolean) {
 
 internal fun enqueueSafetyNet(context: Context) {
     WorkManager.getInstance(context).enqueueUniqueWork("household-fgs-fallback", ExistingWorkPolicy.KEEP,
-        OneTimeWorkRequestBuilder<HouseholdSyncWorker>().build())
+        OneTimeWorkRequestBuilder<HouseholdSyncWorker>().setConstraints(syncNetworkConstraint()).build())
+    WorkManager.getInstance(context).enqueueUniqueWork("household-local-fallback", ExistingWorkPolicy.KEEP,
+        OneTimeWorkRequestBuilder<HouseholdReconcileWorker>().build())
 }

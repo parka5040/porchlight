@@ -13,19 +13,26 @@ services:
     pids_limit: 256
     image: postgres:18.6@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    # Keep entrypoint capabilities until the pinned image's initialization is proven by the controller.
+    stop_grace_period: 60s
+    entrypoint: ["/bin/sh", "/porchlight/entrypoint.sh"]
     command: ["postgres", "-c", "shared_buffers=512MB", "-c", "work_mem=4MB",
-              "-c", "maintenance_work_mem=128MB", "-c", "max_connections=50"]
+              "-c", "maintenance_work_mem=128MB", "-c", "max_connections=50",
+              "-c", "shared_preload_libraries=pg_stat_statements", "-c", "pg_stat_statements.track=top",
+              "-c", "effective_cache_size=1GB", "-c", "autovacuum_work_mem=64MB"]
     environment:
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?missing stack .env}
-      PORCHLIGHT_MIGRATOR_PASSWORD: ${PORCHLIGHT_MIGRATOR_PASSWORD:?missing stack .env}
-      PORCHLIGHT_APP_PASSWORD: ${PORCHLIGHT_APP_PASSWORD:?missing stack .env}
-      PORCHLIGHT_AGENT_PASSWORD: ${PORCHLIGHT_AGENT_PASSWORD:?missing stack .env}
-      PORCHLIGHT_BACKUP_PASSWORD: ${PORCHLIGHT_BACKUP_PASSWORD:?missing stack .env}
+      POSTGRES_PASSWORD_FILE: /credentials/postgres-password
+      PORCHLIGHT_MIGRATOR_PASSWORD_FILE: /credentials/migrator-password
+      PORCHLIGHT_APP_PASSWORD_FILE: /credentials/app-password
+      PORCHLIGHT_AGENT_PASSWORD_FILE: /credentials/agent-password
+      PORCHLIGHT_BACKUP_PASSWORD_FILE: /credentials/backup-password
     volumes:
       - ${PORCHLIGHT_ROOT:-/var/lib/porchlight}/pgdata:/var/lib/postgresql
       - ./postgres/initdb:/docker-entrypoint-initdb.d:ro
       - ./postgres/bootstrap-roles.sql:/porchlight/bootstrap-roles.sql:ro
-    ports: ["127.0.0.1:${PG_PORT:-5432}:5432"]
+      - ./postgres/entrypoint.sh:/porchlight/entrypoint.sh:ro
+      - ${PORCHLIGHT_ROOT:-/var/lib/porchlight}/credentials:/credentials:ro
     networks: [backend]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d porchlight"]
@@ -33,7 +40,7 @@ services:
       start_period: 60s
       start_interval: 2s
       timeout: 3s
-      retries: 30
+      retries: 3
   migrate:
     logging: *bounded-logging
     mem_limit: 512m
@@ -42,11 +49,18 @@ services:
     image: porchlight-api:${PORCHLIGHT_VERSION:?missing release version}
     pull_policy: never
     restart: "no" # one-shot: never loop successful migrations
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    user: "${PORCHLIGHT_UID:-1000}:${PORCHLIGHT_GID:-1000}"
+    tmpfs: ["/tmp:mode=1777,size=16m"]
+    volumes:
+      - ${PORCHLIGHT_ROOT:-/var/lib/porchlight}/credentials/migrator-url:/credentials/migrator-url:ro
     command: ["migrate"]
     depends_on:
       postgres: {condition: service_healthy}
     environment:
-      PORCHLIGHT_MIGRATOR_URL: postgres://porchlight_migrator:${PORCHLIGHT_MIGRATOR_PASSWORD:?missing credential}@postgres:5432/porchlight
+      PORCHLIGHT_MIGRATOR_URL_FILE: /credentials/migrator-url
     networks: [backend]
   api:
     logging: *bounded-logging
@@ -57,11 +71,16 @@ services:
     pull_policy: never
     user: "${PORCHLIGHT_UID:-1000}:${PORCHLIGHT_GID:-1000}"
     restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:mode=1777,size=128m"]
     depends_on:
       postgres: {condition: service_healthy}
       migrate: {condition: service_completed_successfully}
     environment:
-      PORCHLIGHT_DATABASE_URL: postgres://porchlight_app:${PORCHLIGHT_APP_PASSWORD:?missing credential}@postgres:5432/porchlight
+      PORCHLIGHT_DATABASE_URL_FILE: /credentials/app-url
+      PORCHLIGHT_MAINTENANCE_FILE: /data/maintenance
       PORCHLIGHT_DATA_DIR: /data
       PORCHLIGHT_ATTACHMENT_QUOTA_BYTES: ${PORCHLIGHT_ATTACHMENT_QUOTA_BYTES:-10737418240}
       PORCHLIGHT_DISK_RESERVE_BYTES: ${PORCHLIGHT_DISK_RESERVE_BYTES:-2147483648}
@@ -80,10 +99,11 @@ services:
       PORCHLIGHT_RELEASE_DIR: /release
     volumes:
       - ${PORCHLIGHT_ROOT:-/var/lib/porchlight}/data:/data
+      - ${PORCHLIGHT_ROOT:-/var/lib/porchlight}/credentials/app-url:/credentials/app-url:ro
       - ${PORCHLIGHT_ROOT:-/var/lib/porchlight}/backups:/backups:ro
       - ${PORCHLIGHT_ROOT:-/var/lib/porchlight}/releases/${PORCHLIGHT_VERSION:?missing release version}:/release:ro
       - ${PORCHLIGHT_RUN_DIR:-/run/porchlight}:/run/porchlight
-    ports: ["${LAN_BIND:-0.0.0.0}:${LAN_PORT:-8443}:8443", "${LAN_BIND:-0.0.0.0}:${ENROLL_PORT:-8444}:8444"]
+    ports: ["${LAN_BIND:?installer must persist LAN_BIND}:${LAN_PORT:-8443}:8443", "${LAN_BIND:?installer must persist LAN_BIND}:${ENROLL_PORT:-8444}:8444"]
     networks: [backend, ingress]
     healthcheck:
       test: ["CMD", "/usr/local/bin/porchlight", "healthcheck"]
@@ -91,7 +111,7 @@ services:
       start_period: 60s
       start_interval: 5s
       timeout: 5s
-      retries: 30
+      retries: 3
   backup:
     logging: *bounded-logging
     mem_limit: 1g
@@ -105,15 +125,19 @@ services:
       postgres: {condition: service_healthy}
       api: {condition: service_healthy}
     environment:
-      PORCHLIGHT_BACKUP_PASSWORD: ${PORCHLIGHT_BACKUP_PASSWORD:?missing credential}
+      PORCHLIGHT_BACKUP_PASSWORD_FILE: /credentials/backup-password
       PORCHLIGHT_VERSION: ${PORCHLIGHT_VERSION:?missing release version}
       PORCHLIGHT_DATA_DIR: /data
       PORCHLIGHT_BACKUP_DIR: /backups
       PORCHLIGHT_ENV_FILE: /stack/.env
       TMPDIR: /work
       PORCHLIGHT_DUMP_TMPDIR: /dumpwork
-    tmpfs: ["/work:mode=1777,size=512m"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/work:mode=1777,size=512m", "/tmp:mode=1777,size=16m"]
     volumes:
+      - ${PORCHLIGHT_ROOT:-/var/lib/porchlight}/credentials/backup-password:/credentials/backup-password:ro
       - ${PORCHLIGHT_ROOT:-/var/lib/porchlight}/backup-work:/dumpwork
       - ${PORCHLIGHT_ROOT:-/var/lib/porchlight}/data:/data:ro
       - ${PORCHLIGHT_ROOT:-/var/lib/porchlight}/backups:/backups
@@ -129,6 +153,7 @@ services:
 
 networks:
   backend:
+    internal: true
     ipam:
       config: [{subnet: "${BACKEND_SUBNET:-172.29.250.0/24}"}]
   ingress:

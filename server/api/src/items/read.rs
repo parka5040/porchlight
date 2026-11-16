@@ -31,14 +31,14 @@ pub async fn read_snapshot(s: &AppState) -> Result<Transaction<'static, Postgres
     Ok(tx)
 }
 
-pub(super) struct ReadBatch {
+pub(crate) struct ReadBatch {
     rows: std::collections::BTreeMap<Uuid, ItemRow>,
     sets: std::collections::BTreeMap<Uuid, Relationships>,
     pending: std::collections::BTreeSet<Uuid>,
     dependent: std::collections::BTreeSet<Uuid>,
 }
 impl ReadBatch {
-    pub(super) async fn load(
+    pub(crate) async fn load(
         conn: &mut PgConnection,
         household: Uuid,
         ids: &[Uuid],
@@ -88,7 +88,10 @@ impl ReadBatch {
             dependent: dependent.into_iter().collect(),
         })
     }
-    fn caps(&self, c: &Caller, id: Uuid) -> Result<Vec<Capability>, ApiError> {
+    pub(crate) fn deleted(&self, id: Uuid) -> Option<bool> {
+        self.rows.get(&id).map(|r| r.deleted_at.is_some())
+    }
+    pub(crate) fn caps(&self, c: &Caller, id: Uuid) -> Result<Vec<Capability>, ApiError> {
         let r = self
             .rows
             .get(&id)
@@ -261,45 +264,10 @@ pub async fn occurrences_with_zone(
         .collect::<Vec<String>>();
     let is_pending = pending(&mut conn, id).await?;
     let spec = parent.spec().map_err(domain_error)?;
-    let rows = derive::occurrences(&mut conn, id)
-        .await
-        .map_err(domain_error)?;
     let zone:String=sqlx::query_scalar("SELECT porchlight.pl_effective_member_zone(m.role,m.tzid,h.tzid) FROM porchlight.household_members m JOIN porchlight.households h ON h.id=m.household_id WHERE m.id=$1").bind(c.member_id()).fetch_one(&mut *conn).await?;
     let zone = reported_zone
         .or_else(|| porchlight_core::time::parse_tz(&zone))
         .ok_or_else(|| ApiError::internal("member_zone"))?;
-    let mut items = Vec::new();
-    for o in rows {
-        let r = occurrence_wire(&o, &spec, capabilities.clone(), is_pending, vec![])?;
-        let start = r
-            .starts_at
-            .or(r.due_at)
-            .or(r
-                .local_start
-                .or(r.local_due)
-                .map(|l| porchlight_core::time::resolve_local(l, zone)))
-            .or(r
-                .due_date
-                .map(|d| porchlight_core::time::start_of_day(d, zone)));
-        let end = r
-            .ends_at
-            .or(r
-                .local_end
-                .map(|l| porchlight_core::time::resolve_local(l, zone)))
-            .or(start);
-        let in_range = match (start, end) {
-            (Some(start), Some(end)) => {
-                q.to.is_none_or(|t| start < t)
-                    && q.from
-                        .is_none_or(|f| if end == start { start >= f } else { end > f })
-            }
-            _ => q.undated == Some(true) || (q.from.is_none() && q.to.is_none()),
-        };
-        if in_range {
-            items.push(r);
-        }
-    }
-    items.sort_by_key(|r| r.seq);
     let limit = crate::pagination::PageParams {
         cursor: q.cursor.clone(),
         limit: q.limit,
@@ -321,7 +289,57 @@ pub async fn occurrences_with_zone(
         .as_ref()
         .map(|cursor| s.idem.cursor.decode::<(u32, Uuid)>(&context, cursor))
         .transpose()?;
-    items.retain(|r| after.is_none_or(|key| (r.seq, r.id) > key));
+    let mut candidates = derive::OccurrenceReadPage {
+        after,
+        from: q.from,
+        to: q.to,
+        undated: q.undated == Some(true),
+        limit: 128,
+    };
+    let mut items = Vec::with_capacity(limit + 1);
+    while items.len() <= limit {
+        let rows = derive::occurrence_candidates(&mut conn, id, &candidates)
+            .await
+            .map_err(domain_error)?;
+        let exhausted = rows.len() < candidates.limit;
+        for o in rows {
+            let r = occurrence_wire(&o, &spec, capabilities.clone(), is_pending, vec![])?;
+            candidates.after = Some((r.seq, r.id));
+            let start = r
+                .starts_at
+                .or(r.due_at)
+                .or(r
+                    .local_start
+                    .or(r.local_due)
+                    .map(|l| porchlight_core::time::resolve_local(l, zone)))
+                .or(r
+                    .due_date
+                    .map(|d| porchlight_core::time::start_of_day(d, zone)));
+            let end = r
+                .ends_at
+                .or(r
+                    .local_end
+                    .map(|l| porchlight_core::time::resolve_local(l, zone)))
+                .or(start);
+            let in_range = match (start, end) {
+                (Some(start), Some(end)) => {
+                    q.to.is_none_or(|t| start < t)
+                        && q.from
+                            .is_none_or(|f| if end == start { start >= f } else { end > f })
+                }
+                _ => q.undated == Some(true) || (q.from.is_none() && q.to.is_none()),
+            };
+            if in_range {
+                items.push(r);
+            }
+            if items.len() > limit {
+                break;
+            }
+        }
+        if exhausted {
+            break;
+        }
+    }
     let page = s
         .idem
         .cursor

@@ -173,14 +173,21 @@ def valid_dns(value):
 def validate_restore_target(env_path, *pairs):
     values = dict(line.split('=', 1) for line in Path(env_path).read_text().splitlines() if '=' in line)
     overrides = dict(zip(pairs[::2], pairs[1::2], strict=True))
-    for key, value in overrides.items():
+    values.update(overrides)
+    if not values.get('LAN_BIND'):
+        raise ValueError('explicit LAN binding required for legacy restore')
+    keys = ('PG_PORT', 'LAN_PORT', 'ENROLL_PORT', 'LAN_BIND', 'BACKEND_SUBNET', 'INGRESS_SUBNET',
+            'ENROLL_CIDRS', 'ENROLL_HOST', 'PORCHLIGHT_ENDPOINTS')
+    if any(key not in keys for key in overrides): raise ValueError('unknown restore target setting')
+    for key, value in values.items():
+        if key not in keys: continue
         if not value or any(c in value for c in '\r\n$#\"\''):
             raise ValueError('invalid restore target setting')
         if key in ('PG_PORT', 'LAN_PORT', 'ENROLL_PORT'):
             if not re.fullmatch(r'[0-9]{1,5}', value) or not 1 <= int(value) <= 65535:
                 raise ValueError('invalid restore port')
         elif key == 'LAN_BIND':
-            ipaddress.ip_address(value)
+            resolve_lan_bind(value, '', [], True)
         elif key in ('BACKEND_SUBNET', 'INGRESS_SUBNET'):
             ipaddress.ip_network(value)
         elif key == 'ENROLL_CIDRS':
@@ -348,6 +355,12 @@ def extract(archive, destination, inventory=None):
                             target.chmod(entry.mode & 0o777 & ~0o022)
                 if expected is not None and expected.keys() - seen:
                     raise ValueError('missing inventory member')
+                if inventory == '--desktop' and not write:
+                    existing = destination.parent
+                    while not existing.exists():
+                        existing = existing.parent
+                    if shutil.disk_usage(existing).free < total + 64 * 1024**2:
+                        raise OSError('not enough free space for desktop image')
             finally:
                 if stream is not raw: stream.close()
 
@@ -396,9 +409,171 @@ def backup_due(last_success, next_due_at, instant):
     return current - parse(last_success) > dt.timedelta(hours=24) or parse(next_due_at) <= current
 
 
+def resolve_lan_bind(value, cidrs, addresses=None, allow_any=False):
+    """Select one local IPv4 in the enrollment network, never a VPN/default-route guess."""
+    if value:
+        address = ipaddress.IPv4Address(value)
+        if address.is_unspecified and not allow_any:
+            raise ValueError('wildcard requires explicit --lan-bind 0.0.0.0')
+        if address.is_multicast:
+            raise ValueError('unicast LAN bind required')
+        return str(address)
+    networks = [ipaddress.IPv4Network(c, strict=False) for c in cidrs.split(',') if c]
+    if addresses is None:
+        import subprocess
+        data = json.loads(subprocess.check_output(['ip', '-j', '-4', 'addr', 'show', 'scope', 'global'], timeout=5))
+        addresses = [a['local'] for interface in data for a in interface.get('addr_info', []) if a.get('family') == 'inet']
+    matches = {str(ipaddress.IPv4Address(a)) for a in addresses if any(ipaddress.IPv4Address(a) in n for n in networks)}
+    if len(matches) != 1:
+        raise ValueError('cannot select exactly one LAN address; use --lan-bind')
+    return matches.pop()
+
+
+def prepare_credentials(root):
+    """Private bind files; retain legacy .env for old-image rollback and independent backups."""
+    root = Path(root)
+    values = dict(line.split('=', 1) for line in (root / '.env').read_text().splitlines() if '=' in line and not line.startswith('#'))
+    directory = root / 'credentials'
+    if directory.is_symlink(): raise ValueError('symlink credential directory')
+    directory.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(directory, 0o700)
+    for role in ('postgres', 'migrator', 'app', 'agent', 'backup'):
+        key = 'POSTGRES_PASSWORD' if role == 'postgres' else 'PORCHLIGHT_' + role.upper() + '_PASSWORD'
+        value = values[key]
+        if not value or any(c in value for c in '\r\n\x00'): raise ValueError('invalid credential')
+        atomic_text(directory / (role + '-password'), value + '\n')
+        if role in ('app', 'migrator'):
+            url = 'postgres://porchlight_' + role + ':' + urllib.parse.quote(value, safe='') + '@postgres:5432/porchlight\n'
+            atomic_text(directory / (role + '-url'), url)
+
+
+def fence_phase(root):
+    path = Path(root) / 'data/maintenance'
+    if path.is_symlink(): raise ValueError('symlink maintenance fence')
+    try: value = path.read_text()
+    except FileNotFoundError: return 'absent'
+    if value in ('upgrade pending\n', 'porchlight-upgrade-v1 pending\n'): return 'pending'
+    if value == 'porchlight-upgrade-v1 committed\n': return 'committed'
+    raise ValueError('unknown maintenance phase; keep writes disabled')
+
+
+def durable_fence(root, action):
+    """Commit the forward-only decision before SQL LOGIN or HTTP exposure."""
+    path = Path(root) / 'data/maintenance'
+    if action is True: action = 'create'  # Compatibility for older helper callers.
+    if action is False: action = 'remove'
+    if action == 'create':
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            os.write(fd, b'porchlight-upgrade-v1 pending\n')
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    elif action == 'commit':
+        if fence_phase(root) not in ('pending', 'committed'):
+            raise ValueError('missing pending maintenance fence')
+        # Persist the selected release/configuration renames before the recovery decision.
+        fd = os.open(Path(root), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try: os.fsync(fd)
+        finally: os.close(fd)
+        atomic_text(path, 'porchlight-upgrade-v1 committed\n')
+    elif action == 'remove':
+        path.unlink(missing_ok=True)
+    else:
+        raise ValueError('unknown maintenance action')
+    fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try: os.fsync(fd)
+    finally: os.close(fd)
+
+
+def prune_plan(root, images, used_images):
+    root = Path(root)
+    releases = root / 'releases'
+    if releases.is_symlink(): raise ValueError('symlink releases directory')
+    current = (root / 'release-current').resolve(strict=True)
+    if current.parent != releases.resolve() or not current.is_dir(): raise ValueError('invalid current release')
+    version_code(current.name)
+    environment = root / '.env'
+    if environment.is_symlink(): raise ValueError('symlink stack configuration')
+    values = dict(line.split('=', 1) for line in environment.read_text().splitlines() if '=' in line and not line.startswith('#'))
+    if values.get('PORCHLIGHT_VERSION') != current.name: raise ValueError('unresolved release/configuration switch')
+    def porchlight_release(path):
+        manifest = path / 'manifest.json'
+        if manifest.is_symlink(): raise ValueError('symlink release inventory')
+        value = json.loads(manifest.read_text())
+        required = {'install.sh', 'compose.yml', 'porchlight-api-' + path.name + '.tar', 'porchlight-backup-' + path.name + '.tar'}
+        if value.get('version') != path.name or value.get('format_version') != 1 or not required <= value.get('files', {}).keys():
+            raise ValueError('not a Porchlight release inventory')
+    porchlight_release(current)
+    keep = {current.name}
+    previous = root / 'release-previous'
+    if previous.is_symlink():
+        target = previous.resolve(strict=True)
+        if target.parent != releases.resolve() or not target.is_dir(): raise ValueError('invalid previous release')
+        version_code(target.name)
+        keep.add(target.name)
+    else:
+        older = [p.name for p in releases.iterdir() if re.fullmatch(r'\d+\.\d+\.\d+', p.name) and version_code(p.name) < version_code(current.name)]
+        if older: keep.add(max(older, key=version_code))
+    rollback = root / 'backups/rollback'
+    if rollback.is_symlink(): raise ValueError('symlink rollback directory')
+    for bundle in rollback.glob('*.tar.age'):
+        metadata = bundle.with_suffix(bundle.suffix + '.version')
+        if bundle.is_symlink() or metadata.is_symlink() or not metadata.is_file():
+            raise ValueError('rollback bundle lacks trusted version metadata; retain all releases/images')
+        version = metadata.read_text().strip()
+        version_code(version)
+        keep.add(version)
+    for image in used_images:
+        match = re.fullmatch(r'porchlight-(?:api|backup):(\d+\.\d+\.\d+)', image)
+        if match: keep.add(match[1])
+    directories = []
+    for path in sorted(releases.iterdir()):
+        if path.is_symlink() or not path.is_dir() or not re.fullmatch(r'\d+\.\d+\.\d+', path.name): continue
+        version_code(path.name)
+        if path.name in keep: continue
+        porchlight_release(path)
+        directories.append(path)
+    obsolete = sorted({image for image in images if re.fullmatch(r'porchlight-(?:api|backup):\d+\.\d+\.\d+', image) and image.rsplit(':', 1)[1] not in keep})
+    return directories, obsolete
+
+
+def prune(root, apply=False):
+    import subprocess
+    images = subprocess.check_output(['docker', 'image', 'ls', '--format', '{{.Repository}}:{{.Tag}}'], text=True).splitlines()
+    containers = subprocess.check_output(['docker', 'ps', '-aq'], text=True).splitlines()
+    # References from ALL containers protect releases; never print unrelated object metadata.
+    used = []
+    if containers:
+        used = subprocess.check_output(['docker', 'inspect', '--format', '{{.Config.Image}}', *containers], text=True).splitlines()
+        ids = subprocess.check_output(['docker', 'inspect', '--format', '{{.Image}}', *containers], text=True).splitlines()
+        for image in images:
+            if re.fullmatch(r'porchlight-(?:api|backup):\d+\.\d+\.\d+', image):
+                image_id = subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{.Id}}', image], text=True).strip()
+                if image_id in ids: used.append(image)
+    directories, obsolete = prune_plan(root, images, used)
+    for image in obsolete:
+        print(('REMOVE' if apply else 'WOULD REMOVE') + ' image ' + image)
+        if apply: subprocess.run(['docker', 'image', 'rm', image], check=True)
+    for directory in directories:
+        print(('REMOVE' if apply else 'WOULD REMOVE') + ' release ' + directory.name)
+        if apply: shutil.rmtree(directory)
+    print('PASS prune ' + ('applied' if apply else 'dry-run; use --apply after review'))
+
+
 def main():
     cmd, *args = sys.argv[1:]
-    if cmd == 'version-code':
+    if cmd == 'prepare-credentials':
+        prepare_credentials(Path(args[0]))
+    elif cmd == 'durable-fence':
+        durable_fence(Path(args[0]), args[1])
+    elif cmd == 'fence-phase':
+        print(fence_phase(Path(args[0])))
+    elif cmd == 'lan-bind':
+        print(resolve_lan_bind(args[0], args[1], allow_any=args[2:] == ['explicit']))
+    elif cmd == 'prune':
+        prune(Path(args[0]), apply=args[1:] == ['--apply'])
+    elif cmd == 'version-code':
         print(version_code(args[0]))
     elif cmd == 'source-kind':
         print(source_kind(args[0]))

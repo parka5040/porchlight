@@ -3,6 +3,27 @@ use crate::{config::Settings, pki_store::ServerPki, tls::RevokedSet};
 use sqlx::PgPool;
 use std::{ops::Deref, sync::Arc};
 
+// Default admitted heap estimate: 1*512 MiB image decoder (including input/output
+// copies) + 2*64 MiB Argon2 + 2*(30 MiB+64 KiB) calendar bodies + 4*12 MiB
+// snapshot working sets = 748.125 MiB, below the 768 MiB workload ceiling.
+// SN-01 isolated requested-live-heap probe: 1000 items + 10000 occurrences,
+// comments and nested metadata produce 9,283,408 JSON bytes at 10,547,301 peak
+// heap bytes (old tree writer: 91,699,418). Round up to 12 MiB with headroom;
+// scripts/check-snapshot-alloc.sh checks both this estimate and <=2.5x output.
+// This is a measured reference workload, NOT a data-size cap: household history
+// is unbounded; snapshots are never truncated.
+pub const INGEST_SLOTS: usize = 1;
+pub const HASH_SLOTS: usize = 2;
+pub const CALENDAR_BODY_SLOTS: usize = 2;
+pub const CALENDAR_MEMBER_IMPORTS: usize = 1;
+pub const SNAPSHOT_DEVICE: usize = 1;
+pub const SNAPSHOT_MEMBER: usize = 3;
+pub const SNAPSHOT_GLOBAL: usize = 4;
+pub const SNAPSHOT_ESTIMATED_HEAP: usize = 12 * 1024 * 1024;
+pub const SNAPSHOT_WAIT_SECS: u64 = 15;
+pub const DOWNLOAD_DEVICE: usize = 3;
+pub const DOWNLOAD_MEMBER: usize = 6;
+
 #[derive(Clone)]
 pub struct AppState(pub Arc<AppInner>);
 pub struct AppInner {
@@ -12,6 +33,12 @@ pub struct AppInner {
     pub ingest_slots: Arc<tokio::sync::Semaphore>,
     /// Calendar import bodies buffered at once (each up to ~30 MiB as JSON), held until commit.
     pub calendar_body_slots: Arc<tokio::sync::Semaphore>,
+    pub calendar_member_imports: crate::concurrency::Limits,
+    pub snapshot_limits: crate::concurrency::Limits,
+    pub item_sync_limits: crate::concurrency::Limits,
+    pub snapshot_members: crate::concurrency::MemberSlots,
+    pub snapshot_slots: Arc<tokio::sync::Semaphore>,
+    pub downloads: crate::concurrency::Limits,
     pub pool: PgPool,
     pub pki: Arc<ServerPki>,
     pub revoked: RevokedSet,
@@ -45,6 +72,33 @@ pub struct AppInner {
     pub item_clock: Arc<dyn Fn() -> chrono::DateTime<chrono::Utc> + Send + Sync>,
 }
 impl AppState {
+    pub async fn admit_snapshot(
+        &self,
+        caller: &crate::extract::Caller,
+    ) -> Result<crate::concurrency::SnapshotPermit, crate::error::ApiError> {
+        let device = self
+            .snapshot_limits
+            .acquire(caller.admission_id(), caller.member_id())?;
+        // Immediate device admission bounds waiters by the number of devices.
+        // Both FIFO waits happen before any DB connection or transaction is acquired.
+        let (member, global) = tokio::time::timeout(self.settings.snapshot_wait, async {
+            let member = self.snapshot_members.acquire(caller.member_id()).await?;
+            let global = self
+                .snapshot_slots
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|_| crate::error::ApiError::internal("quota_closed"))?;
+            Ok::<_, crate::error::ApiError>((member, global))
+        })
+        .await
+        .map_err(|_| crate::error::ApiError::new(crate::error::Problem::RateLimited).retry(2))??;
+        Ok(crate::concurrency::SnapshotPermit {
+            device,
+            member,
+            global,
+        })
+    }
     /// Single production/test constructor. All keys and runtime hooks are initialized here.
     pub async fn new(
         pool: PgPool,
@@ -70,8 +124,14 @@ impl AppState {
             disk_budget,
             upload_limits: crate::blobs::UploadLimits::default(),
             upload_streams: crate::blobs::UploadStreams::default(),
-            ingest_slots: Arc::new(tokio::sync::Semaphore::new(2)),
-            calendar_body_slots: Arc::new(tokio::sync::Semaphore::new(2)),
+            ingest_slots: Arc::new(tokio::sync::Semaphore::new(INGEST_SLOTS)),
+            calendar_body_slots: Arc::new(tokio::sync::Semaphore::new(CALENDAR_BODY_SLOTS)),
+            calendar_member_imports: crate::concurrency::Limits::new(CALENDAR_MEMBER_IMPORTS, None),
+            snapshot_limits: crate::concurrency::Limits::new(SNAPSHOT_DEVICE, None),
+            item_sync_limits: crate::concurrency::Limits::new(4, None),
+            snapshot_members: crate::concurrency::MemberSlots::new(SNAPSHOT_MEMBER),
+            snapshot_slots: Arc::new(tokio::sync::Semaphore::new(SNAPSHOT_GLOBAL)),
+            downloads: crate::concurrency::Limits::new(DOWNLOAD_DEVICE, Some(DOWNLOAD_MEMBER)),
             pki,
             revoked,
             client_release: tokio::sync::OnceCell::new(),
@@ -91,7 +151,7 @@ impl AppState {
             release_hash_slots: Arc::new(tokio::sync::Semaphore::new(2)),
             #[cfg(feature = "testing")]
             release_open_hook: std::sync::Mutex::new(None),
-            hash_slots: Arc::new(tokio::sync::Semaphore::new(2)),
+            hash_slots: Arc::new(tokio::sync::Semaphore::new(HASH_SLOTS)),
             idem: crate::idempotency::IdempotencyKeys::new(master_key),
             #[cfg(feature = "testing")]
             stream_pre_subscribe_delay: std::time::Duration::ZERO,
@@ -108,5 +168,26 @@ impl Deref for AppState {
     type Target = AppInner;
     fn deref(&self) -> &AppInner {
         &self.0
+    }
+}
+
+#[cfg(test)]
+mod admission_budget_tests {
+    use super::*;
+    #[test]
+    fn admitted_workloads_fit_container_headroom() {
+        let mib = 1024 * 1024;
+        let image = porchlight_core::ingest::Limits::production().max_alloc_bytes as usize;
+        let argon = 65536 * 1024; // production PasswordHasher m_cost in KiB
+        let calendar = crate::calendar::fetch::MAX_BYTES * 6 + 64 * 1024;
+        let snapshot_estimate = SNAPSHOT_ESTIMATED_HEAP;
+        let total = image * INGEST_SLOTS
+            + argon * HASH_SLOTS
+            + calendar * CALENDAR_BODY_SLOTS
+            + snapshot_estimate * SNAPSHOT_GLOBAL;
+        assert!(
+            total < 768 * mib,
+            "default admitted heap estimate {total} exceeds workload ceiling"
+        );
     }
 }

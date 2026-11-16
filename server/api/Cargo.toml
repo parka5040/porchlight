@@ -16,6 +16,7 @@ porchlight-core.workspace = true
 porchlight-pki.workspace = true
 porchlight-db.workspace = true
 sqlx.workspace = true
+socket2 = "0.6"
 tokio.workspace = true
 clap.workspace = true
 anyhow.workspace = true

@@ -2,6 +2,9 @@ package app.porchlight.shared.screens.calendar
 
 import androidx.compose.runtime.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.horizontalScroll
@@ -66,17 +69,20 @@ fun calendarMemberIds(route: AppRoute.Calendar, primary: String?, members: List<
 @Composable fun CalendarContent(route: AppRoute.Calendar, today: LocalDate, zone: TimeZone, memberId: String?, rows: List<ItemRead>,
     members: List<MemberRead>, mobile: Boolean, loading: Boolean, error: String?, navigate: (AppRoute.Calendar) -> Unit,
     openItem: (AppRoute.Item) -> Unit, refresh: () -> Unit, selectMember: (String) -> Unit = { navigate(route.copy(memberId = it)) },
-    availability: List<AvailabilityResponse> = emptyList(), planning: @Composable () -> Unit = {}) {
+    availability: List<AvailabilityResponse> = emptyList(),
+    gridBuilder: (CalendarWindow, List<ItemRead>, Set<String>, TimeZone, CalendarGridScale) -> CalendarGrid = ::calendarGrid,
+    planning: @Composable () -> Unit = {}) {
     val date = runCatching { LocalDate.parse(route.date ?: today.toString()) }.getOrDefault(today)
-    val window = calendarWindow(route.view, date, zone)
-    val visibleIds = calendarMemberIds(route, memberId, members)
-    val grid = calendarGrid(window, rows, visibleIds, zone, CalendarGridScale(LocalDensity.current.fontScale))
+    val window = remember(route.view, date, zone) { calendarWindow(route.view, date, zone) }
+    val visibleIds = remember(route, memberId, members) { calendarMemberIds(route, memberId, members) }
+    val visibleRows = remember(window, rows, visibleIds) { calendarRowsInWindow(window, rows, visibleIds) }
+    val scale = CalendarGridScale(LocalDensity.current.fontScale)
+    val grid = remember(window, visibleRows, visibleIds, zone, scale, gridBuilder) { gridBuilder(window, visibleRows, visibleIds, zone, scale) }
     val days = grid.days
     val dayHeadingYear = window.dates.first().year != window.dates.last().year
     BoxWithConstraints(Modifier.fillMaxSize()) {
     val viewportHeight = maxHeight
-    Column(Modifier.fillMaxSize().testTag("calendar-scroll").verticalScroll(rememberScrollState()).padding(PorchlightTokens.spaceMd.dp),
-        verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceInset.dp)) {
+    val header: @Composable () -> Unit = {
         val views = listOf(CalendarView.Day, CalendarView.Week, CalendarView.Agenda) + if (mobile) emptyList() else listOf(CalendarView.Month)
         SegmentedChoice(views.map { ScopeOption(it.name, it.name) }, route.view.name, { name ->
             navigate(route.copy(view = CalendarView.valueOf(name), date = date.toString()))
@@ -128,6 +134,21 @@ fun calendarMemberIds(route: AppRoute.Calendar, primary: String?, members: List<
             Text("Availability · shaded windows are available (not appointments)")
             days.forEach { day -> availabilityBands(day.date, zone, availability, members, visibleIds).forEach { Text("${day.date} · ${it.label}") } }
         }
+    }
+    val agenda = mobile || route.view == CalendarView.Agenda
+    if (agenda) {
+        LazyColumn(Modifier.fillMaxSize().testTag("calendar-scroll").padding(PorchlightTokens.spaceMd.dp),
+            verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceInset.dp)) {
+            item("controls", "controls") { Column(verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceInset.dp)) { header() } }
+            val shown = if (route.view == CalendarView.Agenda) days.filter { it.allDay.isNotEmpty() || it.timed.isNotEmpty() } else days
+            if (shown.isEmpty()) item("empty", "empty") { Text("Nothing scheduled") }
+            shown.forEach { calendarDayEntries(it, zone, openItem, dayHeadingYear) }
+            item("planning", "planning") { planning() }
+        }
+    } else {
+    Column(Modifier.fillMaxSize().testTag("calendar-scroll").verticalScroll(rememberScrollState()).padding(PorchlightTokens.spaceMd.dp),
+        verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceInset.dp)) {
+        header()
         if (route.view == CalendarView.Month) {
             Column(Modifier.horizontalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceInset.dp)) {
                 days.chunked(7).forEach { week -> Row(horizontalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceInset.dp)) {
@@ -145,6 +166,23 @@ fun calendarMemberIds(route: AppRoute.Calendar, primary: String?, members: List<
     }
     }
 }
+}
+
+private fun LazyListScope.calendarDayEntries(day: CalendarDay, zone: TimeZone, openItem: (AppRoute.Item) -> Unit, includeYear: Boolean) {
+    item("day-${day.date}", "day-heading") {
+        Text(calendarDayHeading(day.date, includeYear), style = MaterialTheme.typography.titleMedium)
+        if (day.hours != 24L) Text("${day.hours}-hour day · daylight saving transition")
+    }
+    listOf(true to day.allDay, false to day.timed).forEach { (allDay, entries) ->
+        val section = "${day.date}-$allDay"
+        item("heading-$section", "section-heading") { Text(if (allDay) "All day" else "Scheduled", style = MaterialTheme.typography.titleSmall) }
+        if (entries.isEmpty()) item("empty-$section", "empty") { Text(if (allDay) "No all-day items" else "Nothing scheduled") }
+        items(entries, key = { "$section-${it.item.agenda?.occurrenceId ?: it.item.id}-${it.item.agenda?.memberId}" }, contentType = { "calendar-entry" }) { entry ->
+            PorchlightCard(Modifier.fillMaxWidth()) { CalendarEntryContent(entry, zone, openItem, allDay) }
+        }
+    }
+}
+
 @Composable private fun CalendarDayContent(day: CalendarDay, zone: TimeZone, openItem: (AppRoute.Item) -> Unit,
     modifier: Modifier, includeYear: Boolean) {
     PorchlightCard(modifier) {

@@ -9,6 +9,7 @@ pub mod connection;
 pub mod devices;
 pub mod enrollment;
 pub mod exports;
+pub mod item_sync;
 pub mod items;
 pub mod lists;
 pub mod me;
@@ -231,6 +232,7 @@ registry! {
     (Mtls,reads,GET,"/v1/board",board,None),
     (Mtls,reads,GET,"/v1/agenda",agenda,None),
     (Mtls,reads,GET,"/v1/snapshot",snapshot,None),
+    (Mtls,item_sync,GET,"/v1/items/{id}/sync",get,None),
     (Mtls,reads,GET,"/v1/search",search,None),
     (Mtls,members,GET,"/v1/members",list,None),
     (Mtls,members,PATCH,"/v1/members/{id}",patch,None),
@@ -239,6 +241,7 @@ registry! {
     (Agent,reads,GET,"/v1/board",board,None),
     (Agent,reads,GET,"/v1/agenda",agenda,None),
     (Agent,reads,GET,"/v1/snapshot",snapshot,None),
+    (Agent,item_sync,GET,"/v1/items/{id}/sync",get,None),
     (Agent,reads,GET,"/v1/search",search,None),
     (Agent,members,GET,"/v1/members",list,None),
     (Agent,members,PATCH,"/v1/members/{id}",patch,None),
@@ -330,6 +333,7 @@ fn finish(router: Router<AppState>, state: AppState) -> Router {
             state.clone(),
             crate::maintenance::require_unfenced,
         ))
+        .layer(middleware::from_fn(crate::compression::json))
         .with_state(state)
 }
 pub fn mtls_router(state: AppState) -> Router {

@@ -1,0 +1,7 @@
+-- Disposable projection coverage must survive a process restart, including empty scopes.
+CREATE TABLE CacheProjectionScope (
+ kind TEXT NOT NULL,
+ id TEXT NOT NULL,
+ payload TEXT NOT NULL,
+ PRIMARY KEY(kind,id)
+);

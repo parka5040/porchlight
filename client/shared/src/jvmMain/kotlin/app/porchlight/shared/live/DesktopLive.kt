@@ -132,6 +132,9 @@ class DesktopLive(private val data: HouseholdData, private val directory: Path, 
         busAvailable.value = bus != null
         if (bus == null) setBusNotice(BUS_NOTICE)
         synchronizeOwner()
+        // Restored withdrawal-only tombstones need no snapshot or authenticated content. Finish their bounded
+        // pass as soon as the daemon is available, rather than waiting for a cache presentation emission.
+        repeat(MAX_NATIVE_UNITS) { if (!drainWithdrawal()) return }
     }
     private fun synchronizeOwner() {
         trayAvailable.value = bus?.trayAvailable == true
@@ -168,7 +171,7 @@ class DesktopLive(private val data: HouseholdData, private val directory: Path, 
             }
         }
         jobs += scope.launch {
-            launch { data.cache.storageNotice.collect { if (it != null || detailNotice == CACHE_STORAGE_NOTICE) setNotice(it) } }
+            launch { data.cache.storageNotice.collect { if (it != null || detailNotice in setOf(CACHE_STORAGE_NOTICE, ATTACHMENT_CLEANUP_NOTICE)) setNotice(it) } }
             while (isActive) {
                 try { initializeInventory(); break }
                 catch (e: CancellationException) { throw e }
@@ -205,6 +208,13 @@ class DesktopLive(private val data: HouseholdData, private val directory: Path, 
         }
         jobs += scope.launch {
             initialized.await()
+            if (controller != null) controller.liveAdmission.first { it != null }
+            mutex.withLock {
+                connectBus()
+                if (deliveryOwner != null) bus?.restoreHandles(inventory.records())
+                resumeMonitor = DesktopResumeMonitor({ systemResumes.update { it + 1 }; data.live?.networkChanged(); alarmWake.trySend(Unit) }, scope, sleepBusFactory)
+                busRevision.value++
+            }
             busAvailable.collectLatest { available ->
                 if (!available) while (isActive) {
                     delay(15_000) // retry ONLY while no session bus exists, no healthy-owner polling
@@ -237,11 +247,7 @@ class DesktopLive(private val data: HouseholdData, private val directory: Path, 
             deliveryOwner = saved.owner
             inventoryOwner = saved.identity
             withdrawals.clear(); withdrawals += saved.withdrawals
-            runCatching { bus?.close() }; bus = null
-            connectBus()
-            if (deliveryOwner == saved.owner && deliveryOwner != null) bus?.restoreHandles(inventory.records())
-            // One logind connection serves both stream reconnection and wall-time changes.
-            resumeMonitor = DesktopResumeMonitor({ systemResumes.update { it + 1 }; data.live?.networkChanged(); alarmWake.trySend(Unit) }, sleepBusFactory)
+            persistDelivery() // prove private delivery storage is usable without consulting any optional daemon
             recoveryNotice = null; publishNotice()
             initialized.complete(Unit) // failures are retryable; never publish an exceptionally completed barrier
         }
@@ -359,6 +365,7 @@ class DesktopLive(private val data: HouseholdData, private val directory: Path, 
     private fun rejectDelivery(target: DesktopBus, row: DeliveryRecord, epoch: Long, owner: String?, busOwner: String?) {
         val current = inventory.get(row.key)
         if (identity.current(epoch) && deliveryOwner == owner && target.notificationServerOwner == busOwner && current == row.copy(inFlight = true)) {
+            setBusNotice(NOTIFICATION_NOTICE)
             inventory.put(row)
             try { persistDelivery() } catch (e: Exception) { inventory.put(current); throw e }
             if (!closed) retryNotifyLater()
@@ -471,6 +478,7 @@ class DesktopLive(private val data: HouseholdData, private val directory: Path, 
     override fun close() {
         if (closed) return
         closed = true
+        val deadline = System.nanoTime() + 2_800_000_000L
         jobs.forEach { it.cancel() }; notifyRetryJob?.cancel()
         // Stop new native units first, then one total drain deadline (not one wait per reply). It outlasts the
         // longest already-running native unit's 2s bound, so ready handles can acquire the mutex and reach disk.
@@ -488,7 +496,12 @@ class DesktopLive(private val data: HouseholdData, private val directory: Path, 
             }
         }
         completions.cancel()
-        try { bus?.close(); resumeMonitor?.close() } finally { pendingNotifies.clear() }
+        val teardown = java.util.concurrent.CompletableFuture.runAsync({
+            try { bus?.close() } finally { resumeMonitor?.close() }
+        }, java.util.concurrent.Executor { task -> Thread(task, "porchlight-bus-close").apply { isDaemon = true; start() } })
+        try { teardown.get((deadline - System.nanoTime()).coerceAtLeast(1), java.util.concurrent.TimeUnit.NANOSECONDS) }
+        catch (_: Exception) { /* Process shutdown owns the final bound; never hold the replacement singleton. */ }
+        finally { pendingNotifies.clear() }
     }
 }
 private fun markupEscape(text: String) = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")

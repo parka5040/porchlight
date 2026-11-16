@@ -11,6 +11,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.*
 import kotlin.time.Instant
+import kotlin.time.Duration.Companion.hours
 
 class AuditFinalClientAOwnerTest {
     private val now = Instant.parse("2026-10-06T12:00:00Z")
@@ -37,7 +38,7 @@ class AuditFinalClientAOwnerTest {
             else -> buildJsonObject {}
         }
     }
-    private class Fixture(val now: Instant) {
+    private class Fixture(var now: Instant) {
         val root = Files.createTempDirectory(Files.createDirectories(Path.of(System.getProperty("porchlight.test.dir"))), "audit-owner-")
         val file = root.resolve("cache.db").toFile()
         val artifacts = root.resolve("attachments").toFile()
@@ -70,7 +71,7 @@ class AuditFinalClientAOwnerTest {
         val row = attachmentFixture()
         cache.install(emptySnapshot(41).copy(items = listOf(itemRead(row.itemId)), lists = listOf(listFixture()),
             comments = listOf(commentFixture()), attachments = listOf(row), notifications = listOf(notificationFixture())))
-        fixture.store.write("0-${row.id}-${row.version}-file", byteArrayOf(1))
+        fixture.store.write(attachmentKey(cache.attachmentNamespace, row, false), byteArrayOf(1))
         fixture.artifacts.resolve("${row.id}-view.txt").writeText("private viewer copy")
     }
     private fun empty(cache: ReadCache) {
@@ -106,7 +107,7 @@ class AuditFinalClientAOwnerTest {
                 controller.restore()
                 assertNotEquals(TrustState.Ready, controller.state.value); empty(cache)
             }
-            fixture.blocked = false; fixture.blockFiles = false
+            fixture.blocked = false; fixture.blockFiles = false; fixture.now += 1.hours
             controller.restore()
             assertEquals(TrustState.Ready, controller.state.value)
             withTimeout(5_000) { while (keys.value?.memberId != "member-b") delay(10) }

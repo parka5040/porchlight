@@ -26,13 +26,14 @@ class ListRepository(private val call: GeneratedCall, private val cache: ReadCac
     val lists = cache.view.map { it.lists }.distinctUntilChanged()
     fun observe(id: String, occurrenceId: String? = null) = lists.map { rows -> rows.find { it.id == id && (it.mode == ListMode.persistent || it.occurrenceId == occurrenceId) } }.distinctUntilChanged()
     internal var afterWrite: suspend () -> Unit = {}
-    suspend fun get(id: String, occurrenceId: String? = null): ListResponse = cache.inSession { fence ->
+    internal var scopedAfterWrite: (suspend (String?, String?) -> Boolean)? = null
+    suspend fun get(id: String, occurrenceId: String? = null): ListResponse = cache.orderedRead { fence ->
         val mark = cache.receiptMark()
         var requestedScope: String? = null
         try {
             val known = cache.view.value.lists.find { it.id == id }
             val fetched = if (occurrenceId != null && known == null) cache.putList(fence, api.listsGet(id, version, null), mark) else null
-            if (fetched != null && (fetched.mode == ListMode.persistent || fetched.cleanupOnly)) return@inSession fetched
+            if (fetched != null && (fetched.mode == ListMode.persistent || fetched.cleanupOnly)) return@orderedRead fetched
             val template = fetched ?: known
             requestedScope = if (template?.mode == ListMode.persistent) null else occurrenceId
             cache.putList(fence, api.listsGet(id, version, requestedScope), mark)
@@ -42,7 +43,7 @@ class ListRepository(private val call: GeneratedCall, private val cache: ReadCac
             throw p
         }
     }
-    suspend fun refresh(itemId: String? = null, includeOrphaned: Boolean = false): List<ListResponse> = cache.inSession { fence ->
+    suspend fun refresh(itemId: String? = null, includeOrphaned: Boolean = false): List<ListResponse> = cache.orderedRead { fence ->
         val mark = cache.receiptMark()
         val rows = allPages { cursor -> api.listsList(version, cursor, 200, itemId, includeOrphaned).let { it.items to it.nextCursor } }
         // Install visibility fences and purge all scopes atomically with the collection.
@@ -50,14 +51,16 @@ class ListRepository(private val call: GeneratedCall, private val cache: ReadCac
     }
     /** C4: at most one template per id plus the cache's bounded occurrence scopes. A failed
      * scope never starves other scopes/ids; report the first non-eviction failure after the batch. */
-    suspend fun refetchByIds(ids: Set<String>): Unit = cache.inSession { fence ->
+    suspend fun refetchByIds(ids: Set<String>, requestedScopes: Map<String, Set<String>> = emptyMap()): Unit = cache.orderedRead { fence ->
         var failure: Exception? = null
         val retained = cache.view.value.lists.groupBy { it.id }
         for (id in ids) {
-            val scopes = retained[id].orEmpty().map { it.occurrenceId }.distinct().ifEmpty { listOf(null) }
+            val scopes = ((if (id in requestedScopes) listOf(null) else emptyList()) +
+                retained[id].orEmpty().map { it.occurrenceId } + requestedScopes[id].orEmpty()).distinct().ifEmpty { listOf(null) }
             for (scope in scopes) {
                 // A snapshot/cleanup may have dropped this scope while earlier GETs were in flight.
-                if (scope != null && cache.view.value.lists.none { it.id == id && it.occurrenceId == scope }) continue
+                if (scope != null && scope !in requestedScopes[id].orEmpty() &&
+                    cache.view.value.lists.none { it.id == id && it.occurrenceId == scope }) continue
                 try { get(id, scope) }
                 catch (e: CancellationException) { throw e }
                 catch (e: Exception) {
@@ -103,10 +106,14 @@ class ListRepository(private val call: GeneratedCall, private val cache: ReadCac
             (field?.get("field") as? JsonPrimitive)?.contentOrNull == "occurrence_id" &&
                 (field["code"] as? JsonPrimitive)?.contentOrNull == "invalid-reference"
         } == true
-    private suspend fun <T> follow(fence: ReadCache.Fence, result: WriteResult<T>, listId: String?, occurrence: String? = null): WriteResult<T> {
+    private suspend fun <T> follow(fence: ReadCache.Fence, result: WriteResult<T>, listId: String?, occurrence: String? = null,
+                                   changedId: String? = listId): WriteResult<T> {
         if (result !is WriteResult.Success) return result
         (result.value as? EntryResponse)?.let { cache.putEntry(fence, it) }
-        return try { afterWrite(); listId?.let { get(it, occurrence) }; result }
+        return try {
+            if (scopedAfterWrite?.invoke(changedId, occurrence) != true) { afterWrite(); listId?.let { get(it, occurrence) } }
+            result
+        }
         catch (e: CancellationException) { throw e }
         catch (_: Exception) { result.copy(refreshPending = true) }
     }
@@ -121,12 +128,12 @@ class ListRepository(private val call: GeneratedCall, private val cache: ReadCac
             if (answer.isEmpty()) null else call.decode<ListResponse>(answer)
         }
         if (r is WriteResult.Success) { r.value?.let { cache.putList(fence, it) } ?: cache.evictList(row.id) }
-        follow(fence, r, if ((r as? WriteResult.Success)?.value == null) null else row.id, row.occurrenceId)
+        follow(fence, r, if ((r as? WriteResult.Success)?.value == null) null else row.id, row.occurrenceId, changedId = row.id)
     }
     suspend fun delete(row: ListResponse, key: String = writes.newKey()): WriteResult<Unit> = cache.inSession { fence ->
         val r = writes.execute(key) { call.request("DELETE", "/v1/lists/${row.id}", emptyMap(), headers(it, row.version), null); Unit }
         if (r is WriteResult.Success) cache.evictList(row.id)
-        follow(fence, r, null)
+        follow(fence, r, null, changedId = row.id)
     }
     suspend fun viewers(row: ListResponse, ids: List<String>, key: String = writes.newKey()): WriteResult<ListResponse?> = cache.inSession { fence ->
         val r = writes.execute(key) { k ->
@@ -134,7 +141,7 @@ class ListRepository(private val call: GeneratedCall, private val cache: ReadCac
             if (answer.isEmpty()) null else call.decode<ListResponse>(answer)
         }
         if (r is WriteResult.Success) { r.value?.let { cache.putList(fence, it) } ?: cache.evictList(row.id) }
-        follow(fence, r, if ((r as? WriteResult.Success)?.value == null) null else row.id, row.occurrenceId)
+        follow(fence, r, if ((r as? WriteResult.Success)?.value == null) null else row.id, row.occurrenceId, changedId = row.id)
     }
     suspend fun add(row: ListResponse, body: EntryWrite, key: String = writes.newKey()): WriteResult<EntryResponse> = cache.inSession { fence ->
         follow(fence, writes.execute(key) { api.listsAddEntry(row.id, version, it, body) }, row.id, row.occurrenceId)
@@ -211,9 +218,10 @@ class CommentRepository(call: GeneratedCall, private val cache: ReadCache, priva
     val comments = cache.view.map { it.comments }.distinctUntilChanged()
     fun forItem(id: String) = comments.map { it.filter { row -> row.itemId == id }.sortedBy { row -> row.createdAt } }.distinctUntilChanged()
     internal var afterWrite: suspend () -> Unit = {}
+    internal var scopedAfterWrite: (suspend (String, String) -> Boolean)? = null
     /** One server page; never walk the entire history when opening/refetching a thread. A 404/403 forbidden on the
      * comment collection is parent visibility loss (C5-01): the item and its collaboration rows are evicted. */
-    suspend fun page(itemId: String, cursor: String? = null): CommentPage = cache.inSession { fence ->
+    suspend fun page(itemId: String, cursor: String? = null): CommentPage = cache.orderedRead { fence ->
         val page = try { api.collaborationListComments(itemId, version, cursor, COMMENT_PAGE_LIMIT) }
         catch (p: ApiProblem) { cache.evictOnVisibilityFailure(itemId, p); throw p }
         require(page.items.size <= COMMENT_PAGE_LIMIT) { "Oversized comment page" }
@@ -224,8 +232,19 @@ class CommentRepository(call: GeneratedCall, private val cache: ReadCache, priva
     }
     suspend fun window(itemId: String, olderPages: Int) = cache.inSession { fence -> cache.setCommentWindow(fence, itemId, olderPages) }
     suspend fun refresh(itemId: String): List<Comment> = page(itemId).items
+    internal suspend fun refetchIds(itemId: String, ids: Set<String>): Unit = cache.orderedRead { fence ->
+        try {
+            for (part in ids.sorted().chunked(100)) {
+                val rows = api.collaborationListComments(itemId, version, ids = part.joinToString(",")).items
+                cache.replaceCommentIds(fence, itemId, part.toSet(), rows)
+            }
+        } catch (p: ApiProblem) {
+            cache.evictOnVisibilityFailure(itemId, p)
+            if (!p.deniesVisibility()) throw p
+        }
+    }
     /** Reconcile through the cached UUID horizon, one 50-row page at a time. No single-comment GET exists. */
-    suspend fun refetchByItemIds(ids: Set<String>) = cache.inSession { fence ->
+    suspend fun refetchByItemIds(ids: Set<String>) = cache.orderedRead { fence ->
         ids.forEach { itemId ->
             val remaining = cache.view.value.comments.filter { it.itemId == itemId }.associateBy { it.id }.toMutableMap()
             var cursor: String? = null
@@ -248,13 +267,20 @@ class CommentRepository(call: GeneratedCall, private val cache: ReadCache, priva
     private suspend fun follow(fence: ReadCache.Fence, result: WriteResult<Comment>): WriteResult<Comment> {
         if (result !is WriteResult.Success) return result
         cache.putComments(fence, listOf(result.value))
-        return try { afterWrite(); result } catch (e: CancellationException) { throw e } catch (_: Exception) { result.copy(refreshPending = true) }
+        return try {
+            if (scopedAfterWrite?.invoke(result.value.itemId, result.value.id) != true) afterWrite()
+            result
+        } catch (e: CancellationException) { throw e } catch (_: Exception) { result.copy(refreshPending = true) }
     }
     suspend fun create(itemId: String, body: String, key: String = writes.newKey()): WriteResult<Comment> = cache.inSession { fence -> follow(fence, writes.execute(key) { api.collaborationCreateComment(itemId, version, it, CommentBody(body)) }) }
     suspend fun edit(row: Comment, body: String, key: String = writes.newKey()): WriteResult<Comment> = cache.inSession { fence -> follow(fence, writes.execute(key) { api.collaborationPatchComment(row.id, row.version.toString(), version, it, CommentBody(body)) }) }
     suspend fun delete(row: Comment, key: String = writes.newKey()): WriteResult<Unit> = cache.inSession { fence ->
         val r = writes.execute(key) { api.collaborationDeleteComment(row.id, row.version.toString(), version, it) }
-        if (r !is WriteResult.Success) r else try { cache.evictComment(row.id); refresh(row.itemId); afterWrite(); r }
+        if (r !is WriteResult.Success) r else try {
+            cache.evictComment(row.id)
+            if (scopedAfterWrite?.invoke(row.itemId, row.id) != true) { refresh(row.itemId); afterWrite() }
+            r
+        }
         catch (e: CancellationException) { throw e } catch (_: Exception) { r.copy(refreshPending = true) }
     }
 }

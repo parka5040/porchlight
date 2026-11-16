@@ -10,6 +10,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.json.*
 import kotlin.time.Instant
+import kotlin.time.Duration.Companion.days
 
 internal suspend fun <T> allPages(page: suspend (String?) -> Pair<List<T>, String?>): List<T> {
     val rows = mutableListOf<T>()
@@ -28,21 +29,24 @@ class HouseholdRepository(private val api: MembersApi, private val cache: ReadCa
                           private val version: String = BuildInfo.VERSION) {
     val members = cache.view.map { it.members }.distinctUntilChanged()
     val settings = cache.view.map { it.settings }.distinctUntilChanged()
-    suspend fun refreshMembers(): List<MemberRead> = cache.inSession { fence ->
+    internal var afterMemberWrite: suspend (MemberRead?, MemberRead) -> Unit = { _, _ -> }
+    internal var afterSettingsWrite: suspend () -> Unit = {}
+    suspend fun refreshMembers(): List<MemberRead> = cache.orderedRead { fence ->
         val mark = cache.receiptMark()
         allPages { cursor -> api.membersList(version, cursor = cursor, limit = 200).let { it.items to it.nextCursor } }
             .also { cache.replaceMembers(fence, it, receivedAfter = mark) }
     }
-    suspend fun refreshSettings(): SettingsRead = cache.inSession { fence -> api.membersSettingsGet(version).also { cache.putSettings(fence, it) } }
+    suspend fun refreshSettings(): SettingsRead = cache.orderedRead { fence -> api.membersSettingsGet(version).also { cache.putSettings(fence, it) } }
     suspend fun patchMember(id: String, expectedVersion: Int, patch: MemberPatch, key: String = writes.newKey()): WriteResult<MemberRead> = cache.inSession { fence ->
+        val previous = cache.view.value.members.find { it.id == id }
         val result = writes.execute(key) { api.membersPatch(id, expectedVersion.toString(), version, it, patch) }
         if (result is WriteResult.Success) cache.putMember(fence, result.value)
-        return@inSession result // R33: keep pending=true until derived/refetch. Do not immediately overwrite it with false.
+        return@inSession result.awaitReconciliation { afterMemberWrite(previous, it) }
     }
     suspend fun putSettings(expectedVersion: Int, settings: TodaySettings, key: String = writes.newKey()): WriteResult<SettingsRead> = cache.inSession { fence ->
         val result = writes.execute(key) { api.membersSettingsPut(expectedVersion.toString(), version, it, settings) }
         if (result is WriteResult.Success) cache.putSettings(fence, result.value)
-        return@inSession result
+        return@inSession result.awaitReconciliation { afterSettingsWrite() }
     }
 }
 
@@ -52,11 +56,15 @@ class ItemRepository(private val api: ItemsApi, private val cache: ReadCache, pr
     fun observe(id: String): Flow<ItemRead?> = items.map { rows -> rows.find { it.id == id } }.distinctUntilChanged()
     /** Hooks refetch derived projections only after a sealed successful response has entered the cache. */
     internal var afterWrite: suspend (String?) -> Unit = {}
-    suspend fun get(id: String): ItemResponse = cache.inSession { fence ->
+    internal var afterSplitWrite: suspend (String) -> Unit = {}
+    internal var afterUnknownSplitWrite: (suspend () -> Boolean)? = null
+    internal var afterFirstVisibilityWrite: (suspend (String) -> Boolean)? = null
+    internal var afterDeleteWrite: suspend (String) -> Unit = {}
+    suspend fun get(id: String): ItemResponse = cache.orderedRead { fence ->
         try { api.itemsGet(id, version).also { cache.putItem(fence, it) } }
         catch (p: ApiProblem) { cache.evictOnVisibilityFailure(id, p); throw p }
     }
-    suspend fun list(updatedSince: Instant? = null, kind: String? = null): List<ItemResponse> = cache.inSession { fence -> allPages { cursor ->
+    suspend fun list(updatedSince: Instant? = null, kind: String? = null): List<ItemResponse> = cache.orderedRead { fence -> allPages { cursor ->
         api.itemsList(cursor = cursor, limit = 200, updatedSince = updatedSince, kind = kind, includeDeleted = false,
             porchlightClientVersion = version).let { it.items to it.nextCursor }
     }.also { cache.putItems(fence, it) } }
@@ -70,14 +78,20 @@ class ItemRepository(private val api: ItemsApi, private val cache: ReadCache, pr
             // also commit without a representation: reconcile via snapshot without guessing an ID.
             if (evictOnNoContent && id != null) cache.evictItem(id)
             var pending = false
-            try { afterWrite(id) }
+            try {
+                if (evictOnNoContent || afterUnknownSplitWrite?.invoke() != true) afterWrite(id)
+            }
             catch (e: CancellationException) { throw e }
             catch (_: Exception) { pending = true }
             return@inSession result.copy(refreshPending = pending)
         }
+        val firstVisibility = cache.view.value.items.none { it.id == value.id }
         cache.putItem(fence, value)
         var pending = false
-        try { if (value.deletedAt == null) afterWrite(value.id) }
+        try {
+            if (value.deletedAt != null) afterDeleteWrite(value.id)
+            else if (!firstVisibility || afterFirstVisibilityWrite?.invoke(value.id) != true) afterWrite(value.id)
+        }
         catch (e: CancellationException) { throw e }
         catch (_: Exception) { pending = true } // Server success stays success; never replay due to a failed refetch.
         return@inSession result.copy(refreshPending = pending)
@@ -86,8 +100,11 @@ class ItemRepository(private val api: ItemsApi, private val cache: ReadCache, pr
     suspend fun edit(id: String, expectedVersion: Int, edit: ItemEdit, scope: EditScope = EditScope.All,
                      occurrenceId: String? = null, key: String = writes.newKey()): WriteResult<ItemResponse?> = cache.inSession { fence ->
         require((scope == EditScope.ThisAndFuture) == (occurrenceId != null))
-        return@inSession mutate(key, id, evictOnNoContent = scope != EditScope.ThisAndFuture) { api.itemsPatch(id = id, scope = scope.wire, occurrenceId = occurrenceId,
+        val result = mutate(key, id, evictOnNoContent = scope != EditScope.ThisAndFuture) { api.itemsPatch(id = id, scope = scope.wire, occurrenceId = occurrenceId,
             ifMatch = expectedVersion.toString(), porchlightClientVersion = version, idempotencyKey = it, jsonObject = edit.body) }
+        return@inSession result.awaitReconciliation { value ->
+            if (scope == EditScope.ThisAndFuture && value != null && value.id != id) afterSplitWrite(id)
+        }
     }
     suspend fun delete(id: String, expectedVersion: Int, key: String = writes.newKey()) = mutate(key, id) {
         api.itemsDelete(id, expectedVersion.toString(), version, it, buildJsonObject {})
@@ -108,24 +125,34 @@ class ItemRepository(private val api: ItemsApi, private val cache: ReadCache, pr
 
 class BoardRepository(private val api: ReadsApi, private val cache: ReadCache, private val version: String = BuildInfo.VERSION) {
     val cards = cache.view.map { it.board }.distinctUntilChanged()
-    private var currentScope = "household"
+    private val currentScope get() = cache.view.value.boardScope
     /** The complete board for [scope]; writes nothing (a snapshot stages it, see [SyncController.refresh]). */
     internal suspend fun fetch(scope: String = currentScope): List<ItemRead> {
         require(scope in setOf("mine", "household"))
         return allPages { cursor -> api.readsBoard(version, scope = scope, cursor = cursor, limit = 200).let { it.items to it.nextCursor } }
     }
     /** Replaces the cached board only after every page arrived (one transaction). */
-    suspend fun refresh(scope: String = currentScope): List<ItemRead> = cache.inSession { fence ->
+    suspend fun refresh(scope: String = currentScope): List<ItemRead> = cache.orderedRead { fence ->
         val rows = fetch(scope)
-        currentScope = scope
-        cache.replaceBoard(fence, rows)
-        return@inSession rows
+        cache.replaceBoard(fence, rows, scope)
+        return@orderedRead rows
     }
     fun neighbours(mover: String, drop: BoardDrop) = boardNeighbours(cache.view.value.board, mover, drop)
 }
 
 class AgendaRepository(private val api: ReadsApi, private val cache: ReadCache, private val version: String = BuildInfo.VERSION) {
     val rows = cache.view.map { it.agenda }.distinctUntilChanged()
+    internal fun retainedWindows(): Set<ItemAgendaWindow> = buildSet {
+        // Overlapping retained reads can merge past the wire's 730-day limit, including after restart.
+        for (window in cache.view.value.agendaWindows) {
+            var from = window.from
+            while (from < window.to) {
+                val to = minOf(from + 730.days, window.to)
+                add(ItemAgendaWindow(window.memberId, from, to))
+                from = to
+            }
+        }
+    }
     /** The complete agenda of [memberId] (null = own) for [from, to); writes nothing. */
     internal suspend fun fetch(from: Instant, to: Instant, memberId: String? = null): AgendaWindow {
         require(to > from)
@@ -133,10 +160,10 @@ class AgendaRepository(private val api: ReadsApi, private val cache: ReadCache, 
         return AgendaWindow(from, to, memberId, rows)
     }
     /** Replaces, in place, only that member's rows the window covered; other members/windows stay cached. */
-    suspend fun refresh(from: Instant, to: Instant, memberId: String? = null): List<ItemRead> = cache.inSession { fence ->
+    suspend fun refresh(from: Instant, to: Instant, memberId: String? = null): List<ItemRead> = cache.orderedRead { fence ->
         val window = fetch(from, to, memberId)
         cache.replaceAgenda(fence, window)
-        return@inSession window.rows
+        return@orderedRead window.rows
     }
 }
 
@@ -167,7 +194,8 @@ class OccurrenceRepository(private val api: ItemsApi, private val cache: ReadCac
     val occurrences = cache.view.map { it.occurrences }.distinctUntilChanged()
     fun forItem(id: String) = occurrences.map { rows -> rows.filter { it.itemId == id } }.distinctUntilChanged()
     internal var afterWrite: suspend (String) -> Unit = {}
-    suspend fun refresh(itemId: String, from: Instant, to: Instant, includeUndated: Boolean = false): List<OccurrenceResponse> = cache.inSession { fence ->
+    internal var afterUnknownWrite: (suspend () -> Boolean)? = null
+    suspend fun refresh(itemId: String, from: Instant, to: Instant, includeUndated: Boolean = false): List<OccurrenceResponse> = cache.orderedRead { fence ->
         val mark = cache.receiptMark()
         allPages { cursor ->
             api.itemsOccurrences(itemId, undated = includeUndated, cursor = cursor, limit = 200, from = from, to = to, porchlightClientVersion = version).let { it.items to it.nextCursor }
@@ -182,7 +210,11 @@ class OccurrenceRepository(private val api: ItemsApi, private val cache: ReadCac
         val value = result.value
         if (value == null) cache.evictOccurrence(id) else cache.putOccurrence(fence, value)
         var pending = false
-        try { afterWrite(value?.itemId ?: parentId ?: error("Parent refresh required")) }
+        try {
+            val parent = value?.itemId ?: parentId
+            if (parent != null) afterWrite(parent)
+            else if (afterUnknownWrite?.invoke() != true) error("Parent refresh required")
+        }
         catch (e: CancellationException) { throw e }
         catch (_: Exception) { pending = true }
         return@inSession result.copy(refreshPending = pending)

@@ -19,7 +19,7 @@ fun ApiProblem.attachmentUploadMessage(): String? = if (status == 507 && type ==
     "Attachment storage is full. Ask a household administrator to free space or increase the storage limit, then retry."
 else null
 data class UploadProgress(val sent: Long, val total: Long)
-/** Keys contain only identity epoch, attachment UUID, version and thumbnail flag; never server-supplied filenames. */
+/** Keys contain only the persisted cache namespace, attachment UUID, version and thumbnail flag. */
 interface AttachmentStore {
     suspend fun read(key: String): ByteArray?
     suspend fun write(key: String, bytes: ByteArray)
@@ -27,6 +27,22 @@ interface AttachmentStore {
     suspend fun remove(key: String)
     suspend fun removeView(id: String) {}
     suspend fun cleanup(before: Instant)
+    suspend fun content(key: String): AttachmentContent? = read(key)?.let(::ByteAttachmentContent)
+    /** Optional disk-backed streaming stage; null selects the compatibility byte path. */
+    suspend fun stage(key: String, receive: suspend (suspend (ByteArray) -> Unit) -> Unit): StagedAttachmentContent? = null
+}
+interface AttachmentContent {
+    val privatePath: String? get() = null
+    suspend fun chunks(consume: suspend (ByteArray) -> Unit)
+    suspend fun bytes(): ByteArray
+}
+private class ByteAttachmentContent(private val value: ByteArray) : AttachmentContent {
+    override suspend fun chunks(consume: suspend (ByteArray) -> Unit) { consume(value) }
+    override suspend fun bytes() = value
+}
+interface StagedAttachmentContent : AttachmentContent {
+    suspend fun publish()
+    suspend fun discard()
 }
 /** Prepared privately off the cache/session locks; only launch is serialized with eviction. */
 interface PreparedAttachmentViewer {
@@ -46,12 +62,30 @@ class AttachmentRepository(private val call: GeneratedCall, private val cache: R
     private val store = cache.attachmentStore
     private val thumbnailSlots = Semaphore(2)
     private val downloadSlots = Semaphore(1)
+    private val cleanupLock = kotlinx.coroutines.sync.Mutex()
+    private var lastCleanup: Instant? = null
+    private suspend fun cleanupStore() {
+        cleanupLock.lock()
+        try {
+            val current = now()
+            val previous = lastCleanup
+            if (previous == null || current < previous || (current - previous).inWholeSeconds >= 3_600) {
+                store.cleanup(current - 180.days)
+                lastCleanup = current
+            }
+        } finally { cleanupLock.unlock() }
+    }
     private val api = CollaborationApi(call)
     val attachments = cache.view.map { it.attachments.filter { row -> row.deletedAt == null } }.distinctUntilChanged()
     fun forItem(id: String) = attachments.map { it.filter { row -> row.itemId == id } }.distinctUntilChanged()
     internal var afterWrite: suspend () -> Unit = {}
-    /** C4: metadata has no collection endpoint; item-scoped tickles must resnapshot. */
-    suspend fun refetchByItemIds(ids: Set<String>) { if (ids.isNotEmpty()) afterWrite() }
+    internal var scopedAfterWrite: (suspend (String) -> Boolean)? = null
+    internal var scopedReadsEnabled: () -> Boolean = { false }
+    private suspend fun follow(itemId: String) { if (scopedAfterWrite?.invoke(itemId) != true) afterWrite() }
+    suspend fun refetchByItemIds(ids: Set<String>) {
+        if (!scopedReadsEnabled()) { if (ids.isNotEmpty()) afterWrite() }
+        else ids.forEach { follow(it) }
+    }
     suspend fun upload(itemId: String, commentId: String?, name: String, mime: String, bytes: ByteArray,
                        key: String = writes.newKey(), progress: (Long, Long) -> Unit = { _, _ -> }): WriteResult<Attachment> = cache.inSession { fence ->
         if (bytes.size > MAX_ATTACHMENT_BYTES) throw AttachmentTooLarge()
@@ -59,7 +93,7 @@ class AttachmentRepository(private val call: GeneratedCall, private val cache: R
         val r = writes.execute(key) { call.decode<Attachment>(call.upload(path, name, mime, bytes, it, progress)) }
         if (r !is WriteResult.Success) r else {
             cache.putAttachment(fence, r.value)
-            try { afterWrite(); r } catch (e: CancellationException) { throw e } catch (_: Exception) { r.copy(refreshPending = true) }
+            try { follow(itemId); r } catch (e: CancellationException) { throw e } catch (_: Exception) { r.copy(refreshPending = true) }
         }
     }
     suspend fun download(row: Attachment, thumbnail: Boolean = false): ByteArray = cache.inSession { fence ->
@@ -69,7 +103,7 @@ class AttachmentRepository(private val call: GeneratedCall, private val cache: R
         call.ensureReady()
         val epoch = cache.sessionEpoch()
         val key = key(row, thumbnail)
-        store.cleanup(now() - 180.days)
+        cleanupStore()
         store.read(key)?.let {
             call.ensureReady()
             if (cache.view.value.attachments.none { live -> live.id == row.id && live.version == row.version && live.deletedAt == null }) throw CancellationException("Attachment access changed")
@@ -113,12 +147,45 @@ class AttachmentRepository(private val call: GeneratedCall, private val cache: R
             if (!launched) withContext(NonCancellable) { viewer.discard() }
         }
     }
+    /** Desktop originals stay in identity-scoped private files; Android retains its byte-viewer adapter. */
+    suspend fun openPreparedContent(row: Attachment, prepare: suspend (AttachmentContent) -> PreparedAttachmentViewer) = cache.inSession { fence ->
+        require(row.deletedAt == null && cache.view.value.attachments.any { it.id == row.id && it.version == row.version && it.deletedAt == null })
+        call.ensureReady()
+        cleanupStore()
+        val content = downloadSlots.withPermit {
+            store.content(key(row, false)) ?: run {
+                val staged = try { store.stage(key(row, false)) { consume -> call.downloadAttachment(row.id, consume) } }
+                catch (p: ApiProblem) {
+                    if (p.deniesVisibility()) {
+                        cache.evictAttachment(row.id)
+                        try { ItemsApi(call).itemsGet(row.itemId, app.porchlight.shared.BuildInfo.VERSION).also { cache.putItem(fence, it) } }
+                        catch (parent: ApiProblem) { cache.evictOnVisibilityFailure(row.itemId, parent) }
+                        catch (e: CancellationException) { throw e }
+                        catch (_: Exception) { /* parent visibility remains unknown */ }
+                    }
+                    throw p
+                }
+                if (staged == null) null else {
+                    var published = false
+                    try {
+                        cache.withLiveAttachment(row) { call.ensureReady(); staged.publish(); published = true }
+                        staged
+                    } finally { if (!published) withContext(NonCancellable) { staged.discard() } }
+                }
+            }
+        } ?: ByteAttachmentContent(download(row))
+        cache.withLiveAttachment(row) { call.ensureReady() }
+        val viewer = prepare(content)
+        var launched = false
+        try { cache.withLiveAttachment(row) { call.ensureReady(); viewer.launch(); launched = true } }
+        finally { if (!launched) withContext(NonCancellable) { viewer.discard() } }
+    }
     suspend fun delete(row: Attachment, key: String = writes.newKey()): WriteResult<Unit> = cache.inSession { fence ->
         val r = writes.execute(key) { api.collaborationDeleteAttachment(row.id, row.version.toString(), app.porchlight.shared.BuildInfo.VERSION, it) }
         if (r !is WriteResult.Success) r else {
             cache.evictAttachment(row.id)
-            try { afterWrite(); r } catch (e: CancellationException) { throw e } catch (_: Exception) { r.copy(refreshPending = true) }
+            try { follow(row.itemId); r } catch (e: CancellationException) { throw e } catch (_: Exception) { r.copy(refreshPending = true) }
         }
     }
-    private fun key(row: Attachment, thumb: Boolean) = attachmentKey(cache.sessionEpoch(), row, thumb)
+    private fun key(row: Attachment, thumb: Boolean) = attachmentKey(cache.attachmentNamespace, row, thumb)
 }

@@ -1,1 +1,9 @@
 target/
+var/
+.git/
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx

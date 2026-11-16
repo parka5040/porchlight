@@ -89,6 +89,12 @@ pub async fn begin_as(
     actor: &Actor,
 ) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, sqlx::Error> {
     let mut tx = begin(pool).await?;
+    attribute(&mut tx, actor).await?;
+    Ok(tx)
+}
+
+/// Attribute an already-open transaction after any required transaction-local policy.
+pub async fn attribute(conn: &mut sqlx::PgConnection, actor: &Actor) -> Result<(), sqlx::Error> {
     sqlx::query(
         "select set_config('porchlight.actor_member_id', $1, true), \
          set_config('porchlight.device_id', $2, true), \
@@ -101,7 +107,7 @@ pub async fn begin_as(
     .bind(actor.request_id.to_string())
     .bind(actor.agent_label.as_deref().unwrap_or_default())
     .bind(actor.token_id.map(|u| u.to_string()).unwrap_or_default())
-    .execute(&mut *tx)
+    .execute(conn)
     .await?;
-    Ok(tx)
+    Ok(())
 }

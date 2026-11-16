@@ -35,6 +35,15 @@ The QR scanner lives in `androidApp`, where CameraX/ZXing are already declared. 
 
 Desktop construction uses `DesktopKeyStore()` and `OkHttpTrustFactory(keys, ClientInfo(version))`, `platform = "desktop"`, `pinRequired = false`, and the common `TrustGate` (no PIN/onboarding/scanner slots). Default storage is `$XDG_DATA_HOME/porchlight/device.p12` or `~/.local/share/porchlight/device.p12`, mode 0600 in a 0700 directory. The PKCS#12 snapshot encrypts key, trust metadata and pending enrollment attempts together; a fsync + atomic rename commits replacement. Its random password lives in exactly one of two backends, chosen at enrollment and recorded (next section): Secret Service (service `app.porchlight.device`, account `pkcs12-password`), or an owner-only key file when no Secret Service provider exists. A locked/unreachable Secret Service offers wallet unlock/retry. A missing key secret with an existing PKCS#12, corrupt metadata or missing Android Keystore keys instead offers clearing local trust and re-enrolling; it never loops on wallet retry. Secret Service uses Porchlight's own dbus-java 5 binding with the `service`/`account` attributes (java-keyring was removed in 0.1.7: its backend targeted dbus-java 4 and could not be created on 5.x, so every access already used this binding). Runtime verification of the adapter against a real provider is controller-only.
 
+Autostart restore retries transient Secret Service/session-bus absence with exponential backoff (1 second to a
+60-second cap). An explicitly dismissed, timed-out or failed unlock prompt stays dismissed until **Retry after
+unlock**; a successful restore resets backoff. No retry changes a recorded Secret Service backend to a file.
+Trusted identity/storage admission completes before optional tray, notification and logind registration begins.
+A cache/file or native-inventory cleanup failure enters **Local storage needs attention**, not LocalTrustLost or
+re-enrollment. The real TrustGate explains free-space/file-permission repair and offers **Try again** (bypassing
+cleanup backoff) and confirmed **Clear local cache**. Verified cleanup is followed by owner readmission, and only
+then can household refresh resume. Failed cleanup retains its obligation and the enrolled credentials.
+
 ## Desktop key backends (owner decision 2026-10-07)
 
 Desktop key storage is desktop-agnostic: nothing requires KDE.

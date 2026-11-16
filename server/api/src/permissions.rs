@@ -482,6 +482,18 @@ pub const STREAM_ENDPOINTS: &[Endpoint] = &[
         sse_session
     ),
 ];
+/// Capability-negotiated extensions; kept separate so legacy matrix fixtures
+/// continue to exercise exactly their original wire catalogue.
+pub const TARGETED_STREAM_ENDPOINTS: &[Endpoint] = &[
+    sse_row!(@resource, "SSE item.invalidated (item-sync-v1)", "current item ACL; capability required", sse_item),
+    sse_row!(@member, "SSE notification.invalidated (item-sync-v1)", "recipient equality; capability required", sse_member),
+    sse_row!(@member, "SSE settings.changed/availability (item-sync-v1)", "recipient equality; capability required", sse_member),
+    sse_row!(
+        "SSE resnapshot/projection_changed (item-sync-v1)",
+        "household broadcast; capability required; terminal, no ID",
+        sse_session
+    ),
+];
 /// Area registries append tables here, preserving one generator.
 // s6a: notification rows are recipient-private, independently of app super-admin role.
 fn notification_recipient(c: &PolicyContext) -> u16 {
@@ -571,6 +583,7 @@ pub fn endpoint_tables() -> Vec<&'static [Endpoint]> {
     vec![
         ITEM_ENDPOINTS,
         READ_ENDPOINTS,
+        crate::routes::item_sync::ENDPOINTS,
         crate::routes::exports::ENDPOINTS,
         crate::routes::backups::ENDPOINTS,
         crate::routes::release::ENDPOINTS,
@@ -582,6 +595,7 @@ pub fn endpoint_tables() -> Vec<&'static [Endpoint]> {
         NOTIFICATION_ENDPOINTS,
         crate::routes::collaboration::ENDPOINTS,
         STREAM_ENDPOINTS,
+        TARGETED_STREAM_ENDPOINTS,
         crate::planning_permissions::ENDPOINTS,
     ]
 }

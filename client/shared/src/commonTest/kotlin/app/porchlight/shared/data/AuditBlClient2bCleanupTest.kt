@@ -5,6 +5,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.test.*
 import kotlinx.coroutines.flow.first
 import kotlin.test.*
+import kotlin.time.Duration.Companion.milliseconds
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class AuditBlClient2bCleanupTest {
@@ -18,8 +19,8 @@ class AuditBlClient2bCleanupTest {
                 cleaned.complete(Unit)
             }
         }
-        val cache = memoryCache(store) { auditEnrollmentNow }
-        val data = HouseholdData(cache, GeneratedCall({ error("No network before cleanup") }, { null }), { auditEnrollmentNow })
+        val cache = memoryCache(store) { auditEnrollmentNow + testScheduler.currentTime.milliseconds }
+        val data = HouseholdData(cache, GeneratedCall({ error("No network before cleanup") }, { null }), { auditEnrollmentNow + testScheduler.currentTime.milliseconds })
         val controller = TrustController(AuditEnrollmentKeys(), AuditEnrollmentFactory(), "desktop", { auditEnrollmentNow }, false, StandardTestDispatcher(testScheduler))
         val failures = mutableListOf<Throwable>()
         val owner = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler) + CoroutineExceptionHandler { _, failure -> failures += failure })
@@ -30,7 +31,7 @@ class AuditBlClient2bCleanupTest {
             assertTrue(binding.isActive, "A file cleanup error must not terminate the identity collector")
             assertTrue(failures.isEmpty())
             assertEquals(SyncStatus.Failed("attachment-cleanup-failed"), data.sync.status.value)
-            advanceTimeBy(1000); runCurrent()
+            advanceTimeBy(60_000); runCurrent()
             cleaned.await(); data.sync.status.first { it == SyncStatus.Idle }
             assertTrue(binding.isActive)
             assertEquals(2, clears)

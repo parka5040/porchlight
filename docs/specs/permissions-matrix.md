@@ -824,6 +824,27 @@ Non-item rows cross caller kind and PAT scope with **self / other** target membe
 | PUT | `/v1/me/settings` |  | agent | read | self | — | — | authenticated | 403 |
 | PUT | `/v1/me/settings` |  | agent | write | self | — | — | authenticated | 200 |
 | PUT | `/v1/me/settings` |  | agent | admin | self | — | — | authenticated | 200 |
+| GET | `/v1/items/{id}/sync` |  | owner | — | — | household | false | view | 200 |
+| GET | `/v1/items/{id}/sync` |  | assignee | — | — | household | false | view | 200 |
+| GET | `/v1/items/{id}/sync` |  | viewer | — | — | household | false | view | 200 |
+| GET | `/v1/items/{id}/sync` |  | subject_only | — | — | household | false | view | 200 |
+| GET | `/v1/items/{id}/sync` |  | other_user | — | — | household | false | view | 200 |
+| GET | `/v1/items/{id}/sync` |  | super_admin_app | — | — | household | false | view | 200 |
+| GET | `/v1/items/{id}/sync` |  | agent | write | — | household | false | view | 200 |
+| GET | `/v1/items/{id}/sync` |  | owner | — | — | private | false | view | 200 |
+| GET | `/v1/items/{id}/sync` |  | assignee | — | — | private | false | view | 200 |
+| GET | `/v1/items/{id}/sync` |  | viewer | — | — | private | false | view | 404 |
+| GET | `/v1/items/{id}/sync` |  | subject_only | — | — | private | false | view | 404 |
+| GET | `/v1/items/{id}/sync` |  | other_user | — | — | private | false | view | 404 |
+| GET | `/v1/items/{id}/sync` |  | super_admin_app | — | — | private | false | view | 404 |
+| GET | `/v1/items/{id}/sync` |  | agent | write | — | private | false | view | 200 |
+| GET | `/v1/items/{id}/sync` |  | owner | — | — | selected | false | view | 200 |
+| GET | `/v1/items/{id}/sync` |  | assignee | — | — | selected | false | view | 200 |
+| GET | `/v1/items/{id}/sync` |  | viewer | — | — | selected | false | view | 200 |
+| GET | `/v1/items/{id}/sync` |  | subject_only | — | — | selected | false | view | 404 |
+| GET | `/v1/items/{id}/sync` |  | other_user | — | — | selected | false | view | 404 |
+| GET | `/v1/items/{id}/sync` |  | super_admin_app | — | — | selected | false | view | 404 |
+| GET | `/v1/items/{id}/sync` |  | agent | write | — | selected | false | view | 200 |
 | GET | `/v1/export/member` |  | user | — | self | — | — | Own member ACL; admin PAT can select a member (no bypass) | 200 |
 | GET | `/v1/export/member` |  | user | — | other | — | — | Own member ACL; admin PAT can select a member (no bypass) | 403 |
 | GET | `/v1/export/member` |  | super_admin_app | — | self | — | — | Own member ACL; admin PAT can select a member (no bypass) | 200 |
@@ -3460,6 +3481,145 @@ Non-item rows cross caller kind and PAT scope with **self / other** target membe
 | GET | `/v1/stream` | SSE member.changed | agent | write | other | — | — | household broadcast, IDs only | 404 |
 | GET | `/v1/stream` | SSE member.changed | agent | admin | self | — | — | household broadcast, IDs only | 404 |
 | GET | `/v1/stream` | SSE member.changed | agent | admin | other | — | — | household broadcast, IDs only | 404 |
+| GET | `/v1/stream` | SSE item.invalidated (item-sync-v1) | owner | — | — | household | false | current item ACL; capability required | allowed |
+| GET | `/v1/stream` | SSE item.invalidated (item-sync-v1) | assignee | — | — | household | false | current item ACL; capability required | allowed |
+| GET | `/v1/stream` | SSE item.invalidated (item-sync-v1) | viewer | — | — | household | false | current item ACL; capability required | allowed |
+| GET | `/v1/stream` | SSE item.invalidated (item-sync-v1) | subject_only | — | — | household | false | current item ACL; capability required | allowed |
+| GET | `/v1/stream` | SSE item.invalidated (item-sync-v1) | other_user | — | — | household | false | current item ACL; capability required | allowed |
+| GET | `/v1/stream` | SSE item.invalidated (item-sync-v1) | super_admin_app | — | — | household | false | current item ACL; capability required | allowed |
+| GET | `/v1/stream` | SSE item.invalidated (item-sync-v1) | agent | write | — | household | false | current item ACL; capability required | 404 |
+| GET | `/v1/stream` | SSE item.invalidated (item-sync-v1) | owner | — | — | private | false | current item ACL; capability required | allowed |
+| GET | `/v1/stream` | SSE item.invalidated (item-sync-v1) | assignee | — | — | private | false | current item ACL; capability required | allowed |
+| GET | `/v1/stream` | SSE item.invalidated (item-sync-v1) | viewer | — | — | private | false | current item ACL; capability required | filtered |
+| GET | `/v1/stream` | SSE item.invalidated (item-sync-v1) | subject_only | — | — | private | false | current item ACL; capability required | filtered |
+| GET | `/v1/stream` | SSE item.invalidated (item-sync-v1) | other_user | — | — | private | false | current item ACL; capability required | filtered |
+| GET | `/v1/stream` | SSE item.invalidated (item-sync-v1) | super_admin_app | — | — | private | false | current item ACL; capability required | filtered |
+| GET | `/v1/stream` | SSE item.invalidated (item-sync-v1) | agent | write | — | private | false | current item ACL; capability required | 404 |
+| GET | `/v1/stream` | SSE item.invalidated (item-sync-v1) | owner | — | — | selected | false | current item ACL; capability required | allowed |
+| GET | `/v1/stream` | SSE item.invalidated (item-sync-v1) | assignee | — | — | selected | false | current item ACL; capability required | allowed |
+| GET | `/v1/stream` | SSE item.invalidated (item-sync-v1) | viewer | — | — | selected | false | current item ACL; capability required | allowed |
+| GET | `/v1/stream` | SSE item.invalidated (item-sync-v1) | subject_only | — | — | selected | false | current item ACL; capability required | filtered |
+| GET | `/v1/stream` | SSE item.invalidated (item-sync-v1) | other_user | — | — | selected | false | current item ACL; capability required | filtered |
+| GET | `/v1/stream` | SSE item.invalidated (item-sync-v1) | super_admin_app | — | — | selected | false | current item ACL; capability required | filtered |
+| GET | `/v1/stream` | SSE item.invalidated (item-sync-v1) | agent | write | — | selected | false | current item ACL; capability required | 404 |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | owner | — | self | household | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | owner | — | other | household | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | assignee | — | self | household | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | assignee | — | other | household | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | viewer | — | self | household | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | viewer | — | other | household | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | subject_only | — | self | household | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | subject_only | — | other | household | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | other_user | — | self | household | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | other_user | — | other | household | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | super_admin_app | — | self | household | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | super_admin_app | — | other | household | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | agent | read | self | household | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | agent | read | other | household | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | agent | write | self | household | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | agent | write | other | household | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | agent | admin | self | household | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | agent | admin | other | household | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | owner | — | self | private | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | owner | — | other | private | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | assignee | — | self | private | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | assignee | — | other | private | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | viewer | — | self | private | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | viewer | — | other | private | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | subject_only | — | self | private | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | subject_only | — | other | private | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | other_user | — | self | private | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | other_user | — | other | private | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | super_admin_app | — | self | private | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | super_admin_app | — | other | private | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | agent | read | self | private | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | agent | read | other | private | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | agent | write | self | private | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | agent | write | other | private | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | agent | admin | self | private | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | agent | admin | other | private | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | owner | — | self | selected | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | owner | — | other | selected | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | assignee | — | self | selected | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | assignee | — | other | selected | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | viewer | — | self | selected | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | viewer | — | other | selected | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | subject_only | — | self | selected | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | subject_only | — | other | selected | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | other_user | — | self | selected | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | other_user | — | other | selected | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | super_admin_app | — | self | selected | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | super_admin_app | — | other | selected | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | agent | read | self | selected | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | agent | read | other | selected | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | agent | write | self | selected | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | agent | write | other | selected | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | agent | admin | self | selected | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE notification.invalidated (item-sync-v1) | agent | admin | other | selected | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | owner | — | self | household | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | owner | — | other | household | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | assignee | — | self | household | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | assignee | — | other | household | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | viewer | — | self | household | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | viewer | — | other | household | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | subject_only | — | self | household | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | subject_only | — | other | household | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | other_user | — | self | household | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | other_user | — | other | household | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | super_admin_app | — | self | household | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | super_admin_app | — | other | household | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | agent | read | self | household | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | agent | read | other | household | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | agent | write | self | household | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | agent | write | other | household | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | agent | admin | self | household | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | agent | admin | other | household | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | owner | — | self | private | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | owner | — | other | private | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | assignee | — | self | private | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | assignee | — | other | private | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | viewer | — | self | private | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | viewer | — | other | private | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | subject_only | — | self | private | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | subject_only | — | other | private | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | other_user | — | self | private | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | other_user | — | other | private | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | super_admin_app | — | self | private | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | super_admin_app | — | other | private | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | agent | read | self | private | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | agent | read | other | private | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | agent | write | self | private | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | agent | write | other | private | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | agent | admin | self | private | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | agent | admin | other | private | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | owner | — | self | selected | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | owner | — | other | selected | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | assignee | — | self | selected | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | assignee | — | other | selected | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | viewer | — | self | selected | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | viewer | — | other | selected | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | subject_only | — | self | selected | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | subject_only | — | other | selected | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | other_user | — | self | selected | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | other_user | — | other | selected | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | super_admin_app | — | self | selected | false | recipient equality; capability required | allowed |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | super_admin_app | — | other | selected | false | recipient equality; capability required | filtered |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | agent | read | self | selected | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | agent | read | other | selected | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | agent | write | self | selected | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | agent | write | other | selected | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | agent | admin | self | selected | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE settings.changed/availability (item-sync-v1) | agent | admin | other | selected | false | recipient equality; capability required | 404 |
+| GET | `/v1/stream` | SSE resnapshot/projection_changed (item-sync-v1) | user | — | self | — | — | household broadcast; capability required; terminal, no ID | allowed |
+| GET | `/v1/stream` | SSE resnapshot/projection_changed (item-sync-v1) | user | — | other | — | — | household broadcast; capability required; terminal, no ID | allowed |
+| GET | `/v1/stream` | SSE resnapshot/projection_changed (item-sync-v1) | super_admin_app | — | self | — | — | household broadcast; capability required; terminal, no ID | allowed |
+| GET | `/v1/stream` | SSE resnapshot/projection_changed (item-sync-v1) | super_admin_app | — | other | — | — | household broadcast; capability required; terminal, no ID | allowed |
+| GET | `/v1/stream` | SSE resnapshot/projection_changed (item-sync-v1) | agent | read | self | — | — | household broadcast; capability required; terminal, no ID | 404 |
+| GET | `/v1/stream` | SSE resnapshot/projection_changed (item-sync-v1) | agent | read | other | — | — | household broadcast; capability required; terminal, no ID | 404 |
+| GET | `/v1/stream` | SSE resnapshot/projection_changed (item-sync-v1) | agent | write | self | — | — | household broadcast; capability required; terminal, no ID | 404 |
+| GET | `/v1/stream` | SSE resnapshot/projection_changed (item-sync-v1) | agent | write | other | — | — | household broadcast; capability required; terminal, no ID | 404 |
+| GET | `/v1/stream` | SSE resnapshot/projection_changed (item-sync-v1) | agent | admin | self | — | — | household broadcast; capability required; terminal, no ID | 404 |
+| GET | `/v1/stream` | SSE resnapshot/projection_changed (item-sync-v1) | agent | admin | other | — | — | household broadcast; capability required; terminal, no ID | 404 |
 | GET | `/v1/members/{id}/availability` |  | user | — | self | — | — | self/admin; independent of item visibility | 200 |
 | GET | `/v1/members/{id}/availability` |  | user | — | other | — | — | self/admin; independent of item visibility | 403 |
 | GET | `/v1/members/{id}/availability` |  | super_admin_app | — | self | — | — | self/admin; independent of item visibility | 200 |

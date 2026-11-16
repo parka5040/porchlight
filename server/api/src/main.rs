@@ -35,14 +35,24 @@ enum Command {
     Openapi,
     /// Apply database migrations (as the migrator role).
     Migrate {
-        #[arg(long, env = "PORCHLIGHT_MIGRATOR_URL", hide_env_values = true)]
+        #[arg(
+            long,
+            env = "PORCHLIGHT_MIGRATOR_URL",
+            default_value = "",
+            hide_env_values = true
+        )]
         migrator_url: String,
     },
     /// Initialize the household once. Pipe the admin password into stdin, or set PORCHLIGHT_INIT_ADMIN_PASSWORD.
     Init(InitArgs),
     /// Issue a recovery admin PAT locally; prints it once to stdout. Requires the API database credential.
     AdminToken {
-        #[arg(long, env = "PORCHLIGHT_DATABASE_URL", hide_env_values = true)]
+        #[arg(
+            long,
+            env = "PORCHLIGHT_DATABASE_URL",
+            default_value = "",
+            hide_env_values = true
+        )]
         database_url: String,
         /// Live super-admin member UUID or username.
         #[arg(long)]
@@ -53,13 +63,18 @@ enum Command {
         expires_days: u32,
     },
     /// Replace the server certificate's complete SAN set without changing its key or household CA.
-    /// A running server keeps its loaded certificate: restart it after successful reissue.
+    /// New servers reload the leaf for subsequent TLS handshakes; verify readiness after reissue.
     ServerCert(ServerCertArgs),
     /// Run the server until SIGINT/SIGTERM.
     Serve(Box<ServeArgs>),
     /// Exit 0 iff DB/schema and the serving process answer within four seconds.
     Healthcheck {
-        #[arg(long, env = "PORCHLIGHT_DATABASE_URL", hide_env_values = true)]
+        #[arg(
+            long,
+            env = "PORCHLIGHT_DATABASE_URL",
+            default_value = "",
+            hide_env_values = true
+        )]
         database_url: String,
     },
 }
@@ -67,7 +82,12 @@ enum Command {
 struct InitArgs {
     #[arg(long, env = "PORCHLIGHT_DATA_DIR", default_value = "/data")]
     data_dir: PathBuf,
-    #[arg(long, env = "PORCHLIGHT_DATABASE_URL", hide_env_values = true)]
+    #[arg(
+        long,
+        env = "PORCHLIGHT_DATABASE_URL",
+        default_value = "",
+        hide_env_values = true
+    )]
     database_url: String,
     #[arg(long, env = "PORCHLIGHT_MIGRATOR_URL", hide_env_values = true)]
     migrator_url: Option<String>,
@@ -166,9 +186,14 @@ async fn main() -> ExitCode {
         }
     }
 }
-async fn app_pool(url: &str, size: u32) -> anyhow::Result<sqlx::PgPool> {
+async fn app_pool(
+    url: &str,
+    size: u32,
+    acquire_timeout: std::time::Duration,
+) -> anyhow::Result<sqlx::PgPool> {
     PgPoolOptions::new()
         .max_connections(size)
+        .acquire_timeout(acquire_timeout)
         .connect_with(connect_options(url, APP_SETTINGS)?)
         .await
         .map_err(|e| porchlight_api::db::connection_error(url, e))
@@ -187,7 +212,7 @@ async fn dispatch(command: Command) -> anyhow::Result<()> {
             name,
             expires_days,
         } => {
-            let pool = app_pool(&database_url, 1).await?;
+            let pool = app_pool(&database_url, 1, porchlight_api::db::POOL_ACQUIRE_TIMEOUT).await?;
             let token =
                 porchlight_api::admin_recovery::mint(&pool, &member, &name, expires_days).await?;
             let mut stdout = io::stdout().lock();
@@ -217,7 +242,12 @@ async fn dispatch(command: Command) -> anyhow::Result<()> {
             if let Some(url) = args.migrator_url {
                 migrate(&url).await?;
             }
-            let pool = app_pool(&args.database_url, 5).await?;
+            let pool = app_pool(
+                &args.database_url,
+                5,
+                porchlight_api::db::POOL_ACQUIRE_TIMEOUT,
+            )
+            .await?;
             let dir = DataDir::new(args.data_dir);
             let params = InitParams {
                 household_name: args.household,
@@ -260,8 +290,11 @@ async fn dispatch(command: Command) -> anyhow::Result<()> {
         Command::ServerCert(args) => {
             let dir = DataDir::new(args.data_dir);
             let pki = load(&dir)?;
-            if let Some(url) = args.database_url {
-                let pool = app_pool(&url, 1).await?;
+            if let Some(url) = args
+                .database_url
+                .or_else(|| std::env::var_os("PORCHLIGHT_DATABASE_URL_FILE").map(|_| String::new()))
+            {
+                let pool = app_pool(&url, 1, porchlight_api::db::POOL_ACQUIRE_TIMEOUT).await?;
                 verify_install(&pool, &pki).await?;
             }
             let output = if args.show {
@@ -292,7 +325,12 @@ async fn dispatch(command: Command) -> anyhow::Result<()> {
             if let Some(url) = &args.migrator_url {
                 migrate(url).await?;
             }
-            let pool = app_pool(&args.database_url, args.db_pool_size).await?;
+            let pool = app_pool(
+                &args.database_url,
+                args.db_pool_size,
+                std::time::Duration::from_secs(args.db_acquire_timeout_secs),
+            )
+            .await?;
             let dir = DataDir::new(args.data_dir);
             let pki = load(&dir)?;
             verify_install(&pool, &pki).await?;

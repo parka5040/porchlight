@@ -85,6 +85,20 @@ fun calendarEntryLabels(entry: CalendarEntry, zone: TimeZone, allDay: Boolean = 
     entry.item.conflicts.orEmpty().filter { it.memberId in entry.memberIds }.map { calendarConflictLabel(it, zone) }.distinct().forEach { add(it) }
 }
 
+/** Exclude other windows before the grid's per-day overlay and overlap work. */
+internal fun calendarRowsInWindow(window: CalendarWindow, rows: List<ItemRead>, memberIds: Set<String>): List<ItemRead> = rows.filter { row ->
+    val agenda = row.agenda
+    if (row.deletedAt != null || agenda == null || agenda.memberId !in memberIds) false else {
+        val from = agenda.startsAt ?: agenda.dueAt
+        val until = agenda.endsAt
+        when {
+            from == null -> agenda.dueDate in window.dates
+            until != null && until > from -> from < window.to && until > window.from
+            else -> from >= window.from && from < window.to
+        }
+    }
+}
+
 /** Only resolved server agenda instants are positioned, including overlays. No local floating resolution. */
 fun calendarDays(window: CalendarWindow, rows: List<ItemRead>, memberId: String?, zone: TimeZone): List<CalendarDay> =
     calendarGrid(window, rows, setOfNotNull(memberId), zone).days

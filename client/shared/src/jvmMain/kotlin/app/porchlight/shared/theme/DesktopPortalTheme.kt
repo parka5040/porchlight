@@ -25,11 +25,16 @@ class DesktopPortalTheme(scope: CoroutineScope, source: PortalAppearanceSource =
     val dark: StateFlow<Boolean> = state.asStateFlow()
     init {
         scope.launch(dispatcher) {
-            try { source.readings().collect { state.value = portalPrefersDark(it) } }
-            catch (e: CancellationException) { throw e }
-            catch (e: Exception) {
-                reportDiagnostic("Desktop appearance portal (dark fallback)", e)
-                state.value = true
+            var backoff = 1_000L
+            while (isActive) {
+                try { source.readings().collect { state.value = portalPrefersDark(it); backoff = 1_000L } }
+                catch (e: CancellationException) { throw e }
+                catch (e: Exception) {
+                    reportDiagnostic("Desktop appearance portal (dark fallback)", e)
+                    state.value = true
+                }
+                delay(backoff)
+                backoff = (backoff * 2).coerceAtMost(60_000L)
             }
         }
     }
@@ -46,10 +51,17 @@ interface PortalSettings : DBusInterface {
 interface PortalTransport : AutoCloseable {
     fun subscribe(sender: String?, handler: (PortalSettings.SettingChanged) -> Unit): AutoCloseable
     fun read(): Any?
+    fun watchLoss(lost: () -> Unit) {}
 }
 
 private class SessionPortalTransport : PortalTransport {
-    private val connection = DBusConnectionBuilder.forSessionBus().withShared(false).build()
+    @Volatile private var lost: (() -> Unit)? = null
+    @Volatile private var disconnected = false
+    private val connection = DBusConnectionBuilder.forSessionBus().withShared(false)
+        .withDisconnectCallback(object : org.freedesktop.dbus.connections.IDisconnectCallback {
+            override fun disconnectOnError(error: java.io.IOException) { disconnected = true; lost?.invoke() }
+            override fun exceptionOnTerminate(error: java.io.IOException) { disconnected = true; lost?.invoke() }
+        }).build()
     private val settings = try {
         connection.getRemoteObject("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", PortalSettings::class.java)
     } catch (e: Exception) { connection.close(); throw e }
@@ -61,6 +73,13 @@ private class SessionPortalTransport : PortalTransport {
         } else {
             connection.addSigHandler(PortalSettings.SettingChanged::class.java, sender, settings, DBusSigHandler { handler(it) })
         }
+    override fun watchLoss(lost: () -> Unit) {
+        this.lost = lost
+        connection.addSigHandler(org.freedesktop.dbus.interfaces.DBus.NameOwnerChanged::class.java, DBusSigHandler { event ->
+            if (event.name == "org.freedesktop.portal.Desktop") lost()
+        })
+        if (disconnected) lost()
+    }
     override fun read(): Any? = settings.Read("org.freedesktop.appearance", "color-scheme")
     override fun close() = connection.close()
 }
@@ -74,6 +93,7 @@ class DbusPortalAppearanceSource(private val connect: () -> PortalTransport = { 
             }
         } catch (e: Exception) { transport.close(); throw e }
         try {
+            transport.watchLoss { close(java.io.IOException("Appearance connection changed")) }
             try { trySend(transport.read()) }
             catch (e: CancellationException) { throw e }
             catch (e: Exception) {

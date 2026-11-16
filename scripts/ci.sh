@@ -63,6 +63,9 @@ cargo run -q --locked -p porchlight-core --example storage-zones -- --check
 step "cargo test"
 cargo test --workspace --locked
 
+step "snapshot isolated peak heap and before/after latency"
+bash "$root/scripts/check-snapshot-alloc.sh"
+
 step "layering: porchlight-core and porchlight-pki are framework-free"
 for crate in porchlight-core porchlight-pki; do
   framework_deps=$(cargo tree -p "$crate" -e normal --prefix none --locked)
@@ -123,6 +126,7 @@ python3 -I "$root/deploy/tests/audit-bl-tests-notifications-stream.py"
 
 # s6b: stream tests run in the workspace step; exercise the controller's isolated SQL helper too.
 step "stream controller helper and gate syntax"
+python3 -I "$root/scripts/check-targeted-stream.py"
 python3 -I "$root/deploy/tests/stream-db.py"
 bash -n "$root/deploy/scripts/m5-demo-stream.sh"
 python3 - "$root/deploy/scripts/m5-demo-stream.sh" <<'PY'
@@ -146,6 +150,12 @@ done
 # s8b: workspace tests cover planning; the real-stack gate is controller-only.
 step "planning stack gate syntax"
 bash -n "$root/deploy/scripts/m7-demo-planning.sh"
+
+# RR-client-sync-06: live workspace tests regenerate/compare the real handler transcripts;
+# JVM/host suites replay them through LiveSync and HouseholdData. Regenerate with
+# PORCHLIGHT_RECORD_SYNC=1 cargo test --locked -p porchlight-api --test live prerollout_client_sync_fix_c.
+step "recorded server/client sync differential size and coverage"
+python3 -I "$root/scripts/check-sync-recordings.py"
 
 # c6: real handler equality runs in workspace tests; JVM/host suites exercise repositories and panels.
 step "C6 planning/import recordings match canonical client contracts"
@@ -199,7 +209,7 @@ step "O1 shell syntax and optional shellcheck"
 o1_scripts=(scripts/release.sh scripts/publish-release.sh scripts/release-keys.sh scripts/dev-backup-role.sh scripts/dev-env.sh scripts/dev-db.sh
   scripts/dev-stack.sh scripts/dev-lan.sh
   deploy/install.sh deploy/backup/backup.sh deploy/scripts/restore-drill.sh deploy/lib/operations.sh
-  deploy/tests/operations.sh deploy/tests/desktop.sh deploy/tests/github-upgrade.sh deploy/tests/backup.sh deploy/tests/release.sh deploy/tests/publish.sh deploy/postgres/initdb/10-porchlight.sh)
+  deploy/tests/operations.sh deploy/tests/desktop.sh deploy/tests/github-upgrade.sh deploy/tests/backup.sh deploy/tests/release.sh deploy/tests/publish.sh deploy/postgres/initdb/10-porchlight.sh deploy/postgres/entrypoint.sh)
 for script in "${o1_scripts[@]}" scripts/env.sh deploy/scripts/m1-demo.sh deploy/scripts/m2-demo.sh; do bash -n "$root/$script"; done
 if [[ -x /usr/bin/shellcheck ]]; then
   for script in "${o1_scripts[@]}"; do /usr/bin/shellcheck -e SC1090,SC1091 "$root/$script"; done
@@ -214,6 +224,10 @@ for name in ['deploy/lib/operations.py', 'deploy/backup/backup.py', 'scripts/bui
     compile(Path(sys.argv[1], name).read_text(), name, 'exec')
 PY
 python3 "$root/deploy/tests/compose-env.py"
+step "Performance harness offline contracts"
+python3 -I "$root/deploy/tests/perf-harness.py"
+bash -n "$root/deploy/scripts/perf/observe.sh" "$root/deploy/scripts/perf/devices.sh"
+if [[ -x /usr/bin/shellcheck ]]; then /usr/bin/shellcheck "$root/deploy/scripts/perf/observe.sh" "$root/deploy/scripts/perf/devices.sh"; fi
 step "development LAN discovery (offline fake ip)"
 python3 -I "$root/scripts/test-dev-lan.py"
 for script in operations desktop github-upgrade backup release publish; do bash "$root/deploy/tests/$script.sh"; done
@@ -230,6 +244,8 @@ for test in audit-bl-deploy audit-bl-deploy-funnel audit-bl-deploy-controller; d
 done
 step "audit operations resource, recovery and build footprint contracts"
 PYTHONDONTWRITEBYTECODE=1 python3 -I "$root/deploy/tests/audit-ops.py"
+PYTHONDONTWRITEBYTECODE=1 python3 -I "$root/deploy/tests/prerollout-deploy-hard.py"
+PYTHONDONTWRITEBYTECODE=1 python3 -I "$root/deploy/tests/prerollout-deploy-hard-fix1.py"
 bash -n "$root/deploy/backup/client-tools.sh" "$root/deploy/scripts/update-gate-build.sh" \
   "$root/scripts/c1b-desktop-e2e.sh" "$root/scripts/c1b-emulator-e2e.sh" "$root/deploy/scripts/m3-demo.sh"
 
@@ -249,6 +265,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 -I "$root/deploy/tests/desktop-launcher.py"
 step "F1-02 Linux-x64 SQLite packaging and bundled desktop JVM smoke"
 (cd "$root/client" && ./gradlew --max-workers=4 "${gradle_flags[@]}" --console=plain -q :shared:packagedDesktopSmoke)
 PYTHONDONTWRITEBYTECODE=1 python3 -I "$root/deploy/tests/audit-desktop.py"
+PYTHONDONTWRITEBYTECODE=1 python3 -I "$root/deploy/tests/prerollout-desktop.py"
+PYTHONDONTWRITEBYTECODE=1 python3 -I "$root/deploy/tests/prerollout-desktop-fix1.py"
 
 # o2a: DB/HTTP/CLI/stream/lease tests run above; cheap server and offline producer contracts.
 step "O2 server data-out and backup lease contracts"

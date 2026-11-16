@@ -91,8 +91,10 @@ backups and socket dirs; don't start the rootless API against root-owned directo
 
 Postgres → one-shot migrator → explicit init → healthy API → backup scheduler. Only migrate sees the migrator
 credential; API sees app only; backup sees its read-all-data role only. API listeners are LAN mTLS 8443, enrollment
-8444, unpublished ingress 9443. Host DB bind is loopback only. `BACKEND_SUBNET`, `INGRESS_SUBNET`, ports and binds
-are overridable. `server --funnel` is refused: install LAN first (`--no-funnel`), then explicitly use
+8444, unpublished ingress 9443. Production DB has no host port (use Compose exec); only dev Compose publishes
+loopback PostgreSQL. Fresh install persists a resolved LAN-only IPv4 bind; use `--lan-bind` for ambiguity and
+explicit `--lan-bind 0.0.0.0` only when wildcard exposure is intentional. `BACKEND_SUBNET`, `INGRESS_SUBNET`,
+ports and binds are overridable. See [hardening acceptance](deploy-hardening.md). `server --funnel` is refused: install LAN first (`--no-funnel`), then explicitly use
 `install.sh funnel` after completing the [Funnel prerequisites](funnel.md).
 
 ## Change the enrollment host (existing stack)

@@ -17,6 +17,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 OLD, NEW = '0.1.6', '0.1.7'
+CREDENTIALS = ''.join(key + '=PRIVATE-FIXTURE-NEVER-PRINT\n' for key in ('POSTGRES_PASSWORD', 'PORCHLIGHT_MIGRATOR_PASSWORD', 'PORCHLIGHT_APP_PASSWORD', 'PORCHLIGHT_AGENT_PASSWORD', 'PORCHLIGHT_BACKUP_PASSWORD'))
 
 
 def module(name, path):
@@ -44,7 +45,7 @@ with (p/'docker.jsonl').open('a') as f: f.write(json.dumps(record)+'\n')
 if a in (['info'],['compose','version']) or a[0]=='ps': sys.exit(0)
 if a[0]=='load': sys.exit(1 if os.environ.get('FAIL_AT')=='load' else 0)
 assert a[0]=='compose'
-assert a[a.index('-f')+1]==str(root/record['current']/'compose.yml')
+assert a[a.index('-f')+1]==str(root/record['current']/'compose.yml') or (a[-3:]==['stop','api','backup'] and a[a.index('--env-file')+1].endswith('/env-before-upgrade')) or a[-2:]==['config','--quiet']
 assert not any(k in os.environ for k in ('PORCHLIGHT_RELEASE_REPO','PORCHLIGHT_RELEASE_PUBLIC_KEY','PORCHLIGHT_UPGRADE_COMMAND','PORCHLIGHT_VERSION'))
 if a[-2:]==['backup','now']:
  name='porchlight-20261010T120000000000Z.tar.age'
@@ -81,7 +82,8 @@ class UpgradeTests(unittest.TestCase):
         (self.stack / 'releases').mkdir()
         shutil.copytree(old, self.stack / 'releases' / OLD)
         (self.stack / 'release-current').symlink_to('releases/' + OLD)
-        (self.stack / '.env').write_text('PORCHLIGHT_VERSION=' + OLD + '\nPORCHLIGHT_RELEASE_REPO=example-owner/porchlight\nPOSTGRES_PASSWORD=PRIVATE-FIXTURE-NEVER-PRINT\n')
+        (self.stack / 'data').mkdir()
+        (self.stack / '.env').write_text('PORCHLIGHT_VERSION=' + OLD + '\nPORCHLIGHT_RELEASE_REPO=example-owner/porchlight\n' + CREDENTIALS)
         (self.stack / '.env').chmod(0o600)
         self.before = (self.stack / '.env').read_bytes()
         self.installer = old / 'install.sh'
@@ -391,7 +393,7 @@ class UpgradeTests(unittest.TestCase):
                 (source / 'release.json').write_text(json.dumps(record, indent=1, sort_keys=True) + '\n')
                 self.sign(source, OLD)
                 fresh = self.p / ('fresh-' + str(repo is None))
-                self.run_install('--source', str(source), '--backup-recipient', 'age1' + 'q' * 58, '--admin-name', 'Sam Rivera',
+                self.run_install('--source', str(source), '--lan-bind', '192.168.77.10', '--backup-recipient', 'age1' + 'q' * 58, '--admin-name', 'Sam Rivera',
                                  '--admin-password-file', str(password), mode='server', stack=fresh,
                                  env={'ENROLL_CIDRS': '192.168.77.0/24'})
                 text = (fresh / '.env').read_text()

@@ -6,6 +6,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.test.*
 import kotlinx.coroutines.flow.*
 import kotlin.test.*
+import kotlin.time.Duration.Companion.milliseconds
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class AuditFinalClientBFix1AndroidTest {
@@ -35,8 +36,8 @@ class AuditFinalClientBFix1AndroidTest {
         val files = object : AttachmentStore by MemoryAttachmentStore() {
             override suspend fun clear() { clears++; if (fail) { fail = false; error("fail-once cleanup") } }
         }
-        val cache = memoryCache(files) { f.now }
-        val data = HouseholdData(cache, GeneratedCall.trusted(f.controller), { f.now })
+        val cache = memoryCache(files) { f.now + testScheduler.currentTime.milliseconds }
+        val data = HouseholdData(cache, GeneratedCall.trusted(f.controller), { f.now + testScheduler.currentTime.milliseconds })
         val runtime = AndroidLiveReconciler(f.controller, { cache.view.value }, { native++ }, { native++ }, {}, { native = 0 })
         data.bindTrust(f.controller, backgroundScope, onIdentityEnded = { runtime.clearIdentity(it) },
             streamEnabled = MutableStateFlow(false), refreshWhenInactive = false)

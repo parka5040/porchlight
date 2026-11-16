@@ -59,8 +59,35 @@ internal fun fileDigest(path: Path): String {
 }
 
 /** A retry rehashes the checkpoint, then hashes incoming chunks. ETag/size/range are checked before writing. */
-internal suspend fun downloadReleaseFiles(source: UpdateSource, files: List<ReleaseFile>, root: Path, report: (UpdateState) -> Unit) = withContext(Dispatchers.IO) {
+internal suspend fun downloadReleaseFiles(source: UpdateSource, files: List<ReleaseFile>, root: Path, report: (UpdateState) -> Unit,
+    // java.io usable space works on Android; NIO getFileStore throws SecurityException there.
+    availableSpace: (Path) -> Long = { it.toFile().usableSpace }, nanoTime: () -> Long = System::nanoTime) = withContext(Dispatchers.IO) {
     validateReleaseFiles(files)
+    var existing = root.toAbsolutePath()
+    while (!Files.exists(existing)) existing = checkNotNull(existing.parent)
+    fun checkpointPath(directory: String, name: String): Path {
+        val path = root.toAbsolutePath().normalize().resolve(directory).resolve(name)
+        var ancestor: Path? = path
+        while (ancestor != null) { require(!Files.isSymbolicLink(ancestor)) { "Unsafe update path" }; ancestor = ancestor.parent }
+        return path
+    }
+    val creditedPartials = mutableSetOf<String>()
+    val remaining = files.sumOf { file ->
+        val target = checkpointPath("source", file.path)
+        val partial = checkpointPath("parts", file.sha256)
+        when {
+            Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS) && Files.size(target) == file.propertySize && fileDigest(target) == file.sha256 -> 0L
+            Files.isRegularFile(partial, LinkOption.NOFOLLOW_LINKS) && Files.size(partial) < file.propertySize && creditedPartials.add(file.sha256) -> file.propertySize - Files.size(partial)
+            else -> file.propertySize
+        }
+    }
+    if (availableSpace(existing) < remaining + 64L * 1024 * 1024)
+        throw UpdateFailure("Not enough free space to stage this update. Free some disk space, then retry.")
+    var lastProgress = nanoTime()
+    fun progress(complete: Long, total: Long) {
+        val current = nanoTime()
+        if (current - lastProgress >= 100_000_000L) { lastProgress = current; report(UpdateState.Downloading(complete, total)) }
+    }
     val staging = guardedUpdateDirectory(root)
     val partials = guardedUpdateDirectory(staging.resolve("parts"))
     val destination = guardedUpdateDirectory(staging.resolve("source"))
@@ -71,7 +98,7 @@ internal suspend fun downloadReleaseFiles(source: UpdateSource, files: List<Rele
         val target = updatePath(destination, file.path)
         val partial = updatePath(partials, file.sha256)
         if (Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS) && Files.size(target) == file.propertySize && fileDigest(target) == file.sha256) {
-            complete += file.propertySize; report(UpdateState.Downloading(complete, total)); continue
+            complete += file.propertySize; progress(complete, total); continue
         }
         if (!Files.exists(partial, LinkOption.NOFOLLOW_LINKS)) Files.createFile(partial, updateFileMode)
         require(Files.isRegularFile(partial, LinkOption.NOFOLLOW_LINKS))
@@ -101,7 +128,7 @@ internal suspend fun downloadReleaseFiles(source: UpdateSource, files: List<Rele
                     verify(began && bytes.size <= file.propertySize - received)
                     val buffer = ByteBuffer.wrap(bytes); while (buffer.hasRemaining()) out.write(buffer)
                     digest.update(bytes); received += bytes.size
-                    report(UpdateState.Downloading(complete + received, total))
+                    progress(complete + received, total)
                 })
                 out.force(true)
             }

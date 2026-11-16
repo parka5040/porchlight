@@ -189,11 +189,15 @@ private fun itemUnavailable(cache: app.porchlight.shared.data.CacheView, route: 
     else -> null
 }
 
+/** Optional composition probe used by shell performance regression tests. */
+internal val LocalShellCompositionObserver = staticCompositionLocalOf<(() -> Unit)?> { null }
+
 @Composable
 fun ShellNavigation(startRoute: AppRoute, settings: DeviceSettings, store: SettingsStore, savedRoute: (AppRoute) -> Unit,
     nav: NavHostController = rememberNavController(), safeInsets: WindowInsets = WindowInsets.safeDrawing,
     loadErrorRetry: (() -> Unit)? = null, accountContent: (@Composable () -> Unit)? = null,
     services: app.porchlight.shared.AppServices? = null) { // Navigation's saveable back stack survives Android process death.
+    LocalShellCompositionObserver.current?.let { observer -> SideEffect(observer) }
     var launchApplied by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(nav) {
         if (!launchApplied) {
@@ -356,6 +360,23 @@ fun ShellNavigation(startRoute: AppRoute, settings: DeviceSettings, store: Setti
                 services?.runtimeNotice?.let { flow ->
                     val notice by flow.collectAsState()
                     notice?.let { Text(it, modifier = Modifier.fillMaxWidth().padding(PorchlightTokens.spaceMd.dp)) }
+                }
+                services?.data?.let { data ->
+                    val retryAt by data.cache.cleanupRetryAt.collectAsState()
+                    var clearing by remember { mutableStateOf(false) }
+                    var confirming by remember { mutableStateOf(false) }
+                    if (retryAt != null) ShellButton("Clear local cache", "Clear local cache and refresh from server", {
+                        confirming = true
+                    }, enabled = !clearing)
+                    if (confirming) CacheRecoveryDialog(onDismiss = { confirming = false }, onConfirm = {
+                        confirming = false; clearing = true
+                        scope.launch {
+                            try { data.clearLocalCache() }
+                            catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                            catch (_: Exception) { /* The storage notice remains until the wipe succeeds. */ }
+                            finally { clearing = false }
+                        }
+                    })
                 }
                 services?.data?.live?.let { live ->
                     val since by live.unreachableSince.collectAsState()

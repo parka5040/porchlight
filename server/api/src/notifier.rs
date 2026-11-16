@@ -156,6 +156,61 @@ fn template(kind: &str, conflicting: Option<bool>) -> (&'static str, &'static st
             "A scheduled item could not be processed.",
             "operational",
         ),
+        "server_certificate_expiring_90" => (
+            "Server certificate expires within 90 days",
+            "The server certificate is approaching expiry. Check automatic renewal and private server diagnostics before it expires.",
+            "operational",
+        ),
+        "server_certificate_expiring_60" => (
+            "Server certificate expires within 60 days",
+            "The server certificate is due for automatic renewal. Check renewal and private server diagnostics before it expires.",
+            "operational",
+        ),
+        "server_certificate_expiring_30" => (
+            "Server certificate expires within 30 days",
+            "The server certificate expires soon. Check private server diagnostics and repair renewal now to avoid losing connections.",
+            "operational",
+        ),
+        "server_certificate_expiring_7" => (
+            "Server certificate expires within 7 days",
+            "The server certificate expires very soon. Check private server diagnostics and repair renewal immediately to avoid losing connections.",
+            "operational",
+        ),
+        "server_certificate_expired" => (
+            "Server certificate has expired",
+            "Devices may no longer connect. Check private server diagnostics and renew the server certificate immediately, retaining the household CA.",
+            "operational",
+        ),
+        "server_certificate_renewal_failed" => (
+            "Server certificate renewal failed",
+            "Automatic server certificate renewal failed. Check private server diagnostics and repair renewal before the certificate expires.",
+            "operational",
+        ),
+        "server_certificate_expiring" => (
+            "Server certificate needs attention",
+            "The server certificate is approaching expiry. Check automatic renewal and private server diagnostics.",
+            "operational",
+        ),
+        "disk_space_low" => (
+            "Stack storage space is low",
+            "Less than 15% of disk space is available on the stack data volume. Check storage usage and free space or expand storage before writes or backups fail.",
+            "operational",
+        ),
+        "disk_inodes_low" => (
+            "Stack storage file capacity is low",
+            "Less than 15% of file entries are available on the stack data volume. Check file usage and free entries or expand storage before writes or backups fail.",
+            "operational",
+        ),
+        "disk_backup_headroom_low" => (
+            "Backup working space is low",
+            "Available space on the stack data volume is below measured backup working-space needs. Check storage usage and free space or expand storage before the next backup.",
+            "operational",
+        ),
+        "disk_headroom_low" => (
+            "Stack storage needs attention",
+            "The stack data volume has insufficient free space or file entries. Check storage usage and free capacity or expand storage before writes or backups fail.",
+            "operational",
+        ),
         "backup_stale" => (
             "Backup needs attention",
             "No successful backup for more than 26 hours.",
@@ -217,6 +272,14 @@ fn digest_summary(count: usize, local_alarm: bool) -> NotificationSummary {
         local_alarm,
     }
 }
+fn health_kind(kind: &str) -> bool {
+    kind.starts_with("server_certificate_")
+        || matches!(
+            kind,
+            "disk_headroom_low" | "disk_space_low" | "disk_inodes_low" | "disk_backup_headroom_low"
+        )
+}
+
 fn summary_parts(
     first: &Source,
     n: usize,
@@ -225,7 +288,8 @@ fn summary_parts(
     local_alarm: bool,
     digest: bool,
 ) -> NotificationSummary {
-    if digest {
+    // Quiet hours still delay delivery, but must not erase an operational warning's action.
+    if digest && !health_kind(&first.kind) {
         return digest_summary(n, local_alarm);
     }
     let actor = if same_actor {
@@ -576,8 +640,8 @@ async fn consume_recipient(
                 .await?;
         let held = cat != "reminders" && release.is_some();
         if live && visible && p.enabled(cat) && (!held || p.digest) {
-            let target:Option<(Uuid,i32)>=sqlx::query_as("select id,count from porchlight.notifications where recipient_member_id=$1 and (($2 and category='digest' and release_at=$3) or (not $2 and read_at is null and category<>'digest' and (category='reminders')=$4 and window_start<=$5 and $5<window_start+interval '30 seconds')) order by window_start desc,id desc limit 1 for update")
-                    .bind(member).bind(held).bind(release.unwrap_or(now)).bind(cat=="reminders").bind(event.created_at).fetch_optional(&mut *event_tx).await?;
+            let target:Option<(Uuid,i32)>=sqlx::query_as("select id,count from porchlight.notifications where recipient_member_id=$1 and (($2 and category='digest' and release_at=$3) or (not $2 and read_at is null and category<>'digest' and (category='reminders')=$4 and window_start<=$5 and $5<window_start+interval '30 seconds')) and not $6 and kind not like 'server_certificate_%' and kind not like 'disk_%' order by window_start desc,id desc limit 1 for update")
+                    .bind(member).bind(held).bind(release.unwrap_or(now)).bind(cat=="reminders").bind(event.created_at).bind(health_kind(&event.kind)).fetch_optional(&mut *event_tx).await?;
             let id = if let Some((id, _)) = target {
                 id
             } else {

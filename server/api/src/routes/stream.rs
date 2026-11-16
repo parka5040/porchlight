@@ -30,6 +30,9 @@ struct Live {
     // the last fully flushed (or wholly ACL-filtered) batch, not queued history.
     delivered_cursor: i64,
     read_failures: u8,
+    item_sync: bool,
+    // Fixed global maximum at open, cleared only after replay has been flushed/filtered.
+    catch_up_watermark: Option<i64>,
     pending: VecDeque<stream::Tickle>,
     opening: Option<String>,
     shutdown_sent: bool,
@@ -140,6 +143,19 @@ impl Live {
                 self.heartbeat_at = Instant::now() + self.state.settings.heartbeat;
                 return self.opening.take();
             }
+            if self.pending.is_empty()
+                && self
+                    .catch_up_watermark
+                    .is_some_and(|watermark| self.delivered_cursor >= watermark || !self.drain)
+            {
+                // An exhausted household scan also covers global gaps/other households.
+                // Never report completion while a batch still awaits its final ACL recheck.
+                let watermark = self.catch_up_watermark.take().expect("pending catch-up");
+                return Some(control(
+                    "caught_up",
+                    &format!(r#"{{"cursor":{watermark}}}"#),
+                ));
+            }
             if self.heartbeat_at <= Instant::now() {
                 self.heartbeats.tick().await;
                 self.heartbeat_at = Instant::now() + self.state.settings.heartbeat;
@@ -158,7 +174,7 @@ impl Live {
                         if !self.revocation(hint).await { return None; }
                         continue;
                     },
-                    r=stream::delivery_batch(&self.state.pool,self.auth.device.household_id,self.auth.device.member_id,&seqs)=>r,
+                    r=stream::delivery_batch_capable(&self.state.pool,self.auth.device.household_id,self.auth.device.member_id,&seqs,self.item_sync)=>r,
                 };
                 match result {
                     Ok(batch) if batch.pruned_through > self.delivered_cursor => {
@@ -170,6 +186,13 @@ impl Live {
                         self.read_failures = 0;
                         self.pending.clear();
                         self.delivered_cursor = self.cursor;
+                        if batch.events.iter().any(|t| t.kind == "sync.reset") {
+                            self.terminal = true;
+                            return Some(control(
+                                "resnapshot",
+                                r#"{"reason":"projection_changed"}"#,
+                            ));
+                        }
                         if !batch.events.is_empty() {
                             // One flush = one recheck = one body chunk. Never cache an ACL
                             // decision across polls (a slow socket only retains encoded bytes).
@@ -196,7 +219,7 @@ impl Live {
                         // The cancelled read resumes after this heartbeat, from the same cursor.
                         return Some(": hb\n\n".to_owned());
                     },
-                    r=stream::read(&self.state.pool,self.auth.device.household_id,self.auth.device.member_id,self.cursor)=>r,
+                    r=stream::read_capable(&self.state.pool,self.auth.device.household_id,self.auth.device.member_id,self.cursor,self.item_sync)=>r,
                 };
                 let batch = match result {
                     Ok(batch) => batch,
@@ -245,13 +268,19 @@ impl Live {
 /// equality; member.changed is household-wide. Access changes for former readers
 /// carry evicted=true and must remove the entity and its dependent caches.
 /// Heartbeats are comments every 120 seconds. Ready has no ID and returns the scan
-/// cursor. Last-Event-ID takes precedence over after. Cursors older than seven
+/// cursor, before replay. With Porchlight-Capabilities: item-sync-v1, caught_up
+/// (no ID, data {cursor}) is sent once after all entries through the global published
+/// maximum observed at open have been flushed or ACL-filtered. Empty backlog:
+/// ready then caught_up immediately. Newer events may precede or follow caught_up;
+/// process all preceding frames before closing, retaining the last processed tickle ID.
+/// Heartbeats may interleave only if replay exceeds the heartbeat interval.
+/// Last-Event-ID takes precedence over after. Cursors older than seven
 /// days of outbox creation time, pruned prefixes, or above the global maximum get
 /// a terminal resnapshot event. Shutdown emits drain and clean EOF; reconnect
 /// using the last tickle ID. No control frame advances the replay cursor.
 #[utoipa::path(get,
     path="/v1/stream",
-    params(("Last-Event-ID"=Option<i64>,Header,description="Resume after the stream cursor"),("after"=Option<i64>,Query,description="Resume cursor when Last-Event-ID is absent")),
+    params(("Last-Event-ID"=Option<i64>,Header,description="Resume after the stream cursor"),("Porchlight-Capabilities"=Option<String>,Header,description="Comma-separated capabilities; item-sync-v1 enables authoritative parent hints, item.invalidated, notification.invalidated, terminal resnapshot projection_changed, and a once-per-connection caught_up control after replay through the connect watermark"),("after"=Option<i64>,Query,description="Resume cursor when Last-Event-ID is absent")),
     responses((status=200,description="Success; at most three streams per device and eight per member across listeners",body=String,content_type="text/event-stream"),crate::openapi::RateLimitProblem,crate::openapi::UniversalProblems),
     security(("session" = [])))]
 pub async fn get(
@@ -316,6 +345,13 @@ pub async fn get(
         cursor: 0,
         delivered_cursor: 0,
         read_failures: 0,
+        item_sync: headers
+            .get_all("Porchlight-Capabilities")
+            .iter()
+            .filter_map(|h| h.to_str().ok())
+            .flat_map(|h| h.split(','))
+            .any(|c| c.trim() == "item-sync-v1"),
+        catch_up_watermark: None,
         pending: VecDeque::new(),
         opening: None,
         shutdown_sent: false,
@@ -345,6 +381,7 @@ pub async fn get(
                 &format!(r#"{{"reason":"{reason}"}}"#),
             ));
         } else {
+            live.catch_up_watermark = live.item_sync.then_some(window.maximum);
             live.opening = Some(control(
                 "ready",
                 &format!(r#"{{"cursor":{}}}"#, live.cursor),
@@ -401,6 +438,10 @@ pub struct StreamTickle {
     pub entity_id: Uuid,
     /// Omitted unless true. Remove cached entity; an item eviction also removes children.
     pub evicted: Option<bool>,
+    /// Current ACL-validated parent, only with Porchlight-Capabilities: item-sync-v1.
+    pub item_id: Option<Uuid>,
+    /// Current ACL-validated list for a list entry; same capability requirement.
+    pub list_id: Option<Uuid>,
 }
 #[derive(utoipa::ToSchema)]
 pub struct StreamReady {
@@ -428,6 +469,8 @@ mod tests {
                 entity_type: "item".into(),
                 entity_id: uuid::Uuid::nil(),
                 evicted: false,
+                item_id: None,
+                list_id: None,
             })
             .collect();
         let chunk = super::tickle_chunk(events);

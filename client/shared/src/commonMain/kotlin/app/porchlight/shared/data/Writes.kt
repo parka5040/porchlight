@@ -3,6 +3,8 @@ package app.porchlight.shared.data
 import app.porchlight.shared.api.models.ItemRead
 import app.porchlight.shared.transport.ApiProblem
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
 import kotlin.uuid.Uuid
 import kotlin.uuid.ExperimentalUuidApi
@@ -13,6 +15,14 @@ sealed interface WriteResult<out T> {
     data class VersionConflict(val current: JsonElement?, val problem: ApiProblem) : WriteResult<Nothing>
 }
 class OfflineWrite : Exception("Writes require an online household connection")
+
+/** A sealed write is never replayed because its scoped reconciliation failed. */
+internal suspend fun <T> WriteResult<T>.awaitReconciliation(read: suspend (T) -> Unit): WriteResult<T> {
+    if (this !is WriteResult.Success) return this
+    return try { read(value); this }
+    catch (e: kotlinx.coroutines.CancellationException) { throw e }
+    catch (_: Exception) { copy(refreshPending = true) }
+}
 
 /** These responses do not seal the original operation; even exhausted retries must retain its intent/key. */
 fun ApiProblem.isUnsealedContention(): Boolean = status == 409 &&
@@ -33,7 +43,13 @@ class WriteCoordinator(
     private val maxAttempts: Int = 3,
 ) {
     init { require(maxAttempts in 1..5) }
+    internal var writeOrigin: (() -> WriteOrigin)? = null
     suspend fun <T> execute(key: String = newKey(), operation: suspend (String) -> T): WriteResult<T> {
+        val context = currentCoroutineContext()
+        val origin = context[WriteOrigin] ?: context[ReadSession]?.let { WriteOrigin(it.epoch, it.token, it.revision) } ?: writeOrigin?.invoke()
+        return if (origin == null) attempt(key, operation) else withContext(origin) { attempt(key, operation) }
+    }
+    private suspend fun <T> attempt(key: String, operation: suspend (String) -> T): WriteResult<T> {
         if (!online()) throw OfflineWrite()
         var attempt = 0
         while (true) {

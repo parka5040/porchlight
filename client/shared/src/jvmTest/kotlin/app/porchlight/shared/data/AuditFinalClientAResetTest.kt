@@ -81,7 +81,7 @@ class AuditFinalClientAResetTest {
         suspend fun seedThenRecreate() {
             val row = attachmentFixture()
             cache.install(emptySnapshot(1).copy(items = listOf(itemRead(row.itemId)), attachments = listOf(row)))
-            store.write("0-${row.id}-${row.version}-file", byteArrayOf(1))
+            store.write(attachmentKey(cache.attachmentNamespace, row, false), byteArrayOf(1))
             files.resolve("${row.id}-view.txt").writeText("private viewer copy")
             cache.initialize()
             assertTrue(file.delete()); openDesktopCache(file).close()

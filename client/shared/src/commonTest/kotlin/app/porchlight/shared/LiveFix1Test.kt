@@ -90,7 +90,7 @@ class LiveFix1Test {
         assertEquals(3001L, starts.last())
         job.cancel(); runCurrent(); assertEquals(ConnectionState.Stopped, live.state.value)
     }
-    @Test fun heartbeatTimeoutReconnectsAndRealHeartbeatResetsBackoff() = runTest {
+    @Test fun heartbeatTimeoutReconnectsButHeartbeatAloneDoesNotResetBackoff() = runTest {
         val starts = mutableListOf<Long>()
         val live = LiveSync(StreamSource { _, receive ->
             starts += testScheduler.currentTime
@@ -99,10 +99,10 @@ class LiveFix1Test {
             awaitCancellation()
         }, { 1 }, {}, {}, {}, { Instant.fromEpochMilliseconds(testScheduler.currentTime) }, { 0.0 })
         backgroundScope.launch { live.run() }
-        runCurrent(); advanceTimeBy(2001); runCurrent()
-        assertEquals(listOf(0L, 1000L, 2000L), starts)
-        advanceTimeBy(252_001); runCurrent()
-        assertEquals(254000L, starts.last()) // two 120s heartbeats + 10s margin, then 2s backoff
+        runCurrent(); advanceTimeBy(3001); runCurrent()
+        assertEquals(listOf(0L, 1000L, 3000L), starts)
+        advanceTimeBy(254_001); runCurrent()
+        assertEquals(257000L, starts.last()) // two 120s heartbeats + 10s margin, then 4s backoff
     }
     @Test fun quietStreamSurvivesMoreThanThreeProductionHeartbeatIntervals() = runTest {
         var connects = 0

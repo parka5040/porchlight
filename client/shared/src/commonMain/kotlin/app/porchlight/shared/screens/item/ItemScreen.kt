@@ -53,8 +53,21 @@ import kotlinx.serialization.json.*
         true
     }
     val retainedEditor = session.editor(context, view, creating)
-    val editor = checkNotNull(retainedEditor.current(view))
-    DisposableEffect(editor) { onDispose { if (!editor.unsaved) editor.editing = false } }
+    val editor = retainedEditor.current(view)
+    if (editor == null) {
+        Column(Modifier.fillMaxSize().padding(PorchlightTokens.spaceMd.dp), verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceSm.dp)) {
+            Text("Your edits are kept but hidden until a fresh authorised read confirms access.")
+            DataStatus(data)
+            WriteStatus(writer)
+            ShellButton("Refetch item", onClick = { reload++ })
+        }
+        return
+    }
+    DisposableEffect(editor) { onDispose {
+        val latest = data.cache.view.value
+        val quarantined = retainedEditor.retained(latest) && retainedEditor.current(latest) == null
+        if (!editor.unsaved && !quarantined) editor.editing = false
+    } }
     val itemId = editor.savedId ?: context
     val isCreating = creating && editor.savedId == null
     val parent = view.items.find { it.id == itemId } ?: view.board.find { it.id == itemId } ?: view.agenda.find { it.id == itemId }
@@ -129,7 +142,8 @@ import kotlinx.serialization.json.*
             if (relationships && (assigneesChanged || viewersChanged || remindersChanged)) {
                 var last: WriteResult<JsonElement> = WriteResult.Success(JsonNull)
                 while (step < steps.size) {
-                    val current = retainedEditor.current(data.cache.view.value) ?: throw CancellationException("Editor visibility changed")
+                    // The immutable step plan/key is independent of the editor's presentation lease.
+                    // Storage quarantine or visibility loss must not strand an ambiguous request.
                     val part = steps[step]
                     val stepKey = stepKeys.getValue(part)
                     val result = when (part) {
@@ -149,11 +163,14 @@ import kotlinx.serialization.json.*
                     // A later rejection/retry cannot make already-committed fields unsaved again or
                     // discard fields whose endpoint has not succeeded. Retry resumes this exact step plan.
                     step++
-                    current.baseline = committed
-                    current.needsSavedVersion = result.value == null
-                    current.expectedVersion = result.value?.version ?: nextVersion
-                    nextVersion = current.expectedVersion
-                    if (result.value == null) { current.unsaved = true; return@submit last }
+                    nextVersion = result.value?.version ?: nextVersion
+                    retainedEditor.current(data.cache.view.value)?.let { current ->
+                        current.baseline = committed
+                        current.needsSavedVersion = result.value == null
+                        current.expectedVersion = nextVersion
+                        if (result.value == null) current.unsaved = true
+                    }
+                    if (result.value == null) return@submit last
                 }
                 completed(last)
                 last
@@ -174,6 +191,7 @@ import kotlinx.serialization.json.*
     }
     Column(Modifier.fillMaxSize().padding(PorchlightTokens.spaceMd.dp), verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceSm.dp)) {
         DataStatus(data, loadError, { reload++ })
+        if (session.editorDiscarded(context)) Text("The previous editor was discarded because this resource is no longer visible. Pending request outcomes are still available.")
         ShellButton("Refetch item", onClick = { reload++ })
         if (editing) DesignPending("Item editor and version compare")
         else if (services.platform.kind == app.porchlight.shared.PlatformKind.Desktop) DesignPending("Desktop item detail adaptation")

@@ -9,6 +9,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.*
 import kotlin.time.Instant
+import kotlin.time.Duration.Companion.hours
 
 class AuditFinalClientAFix1ReplacementTest {
     private val now = Instant.parse("2026-10-06T12:00:00Z")
@@ -31,7 +32,7 @@ class AuditFinalClientAFix1ReplacementTest {
             else -> buildJsonObject {}
         }
     }
-    private class Fixture(val now: Instant) {
+    private class Fixture(var now: Instant) {
         val dir = Files.createTempDirectory(Files.createDirectories(Path.of(System.getProperty("porchlight.test.dir"))), "audit-replacement-")
         val keys = Keys()
         val controller = TrustController(keys, Server(), "android", { now }, true)
@@ -82,9 +83,10 @@ class AuditFinalClientAFix1ReplacementTest {
             f.start()
             if (save) f.keys.saving = { error("Storage unavailable") } else f.clearing = { error("Cleanup unavailable") }
             assertTrue(runCatching { f.controller.refreshEndpointsAndRenew() }.isFailure)
-            assertIs<TrustState.LocalTrustLost>(f.controller.state.value, "Failed replacement must offer recovery, never strand Loading")
+            if (save) assertIs<TrustState.LocalTrustLost>(f.controller.state.value, "Failed replacement must offer recovery, never strand Loading")
+            else assertEquals(TrustState.StorageRecoveryRequired, f.controller.state.value)
             assertFailsWith<HouseholdLocked> { f.call.ensureReady() }
-            f.keys.saving = {}; f.clearing = {}
+            f.keys.saving = {}; f.clearing = {}; f.now += 1.hours
             withTimeout(5_000) { f.controller.restore() }
             assertEquals(TrustState.PinRequired, f.controller.state.value)
             f.controller.unlockPin()

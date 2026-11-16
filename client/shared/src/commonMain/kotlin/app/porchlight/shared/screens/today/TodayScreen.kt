@@ -2,8 +2,9 @@ package app.porchlight.shared.screens.today
 
 import androidx.compose.runtime.*
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.*
+import app.porchlight.shared.screens.lists.listContent
+import app.porchlight.shared.screens.lists.rememberListEntryIds
 import androidx.compose.material3.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -62,7 +63,10 @@ val TODAY_WALL_CLOCK_RECHECK = 60.seconds
     LaunchedEffect(settings.pinnedListId) {
         settings.pinnedListId?.let { id -> try { data.lists.get(id) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { /* keep cached persistent rows */ } }
     }
-    val groups = remember(view, settings, member, zone, now) { todaySections(todayRows(view, member), settings, member, zone, now) }
+    val rows = remember(view.items, view.occurrences, view.agenda, member) { todayRows(view, member) }
+    val groups = remember(rows, settings, member, zone, now) { todaySections(rows, settings, member, zone, now) }
+    val pinnedList = remember(view.lists, settings.pinnedListId) { view.lists.find { it.id == settings.pinnedListId && (it.mode == ListMode.persistent || it.occurrenceId == null) } }
+    val pinnedIds = rememberListEntryIds(pinnedList)
     Column(Modifier.fillMaxSize().padding(PorchlightTokens.spaceMd.dp),
         verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceSm.dp)) {
         DataStatus(data, retry = { scope.refreshSafely(data) })
@@ -86,11 +90,11 @@ val TODAY_WALL_CLOCK_RECHECK = 60.seconds
                 if (!feedback.busy) row.occurrence?.let { occurrence -> scope.launch {
                     writer.submit { data.occurrences.complete(occurrence.id, occurrence.version, it).feedback() }
                 } }
-            }, Modifier.weight(1f), take = { row -> scope.launch { writer.submit { data.items.take(row.id, row.version, it).feedback() } } }, pinned = { id ->
-                val list = view.lists.find { it.id == id && (it.mode == ListMode.persistent || it.occurrenceId == null) }
-                if (list == null) Text("Pinned list unavailable. Open Lists to refetch.") else {
-                    ShellButton("Open ${list.name}", onClick = { navigate(AppRoute.Lists(list.id)) })
-                    app.porchlight.shared.screens.lists.ListContent(list, view.members,
+            }, Modifier.weight(1f), take = { row -> scope.launch { writer.submit { data.items.take(row.id, row.version, it).feedback() } } }, pinnedEntries = { _, state ->
+                val list = pinnedList
+                if (list == null) item("pinned-empty", "empty") { Text("Pinned list unavailable. Open Lists to refetch.") } else {
+                    item("pinned-open", "actions") { ShellButton("Open ${list.name}", onClick = { navigate(AppRoute.Lists(list.id)) }) }
+                    listContent(list, pinnedIds, state, view.members,
                         { entry, checked -> scope.launch { writer.submit { data.lists.check(entry.id, entry.version, checked, list.occurrenceId, it).feedback() } } },
                         { navigate(AppRoute.Lists(list.id)) }, { entry, index -> val replay = ListMoveReplay(); scope.launch { writer.submit(activeKey = { replay.activeKey }) { data.lists.move(list, entry, index, replay, it).feedback() } } },
                         { entry -> scope.launch { writer.submit { data.lists.archive(entry, list.occurrenceId, it).feedback() } } },
@@ -100,14 +104,19 @@ val TODAY_WALL_CLOCK_RECHECK = 60.seconds
     }
 }
 @Composable fun TodayContent(groups: List<TodayGroup>, days: Int, members: List<MemberRead>, open: (ItemRead) -> Unit,
-    complete: (ItemRead) -> Unit, modifier: Modifier = Modifier, take: (ItemRead) -> Unit = {}, snooze: ((ItemRead) -> Unit)? = null, canSnooze: (ItemRead) -> Boolean = { true }, pinned: @Composable (String?) -> Unit = { Text("No pinned list available.") }) {
-    Column(modifier.fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceMd.dp)) {
-        if (groups.isEmpty()) EmptyState("Today", "No sections enabled. Change Today settings to show sections.")
+    complete: (ItemRead) -> Unit, modifier: Modifier = Modifier, take: (ItemRead) -> Unit = {}, snooze: ((ItemRead) -> Unit)? = null, canSnooze: (ItemRead) -> Boolean = { true }, pinned: @Composable (String?) -> Unit = { Text("No pinned list available.") },
+    pinnedEntries: (LazyListScope.(String?, LazyListState) -> Unit)? = null) {
+    val state = rememberLazyListState()
+    LazyColumn(modifier.fillMaxWidth(), state = state, verticalArrangement = Arrangement.spacedBy(PorchlightTokens.spaceMd.dp)) {
+        if (groups.isEmpty()) item("empty", "empty") { EmptyState("Today", "No sections enabled. Change Today settings to show sections.") }
         groups.forEach { group ->
-            Text(group.kind.label(days), style = MaterialTheme.typography.titleLarge)
-            if (group.kind == TodaySection.pinned_list) pinned(group.pinnedListId)
-            else if (group.rows.isEmpty()) Text("Nothing here.")
-            group.rows.forEach { row -> PorchlightCard(Modifier.fillMaxWidth()) {
+            item("heading-${group.kind}", "heading") { Text(group.kind.label(days), style = MaterialTheme.typography.titleLarge) }
+            if (group.kind == TodaySection.pinned_list) {
+                if (pinnedEntries != null) pinnedEntries(group.pinnedListId, state)
+                else item("pinned", "pinned") { pinned(group.pinnedListId) }
+            }
+            else if (group.rows.isEmpty()) item("empty-${group.kind}", "empty") { Text("Nothing here.") }
+            items(group.rows, key = { "${group.kind}-${it.occurrence?.id ?: it.id}" }, contentType = { "today-row" }) { row -> PorchlightCard(Modifier.fillMaxWidth()) {
                 ItemSummary(row, members)
                 ShellButton("Open ${row.title}", onClick = { open(row) })
                 if ("complete" in row.capabilities) ShellButton("Complete ${row.title}", onClick = { complete(row) })

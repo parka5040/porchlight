@@ -205,6 +205,8 @@ if bash "$fixture/release-0.1.0/install.sh" server --root "$fixture/guard-server
 [[ $(< "$fixture/guard.log") == *'Compose project already exists'* ]]
 mkdir -p "$fixture/bundle/pki" "$fixture/bundle/secrets" "$fixture/bundle/blobs"
 for member in db.dump .env pki/ca.crt pki/ca.key secrets/idempotency.key backup-recipient.txt; do printf fixture > "$fixture/bundle/$member"; done
+for key in POSTGRES_PASSWORD PORCHLIGHT_MIGRATOR_PASSWORD PORCHLIGHT_APP_PASSWORD PORCHLIGHT_AGENT_PASSWORD PORCHLIGHT_BACKUP_PASSWORD; do printf '%s=fixture\n' "$key"; done > "$fixture/bundle/.env"
+printf 'LAN_BIND=127.0.0.1\n' >> "$fixture/bundle/.env"
 printf fixture > "$fixture/identity"
 python3 "$root/deploy/lib/operations.py" manifest "$fixture/bundle" 0.1.0
 tar -cf "$fixture/bundle.tar.age" -C "$fixture/bundle" .
@@ -228,7 +230,7 @@ export O1_DOCKER_LOG="$fixture/docker.log"
 # Malformed IPv6 used to fail only in process substitution and silently yield no SANs.
 printf 'fixture orchard river\n' > "$fixture/admin.pass"
 printf -v recipient 'age1%058d' 0
-if ENROLL_CIDRS=127.0.0.1/32 PORCHLIGHT_ENDPOINTS='https://[broken' bash "$fixture/trusted-install.sh" server --source "$fixture/release-0.1.0" --root "$fixture/bad-sans" --run-dir "$fixture/run" --backup-recipient "$recipient" --admin-name Fixture --admin-password-file "$fixture/admin.pass" > "$fixture/sans.log" 2>&1; then exit 1; fi
+if ENROLL_CIDRS=127.0.0.1/32 PORCHLIGHT_ENDPOINTS='https://[broken' bash "$fixture/trusted-install.sh" server --lan-bind 127.0.0.1 --source "$fixture/release-0.1.0" --root "$fixture/bad-sans" --run-dir "$fixture/run" --backup-recipient "$recipient" --admin-name Fixture --admin-password-file "$fixture/admin.pass" > "$fixture/sans.log" 2>&1; then exit 1; fi
 [[ $(< "$fixture/sans.log") == *'Cannot derive certificate SANs'* && $(< "$fixture/sans.log") != *Traceback* ]]
 [[ $(< "$fixture/docker.log") != *'load -i'* && $(< "$fixture/docker.log") != *'--exit-code-from migrate'* ]]
 printf 'PASS SAN derivation failure refuses image load and migration\n'

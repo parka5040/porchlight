@@ -82,7 +82,7 @@ class CollaborationConnectedFixTest {
                 else -> {
                     adds++
                     val body = WireJson.parseToJsonElement(req.body.toByteArray().decodeToString()).jsonObject
-                    val entry = list.propertyEntries.first().copy(label = body["label"]!!.jsonPrimitive.content)
+                    val entry = list.propertyEntries.first().copy(id = "01999999-0000-7000-8000-000000000099", label = body["label"]!!.jsonPrimitive.content)
                     list = list.copy(propertyEntries = list.propertyEntries + entry)
                     WireJson.encodeToString(EntryResponse.serializer(), entry)
                 }

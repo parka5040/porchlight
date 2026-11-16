@@ -33,3 +33,7 @@ mod shared_testing;
 
 mod audit_limits;
 mod audit_limits_fix1;
+mod prerollout_srv_admit;
+mod prerollout_srv_admit_fix1;
+mod prerollout_srv_read_fix1;
+mod prerollout_srv_snapshot;

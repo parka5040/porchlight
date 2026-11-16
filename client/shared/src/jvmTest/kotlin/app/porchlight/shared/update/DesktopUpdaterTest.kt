@@ -59,7 +59,7 @@ class DesktopUpdaterTest {
                 }
                 assertEquals(listOf("desktop", "--source", root.resolve("updates/0.1.7/source").toString()), Files.readAllLines(argv))
                 assertTrue(states.contains(UpdateState.Installing)); assertTrue(states.contains(UpdateState.Verifying))
-                assertEquals(listOf(launcher.toString(), "--after-update"), desktopRestartArgv(root))
+                assertEquals(listOf(launcher.toString(), "--after-update", "--after-update-pid=${ProcessHandle.current().pid()}"), desktopRestartArgv(root))
             } finally { removeUpdateTree(root) }
         }
     }

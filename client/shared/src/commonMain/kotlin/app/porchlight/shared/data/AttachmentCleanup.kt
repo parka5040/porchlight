@@ -1,42 +1,71 @@
 package app.porchlight.shared.data
 
 import app.porchlight.shared.api.models.Attachment
+import app.porchlight.shared.db.PorchlightDb
 
-internal fun attachmentKey(epoch: Long, row: Attachment, thumbnail: Boolean) =
-    "$epoch-${row.id}-${row.version}-${if (thumbnail) "thumb" else "file"}"
+internal fun attachmentKey(namespace: Long, row: Attachment, thumbnail: Boolean) =
+    "$namespace-${row.id}-${row.version}-${if (thumbnail) "thumb" else "file"}"
 
-/** Cache-owned, serialized with metadata commits and private-file writes. Failed removals remain retryable;
- * successful ones are removed from the queue, not repeated by repository and lifecycle observers. */
-internal class AttachmentCleanup(private val store: AttachmentStore) {
-    private val files = linkedSetOf<String>()
-    private val views = linkedSetOf<String>()
+/** Cache-owned and serialized with metadata commits and private-file writes. Obligations are
+ * inserted inside the metadata transaction; only successful artifact removal retires them. */
+internal class AttachmentCleanup(private val store: AttachmentStore, private val now: () -> kotlin.time.Instant,
+                                 private val database: () -> PorchlightDb) {
+    // Owner/reset recovery also has a durable missing-owner boundary, independent of disposable rows.
     private var clear = false
-    fun transition(before: CacheView, after: CacheView, epoch: Long, clearIdentity: Boolean): Boolean {
-        clear = clear || clearIdentity
+    fun clearIdentity() { clear = true }
+    fun transition(before: CacheView, after: CacheView, namespace: Long, clearIdentity: Boolean): Boolean {
+        val q = database().cacheQueries
+        if (clearIdentity) {
+            q.clearAttachmentCleanup(); q.putAttachmentCleanup("clear", "identity")
+            return true
+        }
         val live = after.attachments.filter { it.deletedAt == null }.associateBy { it.id }
         val removed = before.attachments.filter { it.deletedAt == null && live[it.id]?.version != it.version }
         removed.forEach { row ->
-            files += attachmentKey(epoch, row, false); files += attachmentKey(epoch, row, true)
-            views += row.id
+            q.putAttachmentCleanup("file", attachmentKey(namespace, row, false))
+            q.putAttachmentCleanup("file", attachmentKey(namespace, row, true))
+            q.putAttachmentCleanup("view", row.id)
         }
-        // A fresh authorized response may reference bytes whose earlier purge failed. Those bytes
-        // are current again; keep ID-based viewer cleanup queued until the next preparation admission.
-        live.values.forEach { row ->
-            files.remove(attachmentKey(epoch, row, false)); files.remove(attachmentKey(epoch, row, true))
-        }
-        return clearIdentity || removed.isNotEmpty()
+        return removed.isNotEmpty()
     }
-    suspend fun drain() {
-        if (clear) {
-            store.clear()
-            clear = false; files.clear(); views.clear()
-            return
+    suspend fun drain(): SyncState? {
+        val db = database()
+        val q = db.cacheQueries
+        val pending = q.allAttachmentCleanup().executeAsList()
+        val previous = q.getCleanupFailure().executeAsOneOrNull()
+        if (previous != null && previous.retry_at > now().toEpochMilliseconds())
+            throw IllegalStateException("Private file cleanup requires storage recovery")
+        try {
+            if (clear || pending.any { it.kind == "clear" }) {
+                store.clear()
+                val promoted = db.transactionWithResult { q.clearAttachmentCleanup(); q.clearCleanupFailure(); promoteCursor(db) }
+                clear = false
+                return promoted
+            }
+            var failure: Exception? = null
+            for (row in pending) try {
+                when (row.kind) {
+                    "file" -> store.remove(row.id)
+                    "view" -> store.removeView(row.id)
+                    else -> error("Invalid attachment cleanup obligation")
+                }
+                db.transaction { q.deleteAttachmentCleanup(row.kind, row.id) }
+            } catch (e: Exception) { if (failure == null) failure = e }
+            failure?.let { throw it }
+            return db.transactionWithResult { q.clearCleanupFailure(); promoteCursor(db) }
+        } catch (e: Exception) {
+            val attempts = ((previous?.attempts ?: 0) + 1).coerceAtMost(7)
+            val wait = (60_000L shl (attempts.toInt() - 1)).coerceAtMost(3_600_000)
+            db.transaction { q.putCleanupFailure(attempts, now().toEpochMilliseconds() + wait) }
+            throw e
         }
-        var failure: Exception? = null
-        for (key in files.toList()) try { store.remove(key); files.remove(key) }
-        catch (e: Exception) { if (failure == null) failure = e }
-        for (id in views.toList()) try { store.removeView(id); views.remove(id) }
-        catch (e: Exception) { if (failure == null) failure = e }
-        failure?.let { throw it }
+    }
+    private fun promoteCursor(db: PorchlightDb): SyncState? {
+        val q = db.cacheQueries
+        val pending = q.getPendingSync().executeAsOneOrNull() ?: return null
+        q.putSync(pending.cursor, pending.last_full_sync)
+        q.clearPendingSync()
+        return SyncState(pending.cursor, kotlin.time.Instant.fromEpochMilliseconds(pending.last_full_sync))
     }
 }
+

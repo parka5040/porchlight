@@ -39,6 +39,17 @@ Four targets deliberately remain single-module binaries, without changing test l
 - `core/tests/allocation/ingest_alloc.rs`: the full-only probe supplies a process-global counting allocator. Unrelated
   tests must not contribute allocations. Its helper stays in `tests/support/`.
 
+The snapshot peak-heap probe is a selected API lib test, not another integration target:
+`scripts/check-snapshot-alloc.sh` builds only its allocator-instrumented lib-test executable and runs
+`routes::reads::prerollout_srv_snapshot::fixture::snapshot_cost` alone, then the fixture's
+`router_probe::shipping_gzip_cost` and `item_sync_probe::bounded_bundle_cost_and_continuation_equivalence`
+in separate isolated processes. The reviewed allocator forwarding is cfg-gated like the ingest probe; normal
+lib tests run these fixtures without a global allocator. Fast/sandbox CI runs the isolated measurements too.
+The shipping-router probe includes a roughly 20 MB less-compressible snapshot, negotiated gzip, four held
+responses and retained frames. The bundle probe covers maximum-size notes, seven deduplicated agenda scopes,
+large comments, four held responses, and exact continuation-union equality with the unbounded readers.
+Only memory/byte/row bounds are asserted, not wall time.
+
 SQLx receives the target/module/function path, so keep these identities unique even across crates; do not derive
 Postgres identifiers by truncating test names. The SQLx harness manages database identifiers and cleanup.
 
