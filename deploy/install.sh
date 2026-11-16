@@ -619,6 +619,11 @@ rollback_upgrade() {
   else
     rm -f -- "$stackroot/porchlight-upgrade" || return
   fi
+  # Drop containers/networks the new release may have created with different definitions; best effort, since the
+  # old release still starts on reused networks if Docker refuses (Compose then only warns).
+  dc_timeout=180 dc down --remove-orphans > "$stage/rollback-down.log" 2>&1 || true
+  # The upgrade took the project down before switching: the database must be running for restore and the API.
+  dc up -d --wait postgres || return
   if ((upgrade_migrating)); then restore_db "$rollback_dump" || return; fi
   # Do not re-run a failed new migrator through Compose's dependency graph.
   start --no-deps || return
@@ -1145,6 +1150,10 @@ PY
     dump_created=1
     chmod 600 "$rollback_dump"
     dc exec -T postgres pg_dump -U postgres -Fc porchlight > "$rollback_dump" 2> "$stage/dump.log"
+    # Releases may redefine networks (0.1.8 makes backend internal). Remove the old project's containers and
+    # networks so the new release never restarts a container still attached to a replaced network. Data, PKI and
+    # sidecar state are bind mounts and survive.
+    dc_timeout=180 dc down --remove-orphans > "$stage/down.log" 2>&1
     {
       # Validate and persist every new interpolation/credential before switching the release pointer.
       set_version

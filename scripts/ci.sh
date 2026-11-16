@@ -246,6 +246,7 @@ step "audit operations resource, recovery and build footprint contracts"
 PYTHONDONTWRITEBYTECODE=1 python3 -I "$root/deploy/tests/audit-ops.py"
 PYTHONDONTWRITEBYTECODE=1 python3 -I "$root/deploy/tests/prerollout-deploy-hard.py"
 PYTHONDONTWRITEBYTECODE=1 python3 -I "$root/deploy/tests/prerollout-deploy-hard-fix1.py"
+PYTHONDONTWRITEBYTECODE=1 python3 -I "$root/deploy/tests/prerollout-upgrade-network.py"
 bash -n "$root/deploy/backup/client-tools.sh" "$root/deploy/scripts/update-gate-build.sh" \
   "$root/scripts/c1b-desktop-e2e.sh" "$root/scripts/c1b-emulator-e2e.sh" "$root/deploy/scripts/m3-demo.sh"
 
